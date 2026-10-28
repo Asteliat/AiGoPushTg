@@ -1,6 +1,7 @@
 """Watch only operator-selected chats and forward AI drafts to the operator; never send to chats."""
 import asyncio
 import logging
+import re
 from collections import defaultdict
 from aiogram import Bot
 from telethon import TelegramClient, events
@@ -53,6 +54,15 @@ async def main() -> None:
                 incoming = event.message.message.strip()
                 if not incoming:
                     return
+                # In groups, draft only when the account is explicitly addressed.
+                # Private incoming messages remain eligible for a suggested reply.
+                if event.is_group:
+                    username = (account.username or "").strip()
+                    mentioned = bool(username and re.search(r"(?<!\w)@" + re.escape(username) + r"\b", incoming, re.IGNORECASE))
+                    reply_to = await event.get_reply_message() if event.message.reply_to else None
+                    replied_to_account = bool(reply_to and reply_to.sender_id == account.telegram_user_id)
+                    if not (mentioned or replied_to_account):
+                        return
                 label = chat_labels.get(event.chat_id, "Выбранный чат")
                 async with SessionFactory() as db:
                     try:
