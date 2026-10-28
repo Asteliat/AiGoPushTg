@@ -22,13 +22,13 @@ async def denied(message: Message) -> None:
 async def start(message: Message) -> None:
     if not allowed(message.from_user.id if message.from_user else None):
         await denied(message); return
-    await message.answer("AtcivPerson — управление своими аккаунтами и ИИ-черновиками.\n\n/accounts — аккаунты\n/personas — персоны\n/examples — число примеров\n/drafts — ожидающие черновики\n/draft ТЕКСТ — создать черновик\n/help — помощь\n\nАвтоматической отправки сообщений в чаты нет.")
+    await message.answer("AtcivPerson — управление своими аккаунтами и ИИ-черновиками.\n\n/accounts — аккаунты\n/personas — персоны\n/persona_add НАЗВАНИЕ | СТИЛЬ — создать персону\n/examples — число примеров\n/example_add ID | ВХОДЯЩЕЕ || ОТВЕТ — добавить пример\n/drafts — ожидающие черновики\n/draft ТЕКСТ — создать черновик\n/help — помощь\n\nАвтоматической отправки сообщений в чаты нет.")
 
 @router.message(Command("help"))
 async def help_cmd(message: Message) -> None:
     if not allowed(message.from_user.id if message.from_user else None):
         await denied(message); return
-    await message.answer("Подключение пользовательского аккаунта выполняется владельцем в доверенном терминале: python -m app.telegram_gateway.enroll. Никогда не отправляйте боту коды входа, пароль 2FA или session-файлы. ИИ только предлагает черновики; публикация выполняется вручную вне этого приложения.")
+    await message.answer("Подключение пользовательского аккаунта выполняется владельцем в доверенном терминале: python -m app.telegram_gateway.enroll. Никогда не отправляйте боту коды входа, пароль 2FA или session-файлы. ИИ только предлагает черновики; публикация выполняется вручную вне этого приложения.\n/persona_add НАЗВАНИЕ | СТИЛЬ — создать персону\n/example_add ID | ВХОДЯЩЕЕ || ОТВЕТ — добавить пример (0 — общая подборка)")
 
 @router.message(Command("accounts"))
 async def accounts(message: Message) -> None:
