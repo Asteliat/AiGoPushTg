@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
-from fastapi import Depends, FastAPI, HTTPException
+import hmac
+from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +21,12 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="AtcivPerson API", version="0.1.0", lifespan=lifespan)
 
+async def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
+    if not settings.api_secret_key:
+        raise HTTPException(status_code=503, detail="API_SECRET_KEY не настроен.")
+    if not x_api_key or not hmac.compare_digest(x_api_key, settings.api_secret_key):
+        raise HTTPException(status_code=401, detail="Требуется корректный X-API-Key.")
+
 class DraftRequest(BaseModel):
     incoming_text: str = Field(min_length=1, max_length=12000)
     persona_id: int | None = None
@@ -30,17 +37,17 @@ class DraftRequest(BaseModel):
 async def health() -> dict[str, str]:
     return {"status": "ok", "service": "atcivperson-api"}
 
-@app.get("/v1/accounts")
+@app.get("/v1/accounts", dependencies=[Depends(require_api_key)])
 async def list_accounts(session: AsyncSession = Depends(get_session)) -> list[dict]:
     rows = (await session.scalars(select(Account).order_by(Account.id))).all()
     return [{"id": r.id, "telegram_user_id": r.telegram_user_id, "username": r.username, "display_name": r.display_name, "enabled": r.enabled} for r in rows]
 
-@app.get("/v1/personas")
+@app.get("/v1/personas", dependencies=[Depends(require_api_key)])
 async def list_personas(session: AsyncSession = Depends(get_session)) -> list[dict]:
     rows = (await session.scalars(select(Persona).order_by(Persona.id))).all()
     return [{"id": r.id, "name": r.name, "description": r.description, "style_instructions": r.style_instructions} for r in rows]
 
-@app.post("/v1/drafts", status_code=201)
+@app.post("/v1/drafts", status_code=201, dependencies=[Depends(require_api_key)])
 async def make_draft(payload: DraftRequest, session: AsyncSession = Depends(get_session)) -> dict:
     try:
         draft = await create_draft(session, incoming_text=payload.incoming_text, persona_id=payload.persona_id, account_id=payload.account_id, chat_label=payload.chat_label)
@@ -50,7 +57,7 @@ async def make_draft(payload: DraftRequest, session: AsyncSession = Depends(get_
         raise HTTPException(status_code=400, detail="Не удалось создать черновик; проверьте входные данные.") from exc
     return {"id": draft.id, "status": draft.status, "proposed_text": draft.proposed_text}
 
-@app.get("/v1/drafts")
+@app.get("/v1/drafts", dependencies=[Depends(require_api_key)])
 async def list_drafts(session: AsyncSession = Depends(get_session)) -> list[dict]:
     rows = (await session.scalars(select(Draft).order_by(Draft.id.desc()).limit(100))).all()
     return [{"id": r.id, "status": r.status, "chat_label": r.chat_label, "incoming_text": r.incoming_text, "proposed_text": r.proposed_text, "created_at": r.created_at.isoformat()} for r in rows]
