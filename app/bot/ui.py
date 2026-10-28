@@ -204,8 +204,8 @@ async def acc_agents(c):
     if not await check_cb(c): return
     aid=int(c.data.split(":")[2])
     async with SessionFactory() as db: agents=list((await db.scalars(select(AIAgent).order_by(AIAgent.id))).all())
-    buttons=[[(f"{'⭐ ' if a.is_default else ''}{a.name} · {'вкл' if a.enabled else 'выкл'}",f"acc:setagent:{aid}:{a.id}")] for a in agents]
-    buttons += [[("Без агента",f"acc:setagent:{aid}:0")],[("⬅️ Назад",f"acc:view:{aid}")]]
+    buttons=[[(f"{'⭐ ' if a.is_default else ''}{a.name} · {'вкл' if a.enabled else 'выкл'}",f"acc:setagent:x:{aid}:{a.id}")] for a in agents]
+    buttons += [[("Без агента",f"acc:setagent:x:{aid}:0")],[("⬅️ Назад",f"acc:view:{aid}")]]
     await edit(c,"Выберите ИИ-агента:",kb(buttons))
 @router.callback_query(F.data.startswith("acc:setagent:"))
 async def acc_set_agent(c):
@@ -221,8 +221,8 @@ async def acc_personas(c):
     if not await check_cb(c): return
     aid=int(c.data.split(":")[2])
     async with SessionFactory() as db: ps=list((await db.scalars(select(Persona).order_by(Persona.id))).all())
-    buttons=[[(p.name,f"acc:setpersona:{aid}:{p.id}")] for p in ps]
-    buttons += [[("Без персоны",f"acc:setpersona:{aid}:0")],[("⬅️ Назад",f"acc:view:{aid}")]]
+    buttons=[[(p.name,f"acc:setpersona:x:{aid}:{p.id}")] for p in ps]
+    buttons += [[("Без персоны",f"acc:setpersona:x:{aid}:0")],[("⬅️ Назад",f"acc:view:{aid}")]]
     await edit(c,"Выберите персону:",kb(buttons))
 @router.callback_query(F.data.startswith("acc:setpersona:"))
 async def acc_set_persona(c):
@@ -548,7 +548,7 @@ async def chat_account(c):
     except Exception as exc: await c.answer(f"Ошибка загрузки: {type(exc).__name__}",show_alert=True); return
     finally: await client.disconnect()
     async with SessionFactory() as db: selected={b.chat_id for b in (await db.scalars(select(ChatBinding).where(ChatBinding.account_id==aid,ChatBinding.enabled.is_(True)))).all()}
-    buttons=[[(f"{'🟢' if cid in selected else '▫️'} {title[:36]}",f"chat:select:{aid}:{cid}")] for cid,title in dialogs[:40]]
+    buttons=[[(f"{'🟢' if cid in selected else '▫️'} {title[:36]}",f"chat:select:x:{aid}:{cid}")] for cid,title in dialogs[:40]]
     buttons += [[("⬅️ К чатам","chat:menu")]]
     await edit(c,f"Выберите существующие чаты аккаунта #{aid}. Показано до 40 из первых 100.",kb(buttons))
 @router.callback_query(F.data.startswith("chat:select:"))
@@ -564,8 +564,11 @@ async def chat_select(c):
     finally: await client.disconnect()
     async with SessionFactory() as db:
         b=await db.scalar(select(ChatBinding).where(ChatBinding.account_id==aid,ChatBinding.chat_id==cid))
-        if b: b.enabled=not b.enabled; b.title=title; on=b.enabled
-        else: db.add(ChatBinding(account_id=aid,chat_id=cid,title=title,enabled=True)); on=True
+        if b:
+            b.enabled = not b.enabled
+            b.title = title
+        else:
+            db.add(ChatBinding(account_id=aid, chat_id=cid, title=title, enabled=True)
         await db.commit()
     await chat_account_refresh(c,aid)
 async def chat_account_refresh(c,aid):
@@ -578,7 +581,9 @@ async def chat_toggle(c):
     async with SessionFactory() as db:
         b=await db.get(ChatBinding,bid)
         if not b: await c.answer("Чат не найден",show_alert=True); return
-        b.enabled=not b.enabled; aid=b.account_id; on=b.enabled; await db.commit()
+        b.enabled = not b.enabled
+        aid = b.account_id
+        await db.commit()
     await chat_account_refresh(c,aid)
 
 # Drafts
