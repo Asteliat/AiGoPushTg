@@ -1,5 +1,6 @@
 """Dynamic account worker with per-account pause and automatic eligible-chat discovery."""
 import asyncio
+import heapq
 import json
 import logging
 import re
@@ -209,28 +210,35 @@ async def main():
             handler = capture_training_message
 
             if not had_buffer:
-                history = []
+                # Keep only the newest global sample while scanning many chats; avoid
+                # retaining sample_limit messages for every dialog in memory.
+                history_heap = []
                 for binding in bindings:
                     try:
                         async for message in client.iter_messages(binding.chat_id, limit=sample_limit):
                             body = (message.message or "").strip()
                             if not body:
                                 continue
-                            history.append({
+                            date = message.date.isoformat() if message.date else ""
+                            timestamp = message.date.timestamp() if message.date else 0.0
+                            item = {
                                 "chat_id": int(binding.chat_id),
                                 "message_id": int(message.id),
-                                "chat": labels.get(binding.chat_id, "выбранный чат"),
+                                "chat": labels.get(binding.chat_id, "чат"),
                                 "text": body[:450],
                                 "outgoing": bool(message.out),
-                                "date": message.date.isoformat() if message.date else "",
-                            })
+                                "date": date,
+                            }
+                            entry = (timestamp, int(binding.chat_id), int(message.id), item)
+                            if len(history_heap) < sample_limit:
+                                heapq.heappush(history_heap, entry)
+                            elif entry[:3] > history_heap[0][:3]:
+                                heapq.heapreplace(history_heap, entry)
                     except Exception:
                         logging.exception("Could not read training history for account %s, chat %s", aid, binding.chat_id)
+                history = [entry[3] for entry in history_heap]
                 history.sort(key=lambda item: item["date"], reverse=True)
-                unique = {}
-                for item in history:
-                    unique[(item["chat_id"], item["message_id"])] = item
-                for item in list(unique.values())[:sample_limit]:
+                for item in history[:sample_limit]:
                     await redis.rpush(key, json.dumps(item, ensure_ascii=False))
                 await redis.ltrim(key, 0, sample_limit - 1)
                 await redis.expire(key, 7 * 24 * 3600)
