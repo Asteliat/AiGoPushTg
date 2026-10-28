@@ -259,9 +259,11 @@ async def qr_login(bot, uid, proxy_config=None, encrypted_proxy=None):
         name=" ".join(x for x in [me.first_name,me.last_name] if x) or str(me.id)
         async with SessionFactory() as db:
             row=await db.scalar(select(Account).where(Account.telegram_user_id==me.id))
-            if row: row.username,row.display_name,row.session_path,row.enabled=me.username,name,str(session_path),True
-            row.proxy_config_encrypted=encrypted_proxy
-            else: db.add(Account(telegram_user_id=me.id,username=me.username,display_name=name,session_path=str(session_path),enabled=True,reply_mode="manual",ai_enabled=False,proxy_config_encrypted=encrypted_proxy))
+            if row:
+                row.username,row.display_name,row.session_path,row.enabled=me.username,name,str(session_path),True
+                row.proxy_config_encrypted=encrypted_proxy
+            else:
+                db.add(Account(telegram_user_id=me.id,username=me.username,display_name=name,session_path=str(session_path),enabled=True,reply_mode="manual",ai_enabled=False,proxy_config_encrypted=encrypted_proxy))
             await db.commit()
         success = True
         try: os.chmod(str(session_path)+".session",0o600)
