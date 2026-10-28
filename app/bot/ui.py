@@ -313,6 +313,8 @@ async def acc_learning_menu(c):
         await c.answer("Аккаунт не найден", show_alert=True); return
     if not account.enabled:
         await c.answer("Сначала включите аккаунт.", show_alert=True); return
+    if account.reply_mode != "manual":
+        await c.answer("Перед обучением переключите режим ответов на «Ручной».", show_alert=True); return
     if not chat_count:
         await c.answer("Сначала выберите хотя бы один чат для этого аккаунта.", show_alert=True); return
     if not ai_on or not enabled_agent:

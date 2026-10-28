@@ -89,6 +89,65 @@ async def main():
                     logging.exception("Could not notify administrator %s",admin_id)
 
 
+
+    async def finalize_learning_buffer(aid: int, key: str, sample_limit: int) -> None:
+        raw_items = await redis.lrange(key, 0, -1)
+        parsed = []
+        for raw in raw_items:
+            try:
+                parsed.append(json.loads(raw))
+            except (TypeError, ValueError):
+                continue
+        unique = {}
+        for item in parsed:
+            unique[(item.get("chat_id"), item.get("message_id"))] = item
+        samples = sorted(unique.values(), key=lambda item: item.get("date", ""))[-sample_limit:]
+        summary_saved = False
+        try:
+            async with SessionFactory() as db:
+                account = await db.get(Account, aid)
+                if not account:
+                    await redis.delete(key)
+                    return
+                if samples:
+                    agent = await db.get(AIAgent, account.ai_agent_id) if account.ai_agent_id else None
+                    if not agent or not agent.enabled or not agent.api_key.strip():
+                        agent = await db.scalar(select(AIAgent).where(
+                            AIAgent.enabled.is_(True), AIAgent.is_default.is_(True)
+                        ).order_by(AIAgent.id))
+                    if not agent:
+                        agent = await db.scalar(select(AIAgent).where(
+                            AIAgent.enabled.is_(True)
+                        ).order_by(AIAgent.id))
+                    if agent and agent.api_key.strip():
+                        account.learning_prompt = await summarize_chat_context(agent=agent, messages=samples)
+                        summary_saved = True
+                account.learning_status = "idle"
+                account.learning_started_at = None
+                account.learning_ends_at = None
+                await db.commit()
+        except Exception:
+            logging.exception("Could not finalize learning buffer for account %s", aid)
+            async with SessionFactory() as db:
+                account = await db.get(Account, aid)
+                if account:
+                    account.learning_status = "idle"
+                    account.learning_started_at = None
+                    account.learning_ends_at = None
+                    await db.commit()
+        finally:
+            await redis.delete(key)
+        if bot:
+            for admin_id in cfg.admin_id_set:
+                try:
+                    await bot.send_message(
+                        admin_id,
+                        f"Обучение аккаунта #{aid} завершено. "
+                        f"{'Краткий контекст сохранён для черновиков.' if summary_saved else 'Сводка не сохранена: нет подходящих сообщений или доступного ИИ-агента.'}",
+                    )
+                except Exception:
+                    logging.exception("Could not notify administrator about learning completion")
+
     async def run_learning(aid: int, client: TelegramClient) -> None:
         handler = None
         key = None
@@ -290,20 +349,24 @@ async def main():
                     expires = account.learning_ends_at
                     if expires and expires.tzinfo is None:
                         expires = expires.replace(tzinfo=timezone.utc)
-                    if account.learning_status == "training" and expires and now >= expires and account.id not in clients:
-                        started = account.learning_started_at
-                        async with SessionFactory() as cleanup_db:
-                            current = await cleanup_db.get(Account, account.id)
-                            if current and current.learning_status == "training":
-                                current.learning_status = "idle"
-                                current.learning_started_at = None
-                                current.learning_ends_at = None
-                                await cleanup_db.commit()
-                        account.learning_status = "idle"
-                        account.learning_started_at = None
-                        account.learning_ends_at = None
-                        if started:
-                            await redis.delete(f"atcivperson:learning:{account.id}:{int(started.timestamp())}")
+                    if account.learning_status in {"training", "stopping"} and account.id not in clients:
+                        should_finalize = account.learning_status == "stopping" or (expires and now >= expires)
+                        if should_finalize:
+                            started = account.learning_started_at
+                            if started:
+                                key = f"atcivperson:learning:{account.id}:{int(started.timestamp())}"
+                                await finalize_learning_buffer(account.id, key, min(1000, max(500, account.learning_limit)))
+                            else:
+                                async with SessionFactory() as cleanup_db:
+                                    current = await cleanup_db.get(Account, account.id)
+                                    if current:
+                                        current.learning_status = "idle"
+                                        current.learning_started_at = None
+                                        current.learning_ends_at = None
+                                        await cleanup_db.commit()
+                            account.learning_status = "idle"
+                            account.learning_started_at = None
+                            account.learning_ends_at = None
                 for aid in list(clients):
                     existing_task=tasks.get(aid)
                     if aid not in active or (existing_task is not None and existing_task.done()):
