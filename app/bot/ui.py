@@ -666,8 +666,10 @@ async def acc_learning_start(c):
         ))).all())
         if not account or not account.enabled:
             await c.answer("Аккаунт не найден или выключен", show_alert=True); return
+        if account.manual_pause:
+            await c.answer("Сначала возобновите работу аккаунта.", show_alert=True); return
         if not chats:
-            await c.answer("Сначала выберите хотя бы один чат", show_alert=True); return
+            await c.answer("Список диалогов ещё не загружен. Откройте «Чаты аккаунта» и повторите попытку.", show_alert=True); return
         if account.learning_status in {"training", "stopping"}:
             await c.answer("Обучение уже запущено", show_alert=True); return
         if account.reply_mode != "manual":
