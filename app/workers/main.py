@@ -292,12 +292,18 @@ async def main():
                         expires = expires.replace(tzinfo=timezone.utc)
                     if account.learning_status == "training" and expires and now >= expires and account.id not in clients:
                         started = account.learning_started_at
+                        async with SessionFactory() as cleanup_db:
+                            current = await cleanup_db.get(Account, account.id)
+                            if current and current.learning_status == "training":
+                                current.learning_status = "idle"
+                                current.learning_started_at = None
+                                current.learning_ends_at = None
+                                await cleanup_db.commit()
                         account.learning_status = "idle"
                         account.learning_started_at = None
                         account.learning_ends_at = None
                         if started:
                             await redis.delete(f"atcivperson:learning:{account.id}:{int(started.timestamp())}")
-                await db.commit()
                 for aid in list(clients):
                     existing_task=tasks.get(aid)
                     if aid not in active or (existing_task is not None and existing_task.done()):
