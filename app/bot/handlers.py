@@ -7,7 +7,7 @@ from app.ai.provider import AIUnavailableError
 from app.services.drafts import create_draft
 from app.settings import get_settings
 from app.storage.db import SessionFactory
-from app.storage.models import Account, Draft, DraftStatus, Example, Persona
+from app.storage.models import Account, ChatBinding, Draft, DraftStatus, Example, Persona
 
 router = Router()
 settings = get_settings()
@@ -22,7 +22,7 @@ async def denied(message: Message) -> None:
 async def start(message: Message) -> None:
     if not allowed(message.from_user.id if message.from_user else None):
         await denied(message); return
-    await message.answer("AtcivPerson — управление своими аккаунтами и ИИ-черновиками.\n\n/accounts — аккаунты\n/personas — персоны\n/persona_add НАЗВАНИЕ | СТИЛЬ — создать персону\n/examples — число примеров\n/example_add ID | ВХОДЯЩЕЕ || ОТВЕТ — добавить пример\n/drafts — ожидающие черновики\n/draft ТЕКСТ — создать черновик\n/help — помощь\n\nАвтоматической отправки сообщений в чаты нет.")
+    await message.answer("AtcivPerson — управление своими аккаунтами и ИИ-черновиками.\n\n/accounts — аккаунты\n/chats — выбранные чаты\n/personas — персоны\n/persona_add НАЗВАНИЕ | СТИЛЬ — создать персону\n/examples — число примеров\n/example_add ID | ВХОДЯЩЕЕ || ОТВЕТ — добавить пример\n/drafts — ожидающие черновики\n/draft ТЕКСТ — создать черновик\n/help — помощь\n\nАвтоматической отправки сообщений в чаты нет.")
 
 @router.message(Command("help"))
 async def help_cmd(message: Message) -> None:
@@ -37,6 +37,20 @@ async def accounts(message: Message) -> None:
     async with SessionFactory() as session:
         rows = (await session.scalars(select(Account).order_by(Account.id))).all()
     await message.answer("\n".join(f"#{r.id} · {r.display_name} · @{r.username or 'нет username'} · {'включён' if r.enabled else 'выключен'}" for r in rows) or "Аккаунтов нет. Подключите аккаунт через CLI.")
+
+
+@router.message(Command("chats"))
+async def chats(message: Message) -> None:
+    if not allowed(message.from_user.id if message.from_user else None):
+        await denied(message); return
+    async with SessionFactory() as session:
+        rows = list((await session.scalars(
+            select(ChatBinding).where(ChatBinding.enabled.is_(True)).order_by(ChatBinding.account_id, ChatBinding.id)
+        )).all())
+    if not rows:
+        await message.answer("Выбранных чатов пока нет. Сначала посмотрите диалоги через CLI, затем выберите нужный чат командой select_chat.py.")
+        return
+    await message.answer("\n".join(f"Аккаунт #{r.account_id} · {r.title} · chat_id={r.chat_id}" for r in rows))
 
 @router.message(Command("personas"))
 async def personas(message: Message) -> None:
