@@ -1,0 +1,71 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: atcivperson
+      POSTGRES_USER: atcivperson
+      POSTGRES_PASSWORD: $POSTGRES_PASSWORD
+    volumes: [postgres_data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U atcivperson -d atcivperson"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [internal]
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: [redis_data:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [internal]
+  bot:
+    build: .
+    restart: unless-stopped
+    command: ["python", "-m", "app.bot.main"]
+    env_file: .env
+    environment:
+      DATABASE_URL: $DATABASE_URL
+      REDIS_URL: $REDIS_URL
+      DATA_DIR: /data
+    volumes: [app_data:/data]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    networks: [internal]
+  api:
+    build: .
+    restart: unless-stopped
+    command: ["uvicorn", "app.api.main:app", "--host", "0.0.0.0", "--port", "8080"]
+    env_file: .env
+    environment:
+      DATABASE_URL: $DATABASE_URL
+      REDIS_URL: $REDIS_URL
+    depends_on:
+      postgres: {condition: service_healthy}
+    ports: ["127.0.0.1:8080:8080"]
+    networks: [internal]
+  worker:
+    build: .
+    restart: unless-stopped
+    command: ["python", "-m", "app.workers.main"]
+    env_file: .env
+    environment:
+      DATABASE_URL: $DATABASE_URL
+      REDIS_URL: $REDIS_URL
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    networks: [internal]
+volumes:
+  postgres_data:
+  redis_data:
+  app_data:
+networks:
+  internal:
+    driver: bridge
