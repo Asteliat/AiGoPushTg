@@ -1,4 +1,4 @@
-"""Watch only operator-selected chats and forward AI drafts to the operator; never send to chats."""
+"""Watch explicitly selected dialogs and forward AI drafts to the operator; never send to chats."""
 import asyncio
 import logging
 import re
@@ -12,50 +12,69 @@ from app.settings import get_settings
 from app.storage.db import SessionFactory, init_db
 from app.storage.models import Account, ChatBinding
 
-async def heartbeat(redis):
+
+async def heartbeat(redis) -> None:
     while True:
         await redis.set("atcivperson:worker:last_seen", "ok", ex=60)
         await asyncio.sleep(20)
 
+
+async def refresh_bindings(watched: dict[int, dict[int, str]]) -> None:
+    """Update selected chat IDs without restarting Telethon clients."""
+    while True:
+        async with SessionFactory() as db:
+            rows = list((await db.scalars(select(ChatBinding).where(ChatBinding.enabled.is_(True)))).all())
+        fresh: dict[int, dict[int, str]] = defaultdict(dict)
+        for row in rows:
+            if row.account_id in watched:
+                fresh[row.account_id][row.chat_id] = row.title
+        for account_id, labels in watched.items():
+            labels.clear()
+            labels.update(fresh.get(account_id, {}))
+        await asyncio.sleep(15)
+
+
 async def main() -> None:
     from redis.asyncio import Redis
+
     cfg = get_settings()
     logging.basicConfig(level=cfg.log_level.upper())
     if not cfg.bot_token:
-        raise RuntimeError("BOT_TOKEN не задан: worker отправляет уведомления только администраторам.")
+        raise RuntimeError("BOT_TOKEN не задан: worker уведомляет администраторов через бота.")
     await init_db()
     redis = Redis.from_url(cfg.redis_url, decode_responses=True)
     bot = Bot(token=cfg.bot_token)
     clients: list[TelegramClient] = []
+    watched: dict[int, dict[int, str]] = {}
     try:
         async with SessionFactory() as db:
             accounts = list((await db.scalars(select(Account).where(Account.enabled.is_(True)))).all())
             bindings = list((await db.scalars(select(ChatBinding).where(ChatBinding.enabled.is_(True)))).all())
-        account_map = {a.id: a for a in accounts}
-        by_account: dict[int, list[ChatBinding]] = defaultdict(list)
+        initial: dict[int, dict[int, str]] = defaultdict(dict)
         for binding in bindings:
-            if binding.account_id in account_map:
-                by_account[binding.account_id].append(binding)
+            initial[binding.account_id][binding.chat_id] = binding.title
 
-        for account_id, chats in by_account.items():
-            account = account_map[account_id]
+        for account in accounts:
             client = TelegramClient(account.session_path, cfg.telegram_api_id, cfg.telegram_api_hash)
             await client.connect()
             if not await client.is_user_authorized():
-                logging.error("Account %s session is unauthorized; skipping", account_id)
+                logging.error("Account %s session is unauthorized; skipping", account.id)
                 await client.disconnect()
                 continue
-            chat_labels = {item.chat_id: item.title for item in chats}
-            chat_ids = list(chat_labels.keys())
+            chat_labels = dict(initial.get(account.id, {}))
+            watched[account.id] = chat_labels
 
-            async def on_message(event, *, account_id=account_id, chat_labels=chat_labels, account=account):
+            async def on_message(event, *, account=account, chat_labels=chat_labels):
+                # Filter before processing content: only explicitly selected dialogs are handled.
+                label = chat_labels.get(event.chat_id)
+                if label is None:
+                    return
                 if not event.message or not event.message.message:
                     return
                 incoming = event.message.message.strip()
                 if not incoming:
                     return
                 # In groups, draft only when the account is explicitly addressed.
-                # Private incoming messages remain eligible for a suggested reply.
                 if event.is_group:
                     username = (account.username or "").strip()
                     mentioned = bool(username and re.search(r"(?<!\w)@" + re.escape(username) + r"\b", incoming, re.IGNORECASE))
@@ -63,20 +82,19 @@ async def main() -> None:
                     replied_to_account = bool(reply_to and reply_to.sender_id == account.telegram_user_id)
                     if not (mentioned or replied_to_account):
                         return
-                label = chat_labels.get(event.chat_id, "Выбранный чат")
                 async with SessionFactory() as db:
                     try:
                         draft = await create_draft(
                             db,
                             incoming_text=incoming,
-                            account_id=account_id,
+                            account_id=account.id,
                             chat_label=f"{account.display_name} · {label}",
                         )
                     except AIUnavailableError:
-                        logging.info("AI disabled; skipped draft for account %s", account_id)
+                        logging.info("AI disabled; skipped draft for account %s", account.id)
                         return
                     except Exception:
-                        logging.exception("Could not create draft for account %s", account_id)
+                        logging.exception("Could not create draft for account %s", account.id)
                         return
                 for admin_id in cfg.admin_id_set:
                     try:
@@ -89,13 +107,16 @@ async def main() -> None:
                     except Exception:
                         logging.exception("Could not notify administrator %s", admin_id)
 
-            client.add_event_handler(on_message, events.NewMessage(incoming=True, chats=chat_ids))
+            client.add_event_handler(on_message, events.NewMessage(incoming=True))
             clients.append(client)
-            logging.info("Watching %d selected chats for account %s", len(chat_ids), account_id)
+            logging.info("Connected account %s; currently watching %d selected chats", account.id, len(chat_labels))
 
         if not clients:
-            logging.warning("No authorized accounts with selected chats. Use dialogs.py and select_chat.py.")
-        tasks = [asyncio.create_task(heartbeat(redis))]
+            logging.warning("No authorized accounts. Connect an account using enroll.py.")
+        tasks = [
+            asyncio.create_task(heartbeat(redis)),
+            asyncio.create_task(refresh_bindings(watched)),
+        ]
         tasks.extend(asyncio.create_task(client.run_until_disconnected()) for client in clients)
         await asyncio.gather(*tasks)
     finally:
@@ -104,6 +125,7 @@ async def main() -> None:
                 await client.disconnect()
         await bot.session.close()
         await redis.aclose()
+
 
 if __name__ == "__main__":
     asyncio.run(main())
