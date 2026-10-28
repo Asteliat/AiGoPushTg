@@ -1,5 +1,5 @@
 from __future__ import annotations
-import asyncio, io, os, secrets
+import asyncio, io, os, re, secrets
 from datetime import datetime, timezone
 from aiogram import F, Router
 from aiogram.filters import CommandStart
@@ -19,6 +19,7 @@ from app.telegram_gateway.proxy import ProxyConfigurationError, encrypt_proxy, t
 router = Router()
 cfg = get_settings()
 LOGIN_TASKS: dict[int, asyncio.Task] = {}
+PHONE_LOGIN_DATA: dict[int, dict] = {}
 
 # All navigation uses inline keyboards.
 
@@ -28,6 +29,7 @@ class Flow(StatesGroup):
     example_incoming=State(); example_reply=State(); draft_text=State()
     proxy_host=State(); proxy_port=State(); proxy_username=State(); proxy_password=State()
     learning_prompt_edit=State(); persona_override=State()
+    phone_number=State(); phone_code=State(); phone_password=State()
 
 def admin(uid): return uid is not None and uid in cfg.admin_id_set
 def kb(rows):
@@ -38,7 +40,6 @@ MAIN = kb([
     [("🎭 Персоны", "persona:menu"), ("💡 Примеры", "example:menu")],
     [("💬 Чаты", "chat:menu"), ("📝 Черновики", "drafts:menu")],
     [("✨ Создать черновик", "draft:new"), ("⚙️ Настройки", "nav:settings")],
-    [("ℹ️ Помощь", "nav:help")],
 ])
 CANCEL = kb([[("❌ Отмена", "nav:cancel")]])
 
@@ -126,12 +127,9 @@ async def cancel(m: Message, state: FSMContext):
     if await check_msg(m):
         await state.clear()
         task=LOGIN_TASKS.pop(m.from_user.id, None)
-        if task: task.cancel()
+        if task and not task.done(): task.cancel()
+        await cleanup_phone_login(m.from_user.id)
         await m.answer("Действие отменено.", reply_markup=MAIN)
-@router.message(F.text == "ℹ️ Помощь")
-async def help_menu(m: Message):
-    if await check_msg(m):
-        await m.answer("Управление аккаунтами, чатами, персонами, примерами и ИИ-агентами доступно кнопками. Подключение аккаунта использует QR-вход Telegram. Если Telegram требует пароль 2FA, бот не принимает его и предлагает подключить аккаунт через доверенный терминал. Используйте только собственные аккаунты.", reply_markup=MAIN)
 
 @router.callback_query(F.data=="nav:home")
 async def home_cb(c: CallbackQuery, state: FSMContext):
@@ -145,17 +143,25 @@ async def cancel_cb(c: CallbackQuery, state: FSMContext):
     await state.clear()
     task = LOGIN_TASKS.pop(c.from_user.id, None)
     if task and not task.done(): task.cancel()
+    await cleanup_phone_login(c.from_user.id)
     await edit(c, "Действие отменено.\n\n" + await home_text(), MAIN)
-
-@router.callback_query(F.data=="nav:help")
-async def help_cb(c: CallbackQuery):
-    if not await check_cb(c): return
-    await edit(c, "ℹ️ Помощь\n\nУправляйте аккаунтами, чатами, персонами, примерами и ИИ-агентами через inline-кнопки. Подключение выполняется через QR. Если Telegram запросит пароль 2FA, бот не принимает его — используйте доверенный терминал. Используйте только собственные аккаунты или аккаунты с разрешением владельца.", back_home())
 
 @router.callback_query(F.data=="nav:settings")
 async def settings_cb(c: CallbackQuery):
     if not await check_cb(c): return
-    await edit(c, "⚙️ Настройки\n\nГлобальные настройки ИИ находятся в разделе «ИИ-агенты». Секреты задаются в .env на сервере и не отображаются в интерфейсе.", back_home())
+    text = (
+        "⚙️ Настройки и справочник\n\n"
+        "👤 Аккаунты — подключение по QR или номеру, статус, пауза, прокси, чаты и обучение.\n"
+        "🤖 ИИ-агенты — провайдеры, API-ключи, модели, глобальный ИИ и назначение агента аккаунтам.\n"
+        "🎭 Персоны — общие стили ответов; изменения применяются ко всем назначенным аккаунтам.\n"
+        "💡 Примеры — образцы входящих сообщений и желаемых ответов для стиля.\n"
+        "💬 Чаты — выбрать, какие существующие диалоги аккаунтов доступны для обработки.\n"
+        "📝 Черновики — просмотреть подготовленные ответы, отметить рассмотренными или отклонить.\n"
+        "✨ Создать черновик — вручную передать текст ИИ и получить вариант ответа.\n\n"
+        "В карточке аккаунта: «Пауза» временно останавливает работу; «ИИ» включает генерацию; «Режим» выбирает ручную или автоматическую отправку; «Агент» и «Персона» задают модель и стиль; «Прокси» меняет сетевое подключение; «Автообучение» обновляет контекст.\n\n"
+        "API ID/hash, токен бота и ключ шифрования задаются в .env на сервере. Сообщения с кодом и паролем входа удаляются ботом по возможности; не используйте бота, которому не доверяете."
+    )
+    await edit(c, text, back_home())
 
 # Account menu and QR login
 @router.message(F.text=="👤 Аккаунты")
@@ -212,9 +218,19 @@ async def acc_add(c, state: FSMContext):
     if not cfg.telegram_api_id or not cfg.telegram_api_hash:
         await c.answer("Заполните TELEGRAM_API_ID и TELEGRAM_API_HASH в .env.",show_alert=True); return
     await state.clear()
-    await edit(c, "Как подключить Telegram-аккаунт?", kb([[("🌐 Подключить через прокси", "acc:add:proxy")], [("➡️ Без прокси", "acc:add:direct")], [("⬅️ Назад", "acc:list")]]))
+    await edit(c, "Выберите способ подключения:", kb([
+        [("📷 QR · без прокси", "acc:add:direct")],
+        [("🌐 QR · через прокси", "acc:add:proxy")],
+        [("📱 Номер телефона · без прокси", "acc:add:phone:direct")],
+        [("📱 Номер телефона · через прокси", "acc:add:phone:proxy")],
+        [("⬅️ Назад", "acc:list")],
+    ]))
 
 async def start_qr_login(bot, uid, state: FSMContext, proxy_config=None):
+    ui_data = await state.get_data()
+    if ui_data.get("login_method") == "phone":
+        await start_phone_login_prompt(bot, uid, state, proxy_config)
+        return
     if uid in LOGIN_TASKS and not LOGIN_TASKS[uid].done():
         await bot.send_message(uid, "Вход уже запущен. Отмените текущий процесс перед новым.")
         return
@@ -253,7 +269,32 @@ async def acc_add_proxy(c, state: FSMContext):
     if not cfg.proxy_encryption_key.strip():
         await c.answer("Сначала задайте PROXY_ENCRYPTION_KEY в .env и перезапустите приложение.", show_alert=True); return
     await state.clear()
-    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
+    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, login_method="qr")
+    await edit(c, "Выберите тип прокси:", kb([[("SOCKS5", "proxy:type:socks5"), ("HTTP", "proxy:type:http")], [("⬅️ Назад", "acc:add")]]))
+
+@router.callback_query(F.data=="acc:add:phone:direct")
+async def acc_add_phone_direct(c: CallbackQuery, state: FSMContext):
+    if not await check_cb(c): return
+    if not c.message or c.message.chat.type != "private":
+        await c.answer("Откройте личный чат с ботом.", show_alert=True); return
+    if not cfg.telegram_api_id or not cfg.telegram_api_hash:
+        await c.answer("Заполните TELEGRAM_API_ID и TELEGRAM_API_HASH в .env.", show_alert=True); return
+    await state.clear()
+    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, login_method="phone")
+    await c.answer()
+    await start_phone_login_prompt(c.message.bot, c.from_user.id, state)
+
+@router.callback_query(F.data=="acc:add:phone:proxy")
+async def acc_add_phone_proxy(c: CallbackQuery, state: FSMContext):
+    if not await check_cb(c): return
+    if not c.message or c.message.chat.type != "private":
+        await c.answer("Откройте личный чат с ботом.", show_alert=True); return
+    if not cfg.telegram_api_id or not cfg.telegram_api_hash:
+        await c.answer("Заполните TELEGRAM_API_ID и TELEGRAM_API_HASH в .env.", show_alert=True); return
+    if not cfg.proxy_encryption_key.strip():
+        await c.answer("Сначала задайте PROXY_ENCRYPTION_KEY в .env и перезапустите приложение.", show_alert=True); return
+    await state.clear()
+    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, login_method="phone")
     await edit(c, "Выберите тип прокси:", kb([[("SOCKS5", "proxy:type:socks5"), ("HTTP", "proxy:type:http")], [("⬅️ Назад", "acc:add")]]))
 
 @router.callback_query(F.data.startswith("proxy:type:"))
@@ -262,7 +303,8 @@ async def proxy_type(c, state: FSMContext):
     kind = c.data.rsplit(":", 1)[-1]
     if kind not in {"socks5", "http"}:
         await c.answer("Неизвестный тип прокси.", show_alert=True); return
-    await state.update_data(proxy_type=kind, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
+    existing = await state.get_data()
+    await state.update_data(proxy_type=kind, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, login_method=existing.get("login_method", "qr"))
     await state.set_state(Flow.proxy_host)
     await edit(c, "Введите IP-адрес или домен прокси:", CANCEL)
 
@@ -341,6 +383,163 @@ async def save_account_proxy(m: Message, state: FSMContext, config: dict):
         [("🌐 Настройки прокси", f"acc:proxysettings:{aid}")],
         [("👤 К аккаунту", f"acc:view:{aid}"), ("🏠 Главное меню", "nav:home")],
     ]))
+
+async def cleanup_phone_login(uid: int) -> None:
+    data = PHONE_LOGIN_DATA.pop(uid, None)
+    if not data:
+        return
+    client = data.get("client")
+    if client:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+    if not data.get("success"):
+        path = data.get("session_path")
+        if path:
+            for suffix in (".session", ".session-journal", ".session-wal", ".session-shm"):
+                try:
+                    os.unlink(str(path) + suffix)
+                except FileNotFoundError:
+                    pass
+
+async def start_phone_login_prompt(bot, uid: int, state: FSMContext, proxy_config=None):
+    if uid in LOGIN_TASKS and not LOGIN_TASKS[uid].done():
+        await bot.send_message(uid, "Вход уже запущен. Отмените текущий процесс перед новым.")
+        return
+    if uid in PHONE_LOGIN_DATA:
+        await bot.send_message(uid, "Вход уже запущен. Нажмите «Отмена», прежде чем начинать заново.")
+        return
+    ui_data = await state.get_data()
+    try:
+        encrypted = encrypt_proxy(proxy_config) if proxy_config else None
+    except ProxyConfigurationError as exc:
+        if not await edit_anchor(bot, ui_data, str(exc), MAIN):
+            await bot.send_message(uid, str(exc), reply_markup=MAIN)
+        return
+    PHONE_LOGIN_DATA[uid] = {
+        "proxy_config": proxy_config, "encrypted_proxy": encrypted, "client": None,
+        "session_path": None, "ui_data": ui_data, "success": False,
+    }
+    await state.clear()
+    await state.update_data(ui_chat_id=ui_data.get("ui_chat_id"), ui_message_id=ui_data.get("ui_message_id"))
+    await state.set_state(Flow.phone_number)
+    text = "📱 Вход по номеру телефона\n\nВведите номер в международном формате, например +79991234567. Сообщение будет удалено по возможности."
+    if not await edit_anchor(bot, ui_data, text, CANCEL):
+        await bot.send_message(uid, text, reply_markup=CANCEL)
+
+@router.message(Flow.phone_number)
+async def phone_number_received(m: Message, state: FSMContext):
+    if not await check_msg(m) or not await private(m): return
+    uid = m.from_user.id
+    phone = (m.text or "").strip()
+    await delete_msg(m)
+    if not re.fullmatch(r"\+?[0-9]{7,16}", phone):
+        await prompt_message(m, state, "Введите номер в международном формате, например +79991234567.")
+        return
+    data = PHONE_LOGIN_DATA.get(uid)
+    if not data:
+        await finish_prompt(m, state, "Сеанс входа истёк. Начните подключение заново.", MAIN)
+        return
+    folder = cfg.data_dir / "sessions"
+    folder.mkdir(parents=True, exist_ok=True)
+    os.chmod(folder, 0o700)
+    session_path = folder / ("account_" + secrets.token_hex(8))
+    client = TelegramClient(str(session_path), cfg.telegram_api_id, cfg.telegram_api_hash, proxy=telethon_proxy(config=data["proxy_config"]))
+    data["client"], data["session_path"], data["phone"] = client, session_path, phone
+    try:
+        await client.connect()
+        sent = await client.send_code_request(phone)
+        data["phone_code_hash"] = sent.phone_code_hash
+        await state.set_state(Flow.phone_code)
+        await prompt_message(m, state, "Код отправлен Telegram. Проверьте сообщения от Telegram или SMS и введите код. Сообщение удаляется по возможности.")
+    except Exception as exc:
+        await cleanup_phone_login(uid)
+        await finish_prompt(m, state, f"Не удалось запросить код: {type(exc).__name__}. Проверьте номер и попробуйте снова.", MAIN)
+
+async def save_phone_account(uid: int, state: FSMContext, bot):
+    data = PHONE_LOGIN_DATA.get(uid)
+    if not data or not data.get("client"):
+        await state.clear()
+        await bot.send_message(uid, "Сеанс входа истёк. Начните подключение заново.", reply_markup=MAIN)
+        return
+    client = data["client"]
+    me = await client.get_me()
+    if not me:
+        raise RuntimeError("Telegram не вернул профиль.")
+    name = " ".join(x for x in [me.first_name, me.last_name] if x) or str(me.id)
+    async with SessionFactory() as db:
+        row = await db.scalar(select(Account).where(Account.telegram_user_id == me.id))
+        if row:
+            row.username, row.display_name, row.session_path, row.enabled = me.username, name, str(data["session_path"]), True
+            row.manual_pause = False
+            row.connection_status = "connecting"
+            row.proxy_config_encrypted = data["encrypted_proxy"]
+        else:
+            db.add(Account(
+                telegram_user_id=me.id, username=me.username, display_name=name,
+                session_path=str(data["session_path"]), enabled=True, connection_status="connecting",
+                reply_mode="manual", ai_enabled=False, proxy_config_encrypted=data["encrypted_proxy"],
+            ))
+        await db.commit()
+    try:
+        os.chmod(str(data["session_path"]) + ".session", 0o600)
+    except OSError:
+        pass
+    data["success"] = True
+    ui_data = data.get("ui_data") or await state.get_data()
+    await state.clear()
+    await cleanup_phone_login(uid)
+    text = f"Аккаунт «{name}» подключён по номеру телефона. ИИ выключен до отдельного включения в настройках."
+    if not await edit_anchor(bot, ui_data, text, kb([[("👤 Открыть аккаунты", "acc:list")], [("🏠 Главное меню", "nav:home")]])):
+        await bot.send_message(uid, text, reply_markup=MAIN)
+
+@router.message(Flow.phone_code)
+async def phone_code_received(m: Message, state: FSMContext):
+    if not await check_msg(m) or not await private(m): return
+    uid = m.from_user.id
+    code = (m.text or "").strip().replace(" ", "")
+    await delete_msg(m)
+    data = PHONE_LOGIN_DATA.get(uid)
+    if not data or not data.get("client"):
+        await finish_prompt(m, state, "Сеанс входа истёк. Начните подключение заново.", MAIN)
+        return
+    if not re.fullmatch(r"[0-9]{3,10}", code):
+        await prompt_message(m, state, "Введите код Telegram цифрами.")
+        return
+    try:
+        await data["client"].sign_in(phone=data["phone"], code=code, phone_code_hash=data["phone_code_hash"])
+        await save_phone_account(uid, state, m.bot)
+    except SessionPasswordNeededError:
+        await state.set_state(Flow.phone_password)
+        await prompt_message(
+            m, state,
+            "🔐 Telegram запросил пароль двухэтапной аутентификации (2FA).\n\n"
+            "Важно: пароль будет доступен владельцу этого бота и сервера. Бот не записывает его в БД "
+            "и удаляет сообщение по возможности, но удаление не гарантируется. Продолжайте только "
+            "если доверяете этому серверу. Отправьте пароль или нажмите «Отмена»."
+        )
+    except Exception as exc:
+        await prompt_message(m, state, f"Код не принят ({type(exc).__name__}). Проверьте код и попробуйте ещё раз.")
+
+@router.message(Flow.phone_password)
+async def phone_password_received(m: Message, state: FSMContext):
+    if not await check_msg(m) or not await private(m): return
+    uid = m.from_user.id
+    password = m.text or ""
+    await delete_msg(m)
+    data = PHONE_LOGIN_DATA.get(uid)
+    if not data or not data.get("client"):
+        await finish_prompt(m, state, "Сеанс входа истёк. Начните подключение заново.", MAIN)
+        return
+    try:
+        # Keep the 2FA password only in this stack frame; never log or persist it.
+        await data["client"].sign_in(password=password)
+        password = ""
+        await save_phone_account(uid, state, m.bot)
+    except Exception as exc:
+        password = ""
+        await prompt_message(m, state, f"Пароль 2FA не принят ({type(exc).__name__}). Попробуйте ещё раз или отмените вход.")
 
 async def qr_login(bot, uid, proxy_config=None, encrypted_proxy=None, ui_data=None):
     folder=cfg.data_dir/"sessions"; folder.mkdir(parents=True,exist_ok=True); os.chmod(folder,0o700)
