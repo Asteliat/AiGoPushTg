@@ -209,15 +209,18 @@ async def start_qr_login(bot, uid, state: FSMContext, proxy_config=None):
     if uid in LOGIN_TASKS and not LOGIN_TASKS[uid].done():
         await bot.send_message(uid, "Вход уже запущен. Отмените текущий процесс перед новым.")
         return
+    ui_data = await state.get_data()
     try:
         encrypted = encrypt_proxy(proxy_config) if proxy_config else None
     except ProxyConfigurationError as exc:
-        await bot.send_message(uid, str(exc), reply_markup=MAIN)
+        if not await edit_anchor(bot, ui_data, str(exc), MAIN):
+            await bot.send_message(uid, str(exc), reply_markup=MAIN)
         return
     await state.clear()
-    task = asyncio.create_task(qr_login(bot, uid, proxy_config, encrypted))
+    if not await edit_anchor(bot, ui_data, "Готовлю QR-вход…", kb([[("❌ Отменить подключение", "nav:cancel")]])):
+        await bot.send_message(uid, "Готовлю QR-вход…", reply_markup=kb([[("❌ Отменить подключение", "nav:cancel")]]))
+    task = asyncio.create_task(qr_login(bot, uid, proxy_config, encrypted, ui_data))
     LOGIN_TASKS[uid] = task
-    await bot.send_message(uid, "Готовлю QR-вход…")
 
 @router.callback_query(F.data=="acc:add:direct")
 async def acc_add_direct(c, state: FSMContext):
@@ -226,6 +229,8 @@ async def acc_add_direct(c, state: FSMContext):
         await c.answer("Откройте личный чат с ботом.", show_alert=True); return
     if not cfg.telegram_api_id or not cfg.telegram_api_hash:
         await c.answer("Заполните TELEGRAM_API_ID и TELEGRAM_API_HASH в .env.", show_alert=True); return
+    await state.clear()
+    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
     await c.answer()
     await start_qr_login(c.message.bot, c.from_user.id, state)
 
@@ -239,6 +244,7 @@ async def acc_add_proxy(c, state: FSMContext):
     if not cfg.proxy_encryption_key.strip():
         await c.answer("Сначала задайте PROXY_ENCRYPTION_KEY в .env и перезапустите приложение.", show_alert=True); return
     await state.clear()
+    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
     await edit(c, "Выберите тип прокси:", kb([[("SOCKS5", "proxy:type:socks5"), ("HTTP", "proxy:type:http")], [("⬅️ Назад", "acc:add")]]))
 
 @router.callback_query(F.data.startswith("proxy:type:"))
@@ -247,30 +253,31 @@ async def proxy_type(c, state: FSMContext):
     kind = c.data.rsplit(":", 1)[-1]
     if kind not in {"socks5", "http"}:
         await c.answer("Неизвестный тип прокси.", show_alert=True); return
-    await state.update_data(proxy_type=kind)
+    await state.update_data(proxy_type=kind, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
     await state.set_state(Flow.proxy_host)
-    await c.answer()
-    if c.message: await c.message.answer("Введите IP-адрес или домен прокси:", reply_markup=CANCEL)
+    await edit(c, "Введите IP-адрес или домен прокси:", CANCEL)
 
 @router.message(Flow.proxy_host)
 async def proxy_host(m: Message, state: FSMContext):
     if not await check_msg(m) or not await private(m): return
     host = (m.text or "").strip()
     if not host or len(host) > 253 or any(ch.isspace() for ch in host) or "://" in host or "/" in host:
-        await m.answer("Введите только IP или домен, без протокола и пути.", reply_markup=CANCEL); return
+        await prompt_message(m, state, "Введите только IP или домен, без протокола и пути."); return
+    await delete_msg(m)
     await state.update_data(proxy_host=host)
     await state.set_state(Flow.proxy_port)
-    await m.answer("Введите порт прокси (1–65535):", reply_markup=CANCEL)
+    await prompt_message(m, state, "Введите порт прокси (1–65535):")
 
 @router.message(Flow.proxy_port)
 async def proxy_port(m: Message, state: FSMContext):
     if not await check_msg(m) or not await private(m): return
     value = (m.text or "").strip()
     if not value.isdigit() or not 1 <= int(value) <= 65535:
-        await m.answer("Порт должен быть числом от 1 до 65535.", reply_markup=CANCEL); return
+        await prompt_message(m, state, "Порт должен быть числом от 1 до 65535."); return
+    await delete_msg(m)
     await state.update_data(proxy_port=int(value))
     await state.set_state(Flow.proxy_username)
-    await m.answer("Логин прокси или «-», если авторизация не нужна:", reply_markup=CANCEL)
+    await prompt_message(m, state, "Логин прокси или «-», если авторизация не нужна:")
 
 @router.message(Flow.proxy_username)
 async def proxy_username(m: Message, state: FSMContext):
@@ -283,10 +290,10 @@ async def proxy_username(m: Message, state: FSMContext):
         await start_qr_login(m.bot, m.from_user.id, state, config)
         return
     if not value or len(value) > 255:
-        await m.answer("Логин должен быть от 1 до 255 символов или «-».", reply_markup=CANCEL); return
+        await prompt_message(m, state, "Логин должен быть от 1 до 255 символов или «-»."); return
     await state.update_data(proxy_username=value)
     await state.set_state(Flow.proxy_password)
-    await m.answer("Введите пароль прокси. Сообщение будет удалено по возможности:", reply_markup=CANCEL)
+    await prompt_message(m, state, "Введите пароль прокси. Сообщение будет удалено по возможности:")
 
 @router.message(Flow.proxy_password)
 async def proxy_password(m: Message, state: FSMContext):
@@ -294,12 +301,12 @@ async def proxy_password(m: Message, state: FSMContext):
     password = (m.text or "").strip()
     await delete_msg(m)
     if not password or len(password) > 255:
-        await m.answer("Пароль должен быть от 1 до 255 символов.", reply_markup=CANCEL); return
+        await prompt_message(m, state, "Пароль должен быть от 1 до 255 символов."); return
     data = await state.get_data()
     config = {"type": data["proxy_type"], "host": data["proxy_host"], "port": data["proxy_port"], "username": data["proxy_username"], "password": password}
     await start_qr_login(m.bot, m.from_user.id, state, config)
 
-async def qr_login(bot, uid, proxy_config=None, encrypted_proxy=None):
+async def qr_login(bot, uid, proxy_config=None, encrypted_proxy=None, ui_data=None):
     folder=cfg.data_dir/"sessions"; folder.mkdir(parents=True,exist_ok=True); os.chmod(folder,0o700)
     session_path=folder/("account_"+secrets.token_hex(8))
     client=TelegramClient(str(session_path),cfg.telegram_api_id,cfg.telegram_api_hash, proxy=telethon_proxy(config=proxy_config))
@@ -330,12 +337,15 @@ async def qr_login(bot, uid, proxy_config=None, encrypted_proxy=None):
         success = True
         try: os.chmod(str(session_path)+".session",0o600)
         except OSError: pass
-        await bot.send_message(uid,f"Аккаунт «{name}» подключён. ИИ выключен до отдельного включения в настройках.",reply_markup=MAIN)
+        result_text = f"Аккаунт «{name}» подключён. ИИ выключен до отдельного включения в настройках."
+        if not await edit_anchor(bot, ui_data or {}, result_text, kb([[("👤 Открыть аккаунты", "acc:list")], [("🏠 Главное меню", "nav:home")]])):
+            await bot.send_message(uid, result_text, reply_markup=MAIN)
     except asyncio.CancelledError:
-        await bot.send_message(uid,"Подключение аккаунта отменено.",reply_markup=MAIN)
         raise
     except Exception as exc:
-        await bot.send_message(uid,f"Не удалось подключить аккаунт: {type(exc).__name__}: {str(exc)[:220]}",reply_markup=MAIN)
+        error_text = f"Не удалось подключить аккаунт: {type(exc).__name__}: {str(exc)[:220]}"
+        if not await edit_anchor(bot, ui_data or {}, error_text, MAIN):
+            await bot.send_message(uid, error_text, reply_markup=MAIN)
     finally:
         LOGIN_TASKS.pop(uid,None)
         try:
