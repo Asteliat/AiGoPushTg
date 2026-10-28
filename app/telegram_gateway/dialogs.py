@@ -2,7 +2,6 @@
 import asyncio
 import sys
 from telethon import TelegramClient
-from sqlalchemy import select
 from app.settings import get_settings
 from app.storage.db import SessionFactory
 from app.storage.models import Account
