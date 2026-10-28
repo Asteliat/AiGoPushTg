@@ -30,6 +30,11 @@ class Account(Base):
     ai_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
     ai_agent_id: Mapped[int | None] = mapped_column(ForeignKey("ai_agents.id", ondelete="SET NULL"), nullable=True, index=True)
     persona_id: Mapped[int | None] = mapped_column(ForeignKey("personas.id", ondelete="SET NULL"), nullable=True)
+    learning_status: Mapped[str] = mapped_column(String(20), default="idle", server_default="idle", nullable=False)
+    learning_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    learning_ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    learning_limit: Mapped[int] = mapped_column(Integer, default=500, server_default="500", nullable=False)
+    learning_prompt: Mapped[str] = mapped_column(Text, default="", server_default="", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

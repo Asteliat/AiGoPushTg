@@ -94,6 +94,7 @@ async def accounts(m: Message):
 async def accounts_screen(m):
     async with SessionFactory() as db: rows=list((await db.scalars(select(Account).order_by(Account.id))).all())
     buttons=[[(f"{'🟢' if a.enabled else '⚪'} #{a.id} · {a.display_name[:28]}",f"acc:view:{a.id}")] for a in rows]
+    buttons += [[("🟢 В работе","acc:status:work"),("🧠 На обучении","acc:status:training")], [("💤 В простое","acc:status:idle")]]
     buttons += [[("➕ Добавить аккаунт через QR","acc:add")],[("⬅️ Главное меню","nav:home")]]
     await m.answer("👤 Аккаунты\nВыберите аккаунт или подключите новый." if rows else "Аккаунтов пока нет. Подключите первый аккаунт кнопкой ниже.",reply_markup=kb(buttons))
 @router.callback_query(F.data=="acc:list")
@@ -103,6 +104,32 @@ async def acc_list(c):
     buttons=[[(f"{'🟢' if a.enabled else '⚪'} #{a.id} · {a.display_name[:28]}",f"acc:view:{a.id}")] for a in rows]
     buttons += [[("➕ Добавить аккаунт через QR","acc:add")],[("⬅️ Главное меню","nav:home")]]
     await edit(c,"👤 Аккаунты",kb(buttons))
+
+@router.callback_query(F.data.startswith("acc:status:"))
+async def acc_status(c):
+    if not await check_cb(c): return
+    status = c.data.split(":")[2]
+    if status not in {"work", "training", "idle"}:
+        await c.answer("Неизвестный статус", show_alert=True); return
+    async with SessionFactory() as db:
+        rows = list((await db.scalars(select(Account).order_by(Account.id))).all())
+        bindings = list((await db.scalars(select(ChatBinding).where(ChatBinding.enabled.is_(True)))).all())
+    active_chat_accounts = {b.account_id for b in bindings}
+    selected = []
+    for account in rows:
+        if account.learning_status in {"training", "stopping"}:
+            current = "training"
+        elif account.enabled and account.id in active_chat_accounts:
+            current = "work"
+        else:
+            current = "idle"
+        if current == status:
+            selected.append(account)
+    labels = {"work": "🟢 В работе", "training": "🧠 На обучении", "idle": "💤 В простое"}
+    buttons = [[(f"#{a.id} · {a.display_name[:32]}", f"acc:view:{a.id}")] for a in selected]
+    buttons += [[("⬅️ Все аккаунты", "acc:list")]]
+    await edit(c, f"{labels[status]} · {len(selected)}", kb(buttons))
+
 @router.callback_query(F.data=="acc:add")
 async def acc_add(c, state: FSMContext):
     if not await check_cb(c): return
@@ -172,7 +199,13 @@ async def acc_view(c):
         agent=await db.get(AIAgent,a.ai_agent_id) if a.ai_agent_id else None
         persona=await db.get(Persona,a.persona_id) if a.persona_id else None
         chats=len((await db.scalars(select(ChatBinding).where(ChatBinding.account_id==aid,ChatBinding.enabled.is_(True)))).all())
-    txt=f"👤 {a.display_name} (@{a.username or 'нет username'})\nID: #{aid}\nАккаунт: {'включён' if a.enabled else 'выключен'}\nИИ для аккаунта: {'включён' if a.ai_enabled else 'выключен'}\nГлобальный ИИ должен быть включён.\nРежим: {'автоматический' if a.reply_mode=='automatic' else 'ручной'}\nАгент: {agent.name if agent else 'не назначен'}\nПерсона: {persona.name if persona else 'не назначена'}\nАктивных чатов: {chats}"
+    learning = a.learning_status in {"training", "stopping"}
+    if learning and a.learning_ends_at:
+        deadline = a.learning_ends_at.strftime("%d.%m.%Y %H:%M UTC")
+        learning_text = f"обучение · до {deadline}" if a.learning_status == "training" else "завершается"
+    else:
+        learning_text = "контекст сохранён" if a.learning_prompt.strip() else "не запускалось"
+    txt=f"👤 {a.display_name} (@{a.username or 'нет username'})\nID: #{aid}\nАккаунт: {'включён' if a.enabled else 'выключен'}\nИИ для аккаунта: {'включён' if a.ai_enabled else 'выключен'}\nГлобальный ИИ должен быть включён.\nРежим: {'автоматический' if a.reply_mode=='automatic' else 'ручной'}\nАгент: {agent.name if agent else 'не назначен'}\nПерсона: {persona.name if persona else 'не назначена'}\nАктивных чатов: {chats}\nАвтообучение: {learning_text}"
     buttons=[
         [(("⏸ Выключить" if a.enabled else "▶️ Включить"),f"acc:toggle:{aid}")],
         [(("🤖 Выключить ИИ" if a.ai_enabled else "🤖 Включить ИИ"),f"acc:ai:{aid}")],
@@ -180,6 +213,8 @@ async def acc_view(c):
         [("🧠 Назначить ИИ-агента",f"acc:agents:{aid}")],
         [("🎭 Назначить персону",f"acc:personas:{aid}")],
         [("💬 Выбрать чаты",f"chat:account:{aid}")],
+        [((("⏳ Завершается обучение" if a.learning_status == "stopping" else "⏹ Закончить обучение") if learning else "🧠 Автообучение"), (f"learn:stop:{aid}" if learning else f"acc:learn:{aid}"))],
+        [("📋 Контекст обучения",f"acc:learnprompt:{aid}")],
         [("⬅️ К аккаунтам","acc:list")]]
     await edit(c,txt,kb(buttons))
 @router.callback_query(F.data.startswith("acc:toggle:"))
@@ -243,6 +278,105 @@ async def acc_set_persona(c):
         if not a: await c.answer("Аккаунт не найден",show_alert=True); return
         a.persona_id=int(pid) or None; await db.commit()
     await acc_view(c)
+
+
+@router.callback_query(F.data.startswith("acc:learnprompt:"))
+async def acc_learning_prompt(c):
+    if not await check_cb(c): return
+    aid = int(c.data.split(":")[2])
+    async with SessionFactory() as db:
+        account = await db.get(Account, aid)
+        prompt = account.learning_prompt if account else ""
+    if not account:
+        await c.answer("Аккаунт не найден", show_alert=True); return
+    if not prompt.strip():
+        await c.answer("Контекст ещё не сохранён", show_alert=True); return
+    await edit(c, f"📋 Контекст обучения · аккаунт #{aid}\n\n{prompt[:3500]}", kb([[("⬅️ К аккаунту", f"acc:view:{aid}")]]))
+
+@router.callback_query(F.data.startswith("acc:learn:"))
+async def acc_learning_menu(c):
+    if not await check_cb(c): return
+    aid = int(c.data.split(":")[2])
+    async with SessionFactory() as db:
+        account = await db.get(Account, aid)
+        chat_count = len((await db.scalars(select(ChatBinding).where(
+            ChatBinding.account_id == aid, ChatBinding.enabled.is_(True)
+        ))).all())
+        enabled_agent = await db.scalar(select(AIAgent.id).where(AIAgent.enabled.is_(True)))
+        ai_on = await global_ai_enabled(db)
+    if not account:
+        await c.answer("Аккаунт не найден", show_alert=True); return
+    if not account.enabled:
+        await c.answer("Сначала включите аккаунт.", show_alert=True); return
+    if not chat_count:
+        await c.answer("Сначала выберите хотя бы один чат для этого аккаунта.", show_alert=True); return
+    if not ai_on or not enabled_agent:
+        await c.answer("Включите глобальный ИИ и настройте хотя бы одного ИИ-агента.", show_alert=True); return
+    buttons = [
+        [("Изучить последние 500 сообщений", f"learn:start:{aid}:500")],
+        [("Изучить последние 1000 сообщений", f"learn:start:{aid}:1000")],
+        [("⬅️ Назад", f"acc:view:{aid}")],
+    ]
+    await edit(c, f"🧠 Автообучение · аккаунт #{aid}\n\nБудут обработаны только выбранные чаты. Система сохранит краткую сводку тем и общего тона, а временные тексты удалит после завершения. Новые сообщения в выбранных чатах будут учитываться до остановки или максимум 3 дня. В процессе не отправляются сообщения в исходные чаты.", kb(buttons))
+
+@router.callback_query(F.data.startswith("learn:start:"))
+async def acc_learning_start(c):
+    if not await check_cb(c): return
+    _, _, aid_s, limit_s = c.data.split(":")
+    aid, limit = int(aid_s), int(limit_s)
+    if limit not in {500, 1000}:
+        await c.answer("Недопустимый лимит", show_alert=True); return
+    now = datetime.now(timezone.utc)
+    async with SessionFactory() as db:
+        account = await db.get(Account, aid)
+        chats = list((await db.scalars(select(ChatBinding).where(
+            ChatBinding.account_id == aid, ChatBinding.enabled.is_(True)
+        ))).all())
+        if not account or not account.enabled:
+            await c.answer("Аккаунт не найден или выключен", show_alert=True); return
+        if not chats:
+            await c.answer("Сначала выберите хотя бы один чат", show_alert=True); return
+        if account.learning_status in {"training", "stopping"}:
+            await c.answer("Обучение уже запущено", show_alert=True); return
+        if not await global_ai_enabled(db):
+            await c.answer("Сначала включите глобальный ИИ", show_alert=True); return
+        agent = await db.get(AIAgent, account.ai_agent_id) if account.ai_agent_id else None
+        if not agent or not agent.enabled or not agent.api_key.strip():
+            agent = await db.scalar(select(AIAgent).where(
+                AIAgent.enabled.is_(True), AIAgent.is_default.is_(True)
+            ).order_by(AIAgent.id))
+        if not agent or not agent.enabled or not agent.api_key.strip():
+            agent = await db.scalar(select(AIAgent).where(
+                AIAgent.enabled.is_(True)
+            ).order_by(AIAgent.id))
+        if not agent or not agent.api_key.strip():
+            await c.answer("Настройте включённого ИИ-агента с API-ключом", show_alert=True); return
+        account.learning_status = "training"
+        account.learning_started_at = now
+        from datetime import timedelta
+        account.learning_ends_at = now + timedelta(days=3)
+        account.learning_limit = limit
+        await db.commit()
+    await edit(c, f"🧠 Обучение аккаунта #{aid} запущено. Лимит: {limit} сообщений. Автоостановка — через 3 дня.", kb([
+        [("⏹ Закончить обучение", f"learn:stop:{aid}")],
+        [("⬅️ К аккаунту", f"acc:view:{aid}")],
+    ]))
+
+@router.callback_query(F.data.startswith("learn:stop:"))
+async def acc_learning_stop(c):
+    if not await check_cb(c): return
+    aid = int(c.data.split(":")[2])
+    async with SessionFactory() as db:
+        account = await db.get(Account, aid)
+        if not account:
+            await c.answer("Аккаунт не найден", show_alert=True); return
+        if account.learning_status == "training":
+            account.learning_status = "stopping"
+            await db.commit()
+    await edit(c, f"⏳ Обучение аккаунта #{aid} останавливается. После сводки временные сообщения будут удалены.", kb([
+        [("⬅️ К аккаунту", f"acc:view:{aid}")],
+        [("📚 Список аккаунтов", "acc:list")],
+    ]))
 
 # AI agent management
 @router.message(F.text=="🤖 ИИ-агенты")

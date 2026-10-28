@@ -1,5 +1,6 @@
 """Dynamic account worker. Only explicitly selected chats are observed."""
 import asyncio
+import json
 import logging
 import re
 from datetime import datetime, timezone
@@ -7,11 +8,11 @@ from collections import defaultdict
 from aiogram import Bot
 from telethon import TelegramClient, events
 from sqlalchemy import select
-from app.ai.provider import AIUnavailableError
+from app.ai.provider import AIUnavailableError, summarize_chat_context
 from app.services.drafts import create_draft, global_ai_enabled
 from app.settings import get_settings
 from app.storage.db import SessionFactory, init_db
-from app.storage.models import Account, ChatBinding, Draft, DraftStatus
+from app.storage.models import Account, AIAgent, ChatBinding, Draft, DraftStatus
 
 async def heartbeat(redis):
     while True:
@@ -29,6 +30,7 @@ async def main():
     tasks: dict[int,asyncio.Task]={}
     watched: dict[int,dict[int,str]]={}
     account_snapshot: dict[int,Account]={}
+    learning_tasks: dict[int,asyncio.Task]={}
 
     async def on_message(event, *, aid, labels):
         label=labels.get(event.chat_id)
@@ -86,6 +88,167 @@ async def main():
                 except Exception:
                     logging.exception("Could not notify administrator %s",admin_id)
 
+
+    async def run_learning(aid: int, client: TelegramClient) -> None:
+        handler = None
+        key = None
+        try:
+            async with SessionFactory() as db:
+                account = await db.get(Account, aid)
+                if not account or account.learning_status not in {"training", "stopping"}:
+                    return
+                started = account.learning_started_at or datetime.now(timezone.utc)
+                sample_limit = min(1000, max(500, account.learning_limit))
+                bindings = list((await db.scalars(
+                    select(ChatBinding).where(
+                        ChatBinding.account_id == aid,
+                        ChatBinding.enabled.is_(True),
+                    )
+                )).all())
+            if not bindings:
+                async with SessionFactory() as db:
+                    account = await db.get(Account, aid)
+                    if account:
+                        account.learning_status = "idle"
+                        account.learning_started_at = None
+                        account.learning_ends_at = None
+                        await db.commit()
+                logging.warning("Learning for account %s stopped: no selected chats", aid)
+                return
+
+            chat_ids = [binding.chat_id for binding in bindings]
+            labels = {binding.chat_id: binding.title for binding in bindings}
+            key = f"atcivperson:learning:{aid}:{int(started.timestamp())}"
+            had_buffer = bool(await redis.exists(key))
+
+            async def capture_training_message(event):
+                message = event.message
+                body = (message.message or "").strip()
+                if not body:
+                    return
+                item = {
+                    "chat_id": int(event.chat_id),
+                    "message_id": int(message.id),
+                    "chat": labels.get(event.chat_id, "выбранный чат"),
+                    "text": body[:450],
+                    "outgoing": bool(message.out),
+                    "date": message.date.isoformat() if message.date else "",
+                }
+                await redis.lpush(key, json.dumps(item, ensure_ascii=False))
+                await redis.ltrim(key, 0, sample_limit - 1)
+                await redis.expire(key, 7 * 24 * 3600)
+
+            client.add_event_handler(capture_training_message, events.NewMessage(chats=chat_ids))
+            handler = capture_training_message
+
+            if not had_buffer:
+                history = []
+                for binding in bindings:
+                    try:
+                        async for message in client.iter_messages(binding.chat_id, limit=sample_limit):
+                            body = (message.message or "").strip()
+                            if not body:
+                                continue
+                            history.append({
+                                "chat_id": int(binding.chat_id),
+                                "message_id": int(message.id),
+                                "chat": binding.title[:80],
+                                "text": body[:450],
+                                "outgoing": bool(message.out),
+                                "date": message.date.isoformat() if message.date else "",
+                            })
+                    except Exception:
+                        logging.exception("Could not read training history for account %s, chat %s", aid, binding.chat_id)
+                history.sort(key=lambda item: item["date"])
+                unique = {}
+                for item in history:
+                    unique[(item["chat_id"], item["message_id"])] = item
+                for item in list(unique.values())[-sample_limit:]:
+                    await redis.rpush(key, json.dumps(item, ensure_ascii=False))
+                await redis.ltrim(key, 0, sample_limit - 1)
+                await redis.expire(key, 7 * 24 * 3600)
+
+            while True:
+                await asyncio.sleep(10)
+                async with SessionFactory() as db:
+                    account = await db.get(Account, aid)
+                    if not account or account.learning_status != "training":
+                        break
+                    expires = account.learning_ends_at
+                    if expires and expires.tzinfo is None:
+                        expires = expires.replace(tzinfo=timezone.utc)
+                    if expires and datetime.now(timezone.utc) >= expires:
+                        break
+
+            client.remove_event_handler(handler)
+            handler = None
+            raw_items = await redis.lrange(key, 0, -1)
+            parsed = []
+            for raw in raw_items:
+                try:
+                    parsed.append(json.loads(raw))
+                except (TypeError, ValueError):
+                    continue
+            unique = {}
+            for item in parsed:
+                unique[(item.get("chat_id"), item.get("message_id"))] = item
+            samples = sorted(unique.values(), key=lambda item: item.get("date", ""))[-sample_limit:]
+
+            async with SessionFactory() as db:
+                account = await db.get(Account, aid)
+                if not account:
+                    await redis.delete(key)
+                    return
+                if samples:
+                    agent = await db.get(AIAgent, account.ai_agent_id) if account.ai_agent_id else None
+                    if not agent or not agent.enabled or not agent.api_key.strip():
+                        agent = await db.scalar(
+                            select(AIAgent).where(
+                                AIAgent.enabled.is_(True),
+                                AIAgent.is_default.is_(True),
+                            ).order_by(AIAgent.id)
+                        )
+                    if not agent:
+                        agent = await db.scalar(
+                            select(AIAgent).where(AIAgent.enabled.is_(True)).order_by(AIAgent.id)
+                        )
+                    if agent:
+                        account.learning_prompt = await summarize_chat_context(agent=agent, messages=samples)
+                    else:
+                        logging.warning("No enabled AI agent for learning on account %s", aid)
+                account.learning_status = "idle"
+                account.learning_started_at = None
+                account.learning_ends_at = None
+                await db.commit()
+            await redis.delete(key)
+            if bot:
+                for admin_id in cfg.admin_id_set:
+                    try:
+                        await bot.send_message(
+                            admin_id,
+                            f"Обучение аккаунта #{aid} завершено. "
+                            f"{'Краткий контекст сохранён для черновиков.' if samples else 'Не удалось найти текстовые сообщения для анализа.'}",
+                        )
+                    except Exception:
+                        logging.exception("Could not notify administrator about learning completion")
+        except asyncio.CancelledError:
+            if handler:
+                client.remove_event_handler(handler)
+            raise
+        except Exception:
+            if handler:
+                client.remove_event_handler(handler)
+            logging.exception("Learning failed for account %s", aid)
+            async with SessionFactory() as db:
+                account = await db.get(Account, aid)
+                if account:
+                    account.learning_status = "idle"
+                    account.learning_started_at = None
+                    account.learning_ends_at = None
+                    await db.commit()
+            if key:
+                await redis.delete(key)
+
     async def connect_account(account, binding_rows):
         if not cfg.telegram_api_id or not cfg.telegram_api_hash:
             return
@@ -118,6 +281,9 @@ async def main():
                 for aid in list(clients):
                     existing_task=tasks.get(aid)
                     if aid not in active or (existing_task is not None and existing_task.done()):
+                        learning = learning_tasks.pop(aid, None)
+                        if learning and not learning.done():
+                            learning.cancel()
                         task=tasks.pop(aid,None)
                         if task and not task.done():
                             task.cancel()
@@ -135,6 +301,10 @@ async def main():
                         labels=watched.get(aid,{})
                         labels.clear()
                         labels.update({b.chat_id:b.title for b in by_account.get(aid,[])})
+                    if account.learning_status in {"training", "stopping"} and aid in clients:
+                        learning = learning_tasks.get(aid)
+                        if learning is None or learning.done():
+                            learning_tasks[aid] = asyncio.create_task(run_learning(aid, clients[aid]))
                 if not clients:
                     logging.info("No connected accounts yet; waiting for accounts to be added in the bot")
             except Exception:
@@ -148,6 +318,8 @@ async def main():
     finally:
         heartbeat_task.cancel(); manager_task.cancel()
         for task in tasks.values():
+            task.cancel()
+        for task in learning_tasks.values():
             task.cancel()
         for client in clients.values():
             if client.is_connected():

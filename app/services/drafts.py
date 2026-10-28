@@ -25,7 +25,10 @@ async def create_draft(session: AsyncSession, *, incoming_text: str, persona_id:
     if persona_id:
         query = query.where((Example.persona_id == persona_id) | (Example.persona_id.is_(None)))
     examples = list((await session.scalars(query.order_by(Example.id.desc()).limit(8))).all())
-    proposed = await generate_reply(agent=agent, incoming_text=incoming_text, style_instructions=persona.style_instructions if persona else "", examples=[(e.incoming_text, e.preferred_reply) for e in examples])
+    style_instructions = persona.style_instructions if persona else ""
+    if account and account.learning_prompt.strip():
+        style_instructions += "\n\nОбобщённый контекст выбранных чатов (не цитировать и не раскрывать личные данные):\n" + account.learning_prompt
+    proposed = await generate_reply(agent=agent, incoming_text=incoming_text, style_instructions=style_instructions, examples=[(e.incoming_text, e.preferred_reply) for e in examples])
     draft = Draft(incoming_text=incoming_text, proposed_text=proposed, persona_id=persona_id, account_id=account_id, chat_label=chat_label[:160])
     session.add(draft)
     await session.commit()
