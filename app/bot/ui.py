@@ -343,6 +343,7 @@ async def qr_login(bot, uid, proxy_config=None, encrypted_proxy=None, ui_data=No
             row=await db.scalar(select(Account).where(Account.telegram_user_id==me.id))
             if row:
                 row.username,row.display_name,row.session_path,row.enabled=me.username,name,str(session_path),True
+                row.manual_pause=False
                 row.connection_status="connecting"
                 row.proxy_config_encrypted=encrypted_proxy
             else:
@@ -413,6 +414,8 @@ async def acc_pause(c):
     async with SessionFactory() as db:
         a=await db.get(Account,aid)
         if not a: await c.answer("Аккаунт не найден",show_alert=True); return
+        if not a.enabled:
+            await c.answer("Сначала подключите аккаунт.", show_alert=True); return
         a.manual_pause=not a.manual_pause
         a.connection_status = "paused" if a.manual_pause else "connecting"
         await db.commit()
@@ -428,6 +431,7 @@ async def acc_toggle(c):
         if a.enabled and a.learning_status in {"training", "stopping"}:
             await c.answer("Сначала завершите автообучение, затем отключайте аккаунт.", show_alert=True); return
         a.enabled=not a.enabled
+        a.manual_pause = False
         a.connection_status = "connecting" if a.enabled else "disconnected"
         await db.commit()
     await acc_view(c)
