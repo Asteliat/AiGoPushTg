@@ -614,7 +614,7 @@ async def acc_learning_menu(c):
     if account.reply_mode != "manual":
         await c.answer("Перед обучением переключите режим ответов на «Ручной».", show_alert=True); return
     if not chat_count:
-        await c.answer("Сначала выберите хотя бы один чат для этого аккаунта.", show_alert=True); return
+        await c.answer("Список диалогов ещё не загружен. Откройте «Чаты аккаунта» для первичной загрузки и повторите попытку.", show_alert=True); return
     if not ai_on or not enabled_agent:
         await c.answer("Включите глобальный ИИ и настройте хотя бы одного ИИ-агента.", show_alert=True); return
     buttons = [
@@ -1228,7 +1228,7 @@ async def draft_review(c):
         d=await db.get(Draft,int(p[2])) if len(p)==3 and p[2].isdigit() else None
         if not d or d.status!=DraftStatus.PENDING: await c.answer("Черновик не найден или уже обработан",show_alert=True); return
         d.status=DraftStatus.APPROVED if p[1]=="approve" else DraftStatus.REJECTED; d.reviewed_at=datetime.now(timezone.utc); await db.commit()
-    await edit(c,"Статус сохранён. Сообщение в исходный чат не отправлялось.",back_home())
+    await edit(c,"Статус сохранён. Сообщение в исходный чат не отправлялось.",kb([[("📝 К черновикам","drafts:menu")],[("🏠 Главное меню","nav:home")]]))
 @router.message(F.text=="✨ Создать черновик")
 async def draft_start(m,state):
     if not await check_msg(m): return

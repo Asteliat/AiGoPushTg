@@ -48,6 +48,7 @@ async def main() -> None:
                     chat_id=args.chat_id,
                     title=selected.name,
                     enabled=not args.disable,
+                    auto_discovered=True,
                 )
                 db.add(binding)
             await db.commit()
