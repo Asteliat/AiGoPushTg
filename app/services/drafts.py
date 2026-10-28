@@ -14,6 +14,8 @@ async def create_draft(session: AsyncSession, *, incoming_text: str, persona_id:
     if agent_id is None and account:
         agent_id = account.ai_agent_id
     agent = await session.get(AIAgent, agent_id) if agent_id else None
+    if agent is not None and not agent.enabled:
+        agent = None
     if agent is None:
         agent = await session.scalar(select(AIAgent).where(AIAgent.is_default.is_(True), AIAgent.enabled.is_(True)).order_by(AIAgent.id))
     if agent is None:

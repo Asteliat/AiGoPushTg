@@ -63,6 +63,12 @@ async def main():
                 return
             mode=current.reply_mode
             account_name=current.display_name
+        async with SessionFactory() as db:
+            latest = await db.get(Account, aid)
+            if not latest or not latest.enabled or latest.manual_pause:
+                return
+            mode = latest.reply_mode
+            account_name = latest.display_name
         sent=False
         if mode=="automatic":
             try:
