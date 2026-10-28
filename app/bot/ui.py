@@ -102,6 +102,7 @@ async def acc_list(c):
     if not await check_cb(c): return
     async with SessionFactory() as db: rows=list((await db.scalars(select(Account).order_by(Account.id))).all())
     buttons=[[(f"{'🟢' if a.enabled else '⚪'} #{a.id} · {a.display_name[:28]}",f"acc:view:{a.id}")] for a in rows]
+    buttons += [[("🟢 В работе","acc:status:work"),("🧠 На обучении","acc:status:training")], [("💤 В простое","acc:status:idle")]]
     buttons += [[("➕ Добавить аккаунт через QR","acc:add")],[("⬅️ Главное меню","nav:home")]]
     await edit(c,"👤 Аккаунты",kb(buttons))
 
@@ -224,6 +225,8 @@ async def acc_toggle(c):
     async with SessionFactory() as db:
         a=await db.get(Account,aid)
         if not a: await c.answer("Аккаунт не найден",show_alert=True); return
+        if a.enabled and a.learning_status in {"training", "stopping"}:
+            await c.answer("Сначала завершите автообучение, затем отключайте аккаунт.", show_alert=True); return
         a.enabled=not a.enabled; await db.commit()
     await acc_view(c)
 @router.callback_query(F.data.startswith("acc:ai:"))

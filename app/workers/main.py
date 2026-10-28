@@ -159,11 +159,11 @@ async def main():
                             })
                     except Exception:
                         logging.exception("Could not read training history for account %s, chat %s", aid, binding.chat_id)
-                history.sort(key=lambda item: item["date"])
+                history.sort(key=lambda item: item["date"], reverse=True)
                 unique = {}
                 for item in history:
                     unique[(item["chat_id"], item["message_id"])] = item
-                for item in list(unique.values())[-sample_limit:]:
+                for item in list(unique.values())[:sample_limit]:
                     await redis.rpush(key, json.dumps(item, ensure_ascii=False))
                 await redis.ltrim(key, 0, sample_limit - 1)
                 await redis.expire(key, 7 * 24 * 3600)
@@ -173,6 +173,11 @@ async def main():
                 async with SessionFactory() as db:
                     account = await db.get(Account, aid)
                     if not account or account.learning_status != "training":
+                        break
+                    current_chat_ids = set((await db.scalars(select(ChatBinding.chat_id).where(
+                        ChatBinding.account_id == aid, ChatBinding.enabled.is_(True)
+                    ))).all())
+                    if current_chat_ids != set(chat_ids):
                         break
                     expires = account.learning_ends_at
                     if expires and expires.tzinfo is None:
@@ -194,6 +199,7 @@ async def main():
                 unique[(item.get("chat_id"), item.get("message_id"))] = item
             samples = sorted(unique.values(), key=lambda item: item.get("date", ""))[-sample_limit:]
 
+            summary_saved = False
             async with SessionFactory() as db:
                 account = await db.get(Account, aid)
                 if not account:
@@ -214,6 +220,7 @@ async def main():
                         )
                     if agent:
                         account.learning_prompt = await summarize_chat_context(agent=agent, messages=samples)
+                        summary_saved = True
                     else:
                         logging.warning("No enabled AI agent for learning on account %s", aid)
                 account.learning_status = "idle"
@@ -227,7 +234,7 @@ async def main():
                         await bot.send_message(
                             admin_id,
                             f"Обучение аккаунта #{aid} завершено. "
-                            f"{'Краткий контекст сохранён для черновиков.' if samples else 'Не удалось найти текстовые сообщения для анализа.'}",
+                            f"{'Краткий контекст сохранён для черновиков.' if summary_saved else 'Сводка не сохранена: нет подходящих сообщений или доступного ИИ-агента.'}",
                         )
                     except Exception:
                         logging.exception("Could not notify administrator about learning completion")
@@ -278,6 +285,19 @@ async def main():
                     accounts=list((await db.scalars(select(Account).where(Account.enabled.is_(True)))).all())
                     bindings=list((await db.scalars(select(ChatBinding).where(ChatBinding.enabled.is_(True)))).all())
                 active={a.id:a for a in accounts}
+                now = datetime.now(timezone.utc)
+                for account in accounts:
+                    expires = account.learning_ends_at
+                    if expires and expires.tzinfo is None:
+                        expires = expires.replace(tzinfo=timezone.utc)
+                    if account.learning_status == "training" and expires and now >= expires and account.id not in clients:
+                        started = account.learning_started_at
+                        account.learning_status = "idle"
+                        account.learning_started_at = None
+                        account.learning_ends_at = None
+                        if started:
+                            await redis.delete(f"atcivperson:learning:{account.id}:{int(started.timestamp())}")
+                await db.commit()
                 for aid in list(clients):
                     existing_task=tasks.get(aid)
                     if aid not in active or (existing_task is not None and existing_task.done()):
