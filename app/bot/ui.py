@@ -732,46 +732,51 @@ async def global_toggle(c):
 @router.callback_query(F.data=="agent:add")
 async def agent_add(c,state):
     if not await check_cb(c): return
-    await state.clear(); await state.set_state(Flow.agent_name)
-    await c.message.answer("Введите название профиля, например Groq или OpenAI.",reply_markup=CANCEL); await c.answer()
+    await state.clear()
+    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
+    await state.set_state(Flow.agent_name)
+    await edit(c, "Введите название профиля, например Groq или OpenAI.", CANCEL)
 @router.message(Flow.agent_name)
 async def agent_name(m,state):
     if not await check_msg(m) or not await private(m): return
     name=(m.text or "").strip()
-    if not name or len(name)>80: await m.answer("Название — от 1 до 80 символов.",reply_markup=CANCEL); return
+    if not name or len(name)>80: await prompt_message(m,state,"Название должно содержать от 1 до 80 символов."); return
     async with SessionFactory() as db:
-        if await db.scalar(select(AIAgent.id).where(AIAgent.name==name)): await m.answer("Такое название уже есть.",reply_markup=CANCEL); return
+        if await db.scalar(select(AIAgent.id).where(AIAgent.name==name)): await prompt_message(m,state,"Такое название уже есть."); return
+    await delete_msg(m)
     await state.update_data(name=name); await state.set_state(Flow.agent_url)
-    await m.answer("Введите Base URL API, например https://api.openai.com/v1",reply_markup=CANCEL)
+    await prompt_message(m,state,"Введите Base URL API, например https://api.openai.com/v1")
 @router.message(Flow.agent_url)
 async def agent_url(m,state):
     if not await check_msg(m) or not await private(m): return
     v=(m.text or "").strip().rstrip("/")
-    if not v.startswith("https://") and not (v.startswith("http://") and "localhost" in v): await m.answer("Нужен HTTPS URL (HTTP только localhost).",reply_markup=CANCEL); return
-    await state.update_data(url=v); await state.set_state(Flow.agent_key); await m.answer("Введите API-ключ. Сообщение будет удалено по возможности.",reply_markup=CANCEL)
+    if not v.startswith("https://") and not (v.startswith("http://") and "localhost" in v): await prompt_message(m,state,"Нужен HTTPS URL (HTTP только localhost)."); return
+    await delete_msg(m)
+    await state.update_data(url=v); await state.set_state(Flow.agent_key); await prompt_message(m,state,"Введите API-ключ. Сообщение будет удалено по возможности.")
 @router.message(Flow.agent_key)
 async def agent_key(m,state):
     if not await check_msg(m) or not await private(m): return
     v=(m.text or "").strip(); await delete_msg(m)
-    if len(v)<5 or len(v)>1000: await m.answer("Некорректная длина ключа.",reply_markup=CANCEL); return
-    await state.update_data(key=v); await state.set_state(Flow.agent_model); await m.answer("Введите точное имя модели.",reply_markup=CANCEL)
+    if len(v)<5 or len(v)>1000: await prompt_message(m,state,"Некорректная длина ключа."); return
+    await state.update_data(key=v); await state.set_state(Flow.agent_model); await prompt_message(m,state,"Введите точное имя модели.")
 @router.message(Flow.agent_model)
 async def agent_model(m,state):
     if not await check_msg(m) or not await private(m): return
     v=(m.text or "").strip()
-    if not v or len(v)>160: await m.answer("Некорректное имя модели.",reply_markup=CANCEL); return
-    await state.update_data(model=v); await state.set_state(Flow.agent_timeout); await m.answer("Введите тайм-аут в секундах от 10 до 180.",reply_markup=CANCEL)
+    if not v or len(v)>160: await prompt_message(m,state,"Некорректное имя модели."); return
+    await delete_msg(m)
+    await state.update_data(model=v); await state.set_state(Flow.agent_timeout); await prompt_message(m,state,"Введите тайм-аут в секундах от 10 до 180.")
 @router.message(Flow.agent_timeout)
 async def agent_timeout(m,state):
     if not await check_msg(m) or not await private(m): return
     v=(m.text or "").strip()
-    if not v.isdigit() or not 10<=int(v)<=180: await m.answer("Введите число 10–180.",reply_markup=CANCEL); return
+    if not v.isdigit() or not 10<=int(v)<=180: await prompt_message(m,state,"Введите число от 10 до 180."); return
     d=await state.get_data()
     async with SessionFactory() as db:
         has=bool(await db.scalar(select(AIAgent.id)))
         a=AIAgent(name=d["name"],base_url=d["url"],api_key=d["key"],model=d["model"],timeout_seconds=int(v),is_default=not has)
         db.add(a); await db.commit(); await db.refresh(a)
-    await state.clear(); await m.answer(f"Профиль «{a.name}» сохранён.",reply_markup=MAIN); await agents_screen(m)
+    await finish_prompt(m,state,f"Профиль «{a.name}» сохранён.",kb([[("🤖 К ИИ-агентам","agent:menu")],[("🏠 Главное меню","nav:home")]]))
 @router.callback_query(F.data=="agent:assignall")
 async def assign_all_menu(c):
     if not await check_cb(c): return
@@ -827,29 +832,29 @@ async def agent_default(c):
 async def agent_edit_start(c,state):
     if not await check_cb(c): return
     _,_,field,aid=c.data.split(":")
-    await state.clear(); await state.update_data(edit_field=field,edit_aid=int(aid)); await state.set_state(Flow.agent_edit)
-    await c.message.answer("Введите новое значение для "+field+". Для ключа сообщение будет удалено.",reply_markup=CANCEL); await c.answer()
+    await state.clear(); await state.update_data(edit_field=field,edit_aid=int(aid),ui_chat_id=c.message.chat.id,ui_message_id=c.message.message_id); await state.set_state(Flow.agent_edit)
+    await edit(c, "Введите новое значение для "+field+". Для ключа сообщение будет удалено по возможности.", CANCEL)
 @router.message(Flow.agent_edit)
 async def agent_edit_save(m,state):
     if not await check_msg(m) or not await private(m): return
     d=await state.get_data(); field=d["edit_field"]; v=(m.text or "").strip()
     if field=="key":
         await delete_msg(m)
-        if len(v)<5 or len(v)>1000: await m.answer("Некорректный ключ.",reply_markup=CANCEL); return
+        if len(v)<5 or len(v)>1000: await prompt_message(m,state,"Некорректный ключ."); return
     elif field=="url":
         v=v.rstrip("/")
-        if not v.startswith("https://") and not (v.startswith("http://") and "localhost" in v): await m.answer("Нужен HTTPS URL.",reply_markup=CANCEL); return
+        if not v.startswith("https://") and not (v.startswith("http://") and "localhost" in v): await prompt_message(m,state,"Нужен HTTPS URL."); return
     elif field=="model":
-        if not v or len(v)>160: await m.answer("Некорректная модель.",reply_markup=CANCEL); return
+        if not v or len(v)>160: await prompt_message(m,state,"Некорректная модель."); return
     elif field=="timeout":
-        if not v.isdigit() or not 10<=int(v)<=180: await m.answer("Введите число 10–180.",reply_markup=CANCEL); return
+        if not v.isdigit() or not 10<=int(v)<=180: await prompt_message(m,state,"Введите число от 10 до 180."); return
         v=int(v)
     attr={"url":"base_url","model":"model","key":"api_key","timeout":"timeout_seconds"}[field]
     async with SessionFactory() as db:
         a=await db.get(AIAgent,d["edit_aid"])
-        if not a: await state.clear(); await m.answer("Агент не найден.",reply_markup=MAIN); return
+        if not a: await finish_prompt(m,state,"Агент не найден."); return
         setattr(a,attr,v); await db.commit()
-    await state.clear(); await m.answer("Настройки сохранены.",reply_markup=MAIN)
+    await finish_prompt(m,state,"Настройки сохранены.",kb([[("🤖 К ИИ-агентам","agent:menu")],[("🏠 Главное меню","nav:home")]]))
 @router.callback_query(F.data.startswith("agent:delete:"))
 async def agent_delete(c):
     if not await check_cb(c): return
@@ -882,20 +887,24 @@ async def persona_menu(c):
 @router.callback_query(F.data=="persona:add")
 async def persona_add(c,state):
     if not await check_cb(c): return
-    await state.clear(); await state.set_state(Flow.persona_name); await c.message.answer("Введите название персоны.",reply_markup=CANCEL); await c.answer()
+    await state.clear()
+    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
+    await state.set_state(Flow.persona_name)
+    await edit(c, "Введите название персоны.", CANCEL)
 @router.message(Flow.persona_name)
 async def persona_name(m,state):
     if not await check_msg(m) or not await private(m): return
     name=(m.text or "").strip()
-    if not name or len(name)>80: await m.answer("Название — 1–80 символов.",reply_markup=CANCEL); return
+    if not name or len(name)>80: await prompt_message(m,state,"Название должно содержать от 1 до 80 символов."); return
     async with SessionFactory() as db:
-        if await db.scalar(select(Persona.id).where(Persona.name==name)): await m.answer("Такое имя уже есть.",reply_markup=CANCEL); return
-    await state.update_data(persona_name=name); await state.set_state(Flow.persona_style); await m.answer("Введите инструкции стиля общения.",reply_markup=CANCEL)
+        if await db.scalar(select(Persona.id).where(Persona.name==name)): await prompt_message(m,state,"Такое имя уже есть."); return
+    await delete_msg(m)
+    await state.update_data(persona_name=name); await state.set_state(Flow.persona_style); await prompt_message(m,state,"Введите инструкции стиля общения.")
 @router.message(Flow.persona_style)
 async def persona_style(m,state):
     if not await check_msg(m) or not await private(m): return
     style=(m.text or "").strip()
-    if not style or len(style)>5000: await m.answer("Текст должен быть от 1 до 5000 символов.",reply_markup=CANCEL); return
+    if not style or len(style)>5000: await prompt_message(m,state,"Текст должен содержать от 1 до 5000 символов."); return
     d=await state.get_data()
     async with SessionFactory() as db:
         if d.get("persona_edit_id"):
