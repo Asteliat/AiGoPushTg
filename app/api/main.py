@@ -1,0 +1,56 @@
+from contextlib import asynccontextmanager
+from fastapi import Depends, FastAPI, HTTPException
+from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.ai.provider import AIUnavailableError
+from app.services.drafts import create_draft
+from app.settings import get_settings
+from app.storage.db import engine, get_session, init_db
+from app.storage.models import Account, Draft, Persona
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    cfg = get_settings()
+    cfg.data_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.data_dir / "sessions").mkdir(parents=True, exist_ok=True)
+    await init_db()
+    yield
+    await engine.dispose()
+
+app = FastAPI(title="AtcivPerson API", version="0.1.0", lifespan=lifespan)
+
+class DraftRequest(BaseModel):
+    incoming_text: str = Field(min_length=1, max_length=12000)
+    persona_id: int | None = None
+    account_id: int | None = None
+    chat_label: str = Field(default="Личный черновик", max_length=160)
+
+@app.get("/health")
+async def health() -> dict[str, str]:
+    return {"status": "ok", "service": "atcivperson-api"}
+
+@app.get("/v1/accounts")
+async def list_accounts(session: AsyncSession = Depends(get_session)) -> list[dict]:
+    rows = (await session.scalars(select(Account).order_by(Account.id))).all()
+    return [{"id": r.id, "telegram_user_id": r.telegram_user_id, "username": r.username, "display_name": r.display_name, "enabled": r.enabled} for r in rows]
+
+@app.get("/v1/personas")
+async def list_personas(session: AsyncSession = Depends(get_session)) -> list[dict]:
+    rows = (await session.scalars(select(Persona).order_by(Persona.id))).all()
+    return [{"id": r.id, "name": r.name, "description": r.description, "style_instructions": r.style_instructions} for r in rows]
+
+@app.post("/v1/drafts", status_code=201)
+async def make_draft(payload: DraftRequest, session: AsyncSession = Depends(get_session)) -> dict:
+    try:
+        draft = await create_draft(session, incoming_text=payload.incoming_text, persona_id=payload.persona_id, account_id=payload.account_id, chat_label=payload.chat_label)
+    except AIUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Не удалось создать черновик; проверьте входные данные.") from exc
+    return {"id": draft.id, "status": draft.status, "proposed_text": draft.proposed_text}
+
+@app.get("/v1/drafts")
+async def list_drafts(session: AsyncSession = Depends(get_session)) -> list[dict]:
+    rows = (await session.scalars(select(Draft).order_by(Draft.id.desc()).limit(100))).all()
+    return [{"id": r.id, "status": r.status, "chat_label": r.chat_label, "incoming_text": r.incoming_text, "proposed_text": r.proposed_text, "created_at": r.created_at.isoformat()} for r in rows]
