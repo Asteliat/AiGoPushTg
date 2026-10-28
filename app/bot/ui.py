@@ -51,11 +51,11 @@ async def home_text():
     training = sum(a.learning_status in {"training", "stopping"} for a in accounts)
     paused = sum(a.manual_pause for a in accounts)
     return (
-        "🧭 <b>AtcivPerson</b>\nПанель управления Telegram-аккаунтами\n\n"
-        f"👤 Аккаунтов: <b>{len(accounts)}</b> · ⏸ На паузе: <b>{paused}</b>\n"
-        f"🧠 На обучении: <b>{training}</b>\n"
-        f"🤖 ИИ-агентов: <b>{len(agents)}</b> · Глобальный ИИ: <b>{'включён' if ai_on else 'выключен'}</b>\n"
-        f"📝 Черновиков на проверке: <b>{pending}</b>\n\nВыберите раздел ниже."
+        "🧭 AtcivPerson\nПанель управления Telegram-аккаунтами\n\n"
+        f"👤 Аккаунтов: {len(accounts)} · ⏸ На паузе: {paused}\n"
+        f"🧠 На обучении: {training}\n"
+        f"🤖 ИИ-агентов: {len(agents)} · Глобальный ИИ: {'включён' if ai_on else 'выключен'}\n"
+        f"📝 Черновиков на проверке: {pending}\n\nВыберите раздел ниже."
     )
 
 async def edit_anchor(bot, data, text, keyboard):
@@ -63,7 +63,7 @@ async def edit_anchor(bot, data, text, keyboard):
     if not chat_id or not message_id:
         return False
     try:
-        await bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=keyboard, parse_mode="HTML")
+        await bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=keyboard)
         return True
     except Exception as exc:
         if "message is not modified" in str(exc).lower():
@@ -98,14 +98,14 @@ async def delete_msg(m):
     try: await m.delete()
     except Exception: pass
 async def show_home(m):
-    await m.answer(await home_text(), reply_markup=MAIN, parse_mode="HTML")
+    await m.answer(await home_text(), reply_markup=MAIN)
 async def edit(c, text, keyboard):
     if c.message:
         try:
-            await c.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+            await c.message.edit_text(text, reply_markup=keyboard)
         except Exception as exc:
             if "message is not modified" not in str(exc).lower():
-                try: await c.message.answer(text, reply_markup=keyboard, parse_mode="HTML")
+                try: await c.message.answer(text, reply_markup=keyboard)
                 except Exception: pass
     await c.answer()
 def back_home(): return kb([[('🏠 Главное меню','nav:home')]])
@@ -1168,9 +1168,9 @@ async def draft_start(m,state):
 async def draft_create(m,state):
     if not await check_msg(m): return
     incoming=(m.text or "").strip()
-    if not incoming or len(incoming)>12000: await m.answer("Введите текст до 12000 символов.",reply_markup=CANCEL); return
+    if not incoming or len(incoming)>12000: await prompt_message(m,state,"Введите текст до 12000 символов."); return
     async with SessionFactory() as db:
-        if not await global_ai_enabled(db): await state.clear(); await m.answer("Глобальный ИИ выключен.",reply_markup=MAIN); return
+        if not await global_ai_enabled(db): await finish_prompt(m,state,"Глобальный ИИ выключен."); return
         try: d=await create_draft(db,incoming_text=incoming)
-        except (AIUnavailableError,RuntimeError) as exc: await state.clear(); await m.answer(str(exc),reply_markup=MAIN); return
-    await state.clear(); await m.answer(f"Черновик #{d.id}\n\n{d.proposed_text}\n\nСообщение не отправлено.",reply_markup=MAIN)
+        except (AIUnavailableError,RuntimeError) as exc: await finish_prompt(m,state,str(exc)); return
+    await finish_prompt(m,state,f"Черновик #{d.id} сохранён.\n\n{d.proposed_text[:3000]}\n\nСообщение не отправлено.",kb([[("📝 К черновикам","drafts:menu")],[("🏠 Главное меню","nav:home")]]))
