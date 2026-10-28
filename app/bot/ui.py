@@ -265,6 +265,17 @@ async def agents_cb(c):
     buttons=[[(f"{'⭐ ' if a.is_default else ''}{'🟢' if a.enabled else '⚪'} {a.name}",f"agent:view:{a.id}")] for a in aa]
     buttons += [[(("🟢 Выключить ИИ для всех" if on else "🤖 Включить ИИ для всех"),"agent:global")],[("🔀 Назначить агент всем аккаунтам","agent:assignall")],[("➕ Добавить ИИ-агента","agent:add")],[("⬅️ Главное меню","nav:home")]]
     await edit(c,f"🤖 ИИ-агенты · глобально {'включён' if on else 'выключен'}",kb(buttons))
+@router.callback_query(F.data=="agent:accounts_toggle")
+async def accounts_ai_toggle(c):
+    if not await check_cb(c): return
+    async with SessionFactory() as db:
+        accounts=list((await db.scalars(select(Account))).all())
+        enable=not bool(accounts) or not all(a.ai_enabled for a in accounts)
+        for account in accounts:
+            account.ai_enabled=enable
+        await db.commit()
+    await agents_cb(c)
+
 @router.callback_query(F.data=="agent:global")
 async def global_toggle(c):
     if not await check_cb(c): return
