@@ -121,6 +121,7 @@ async def qr_login(bot, uid):
     folder=cfg.data_dir/"sessions"; folder.mkdir(parents=True,exist_ok=True); os.chmod(folder,0o700)
     session_path=folder/("account_"+secrets.token_hex(8))
     client=TelegramClient(str(session_path),cfg.telegram_api_id,cfg.telegram_api_hash)
+    success = False
     try:
         await client.connect()
         qr=await client.qr_login()
@@ -141,6 +142,7 @@ async def qr_login(bot, uid):
             if row: row.username,row.display_name,row.session_path,row.enabled=me.username,name,str(session_path),True
             else: db.add(Account(telegram_user_id=me.id,username=me.username,display_name=name,session_path=str(session_path),enabled=True,reply_mode="manual",ai_enabled=False))
             await db.commit()
+        success = True
         try: os.chmod(str(session_path)+".session",0o600)
         except OSError: pass
         await bot.send_message(uid,f"Аккаунт «{name}» подключён. ИИ выключен до отдельного включения в настройках.",reply_markup=MAIN)
@@ -151,7 +153,15 @@ async def qr_login(bot, uid):
         await bot.send_message(uid,f"Не удалось подключить аккаунт: {type(exc).__name__}: {str(exc)[:220]}",reply_markup=MAIN)
     finally:
         LOGIN_TASKS.pop(uid,None)
-        await client.disconnect()
+        try:
+            await client.disconnect()
+        finally:
+            if not success:
+                for suffix in (".session", ".session-journal", ".session-wal", ".session-shm"):
+                    try:
+                        os.unlink(str(session_path) + suffix)
+                    except FileNotFoundError:
+                        pass
 @router.callback_query(F.data.startswith("acc:view:"))
 async def acc_view(c):
     if not await check_cb(c): return
