@@ -3,6 +3,7 @@ from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from sqlalchemy import select
+from telethon import TelegramClient
 from app.ai.provider import AIUnavailableError
 from app.services.drafts import create_draft
 from app.settings import get_settings
@@ -22,7 +23,7 @@ async def denied(message: Message) -> None:
 async def start(message: Message) -> None:
     if not allowed(message.from_user.id if message.from_user else None):
         await denied(message); return
-    await message.answer("AtcivPerson — управление своими аккаунтами и ИИ-черновиками.\n\n/accounts — аккаунты\n/chats — выбранные чаты\n/personas — персоны\n/persona_add НАЗВАНИЕ | СТИЛЬ — создать персону\n/examples — число примеров\n/example_add ID | ВХОДЯЩЕЕ || ОТВЕТ — добавить пример\n/drafts — ожидающие черновики\n/draft ТЕКСТ — создать черновик\n/help — помощь\n\nАвтоматической отправки сообщений в чаты нет.")
+    await message.answer("AtcivPerson — управление своими аккаунтами и ИИ-черновиками.\n\n/accounts — аккаунты\n/chats — выбранные чаты\n/chat_select ID_АККАУНТА CHAT_ID — выбрать существующий чат\n/chat_disable ID_АККАУНТА CHAT_ID — отключить чат\n/personas — персоны\n/persona_add НАЗВАНИЕ | СТИЛЬ — создать персону\n/examples — число примеров\n/example_add ID | ВХОДЯЩЕЕ || ОТВЕТ — добавить пример\n/drafts — ожидающие черновики\n/draft ТЕКСТ — создать черновик\n/help — помощь\n\nАвтоматической отправки сообщений в чаты нет.")
 
 @router.message(Command("help"))
 async def help_cmd(message: Message) -> None:
@@ -38,6 +39,58 @@ async def accounts(message: Message) -> None:
         rows = (await session.scalars(select(Account).order_by(Account.id))).all()
     await message.answer("\n".join(f"#{r.id} · {r.display_name} · @{r.username or 'нет username'} · {'включён' if r.enabled else 'выключен'}" for r in rows) or "Аккаунтов нет. Подключите аккаунт через CLI.")
 
+
+
+@router.message(Command("chat_select"))
+async def chat_select(message: Message) -> None:
+    if not allowed(message.from_user.id if message.from_user else None):
+        await denied(message); return
+    parts = (message.text or "").split()
+    if len(parts) != 3 or not parts[1].isdigit() or not parts[2].lstrip("-").isdigit():
+        await message.answer("Формат: /chat_select ID_АККАУНТА CHAT_ID. CHAT_ID можно посмотреть командой dialogs.py.")
+        return
+    account_id, chat_id = int(parts[1]), int(parts[2])
+    async with SessionFactory() as session:
+        account = await session.get(Account, account_id)
+    if not account or not account.enabled:
+        await message.answer("Аккаунт не найден или выключен."); return
+    client = TelegramClient(account.session_path, settings.telegram_api_id, settings.telegram_api_hash)
+    await client.connect()
+    try:
+        if not await client.is_user_authorized():
+            await message.answer("Сессия не авторизована. Переподключите аккаунт через CLI."); return
+        found = None
+        async for dialog in client.iter_dialogs(limit=None):
+            if dialog.id == chat_id:
+                found = dialog
+                break
+        if found is None:
+            await message.answer("Такой диалог не найден среди существующих диалогов аккаунта. Я не буду автоматически вступать в чаты."); return
+    finally:
+        await client.disconnect()
+    async with SessionFactory() as session:
+        binding = await session.scalar(select(ChatBinding).where(ChatBinding.account_id == account_id, ChatBinding.chat_id == chat_id))
+        if binding:
+            binding.enabled, binding.title = True, found.name
+        else:
+            session.add(ChatBinding(account_id=account_id, chat_id=chat_id, title=found.name, enabled=True))
+        await session.commit()
+    await message.answer(f"Чат «{found.name}» выбран для аккаунта #{account_id}. В группах ИИ предложит ответ только на упоминание аккаунта или ответ на его сообщение.")
+
+@router.message(Command("chat_disable"))
+async def chat_disable(message: Message) -> None:
+    if not allowed(message.from_user.id if message.from_user else None):
+        await denied(message); return
+    parts = (message.text or "").split()
+    if len(parts) != 3 or not parts[1].isdigit() or not parts[2].lstrip("-").isdigit():
+        await message.answer("Формат: /chat_disable ID_АККАУНТА CHAT_ID"); return
+    async with SessionFactory() as session:
+        binding = await session.scalar(select(ChatBinding).where(ChatBinding.account_id == int(parts[1]), ChatBinding.chat_id == int(parts[2])))
+        if not binding:
+            await message.answer("Связка аккаунта и чата не найдена."); return
+        binding.enabled = False
+        await session.commit()
+    await message.answer("Обработка этого чата отключена.")
 
 @router.message(Command("chats"))
 async def chats(message: Message) -> None:
