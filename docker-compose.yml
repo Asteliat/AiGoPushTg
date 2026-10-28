@@ -58,6 +58,8 @@ services:
     environment:
       DATABASE_URL: $DATABASE_URL
       REDIS_URL: $REDIS_URL
+      DATA_DIR: /data
+    volumes: [app_data:/data]
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
