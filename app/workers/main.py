@@ -440,7 +440,15 @@ async def main():
                             account.learning_ends_at = None
                 for aid in list(clients):
                     existing_task=tasks.get(aid)
-                    if aid not in active or (existing_task is not None and existing_task.done()):
+                    previous_snapshot = account_snapshot.get(aid)
+                    latest_account = all_by_id.get(aid)
+                    runtime_config_changed = bool(
+                        previous_snapshot and latest_account and (
+                            previous_snapshot.proxy_config_encrypted != latest_account.proxy_config_encrypted
+                            or previous_snapshot.session_path != latest_account.session_path
+                        )
+                    )
+                    if aid not in active or runtime_config_changed or (existing_task is not None and existing_task.done()):
                         learning = learning_tasks.pop(aid, None)
                         if learning and not learning.done():
                             learning.cancel()
