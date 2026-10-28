@@ -1089,7 +1089,9 @@ async def chats_cb(c):
 @router.callback_query(F.data.startswith("chat:account:"))
 async def chat_account(c):
     if not await check_cb(c): return
-    aid=int(c.data.split(":")[2])
+    parts = c.data.split(":")
+    aid = int(parts[2])
+    page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
     if not cfg.telegram_api_id or not cfg.telegram_api_hash: await c.answer("Не заданы Telegram API credentials.",show_alert=True); return
     async with SessionFactory() as db: a=await db.get(Account,aid)
     if not a: await c.answer("Аккаунт не найден",show_alert=True); return
@@ -1098,17 +1100,42 @@ async def chat_account(c):
         await client.connect()
         if not await client.is_user_authorized(): await c.answer("Сессия не авторизована",show_alert=True); return
         dialogs=[]
-        async for d in client.iter_dialogs(limit=100): dialogs.append((d.id,d.name or str(d.id)))
+        async for d in client.iter_dialogs():
+            entity = d.entity
+            if getattr(entity, "deleted", False) or getattr(entity, "bot", False):
+                continue
+            title = (d.name or str(d.id)).strip()
+            if title:
+                dialogs.append((int(d.id), title[:255]))
     except Exception as exc: await c.answer(f"Ошибка загрузки: {type(exc).__name__}",show_alert=True); return
     finally: await client.disconnect()
-    async with SessionFactory() as db: selected={b.chat_id for b in (await db.scalars(select(ChatBinding).where(ChatBinding.account_id==aid,ChatBinding.enabled.is_(True)))).all()}
-    buttons=[[(f"{'🟢' if cid in selected else '▫️'} {title[:36]}",f"chat:select:x:{aid}:{cid}")] for cid,title in dialogs[:40]]
-    buttons += [[("⬅️ К чатам","chat:menu")]]
-    await edit(c,f"Выберите существующие чаты аккаунта #{aid}. Показано до 40 из первых 100.",kb(buttons))
+    async with SessionFactory() as db:
+        existing = list((await db.scalars(select(ChatBinding).where(ChatBinding.account_id == aid))).all())
+        by_chat = {binding.chat_id: binding for binding in existing}
+        for cid, title in dialogs:
+            binding = by_chat.get(cid)
+            if binding:
+                binding.title = title
+            else:
+                db.add(ChatBinding(account_id=aid, chat_id=cid, title=title, enabled=True, auto_discovered=True))
+        await db.commit()
+        selected={b.chat_id for b in (await db.scalars(select(ChatBinding).where(ChatBinding.account_id==aid,ChatBinding.enabled.is_(True)))).all()}
+    page_size = 20
+    max_page = max(0, (len(dialogs) - 1) // page_size)
+    page = max(0, min(page, max_page))
+    visible = dialogs[page * page_size:(page + 1) * page_size]
+    buttons=[[(f"{'🟢' if cid in selected else '▫️'} {title[:36]}",f"chat:select:x:{aid}:{cid}:{page}")] for cid,title in visible]
+    nav = []
+    if page > 0: nav.append(("⬅️ Назад", f"chat:account:{aid}:{page-1}"))
+    if page < max_page: nav.append(("➡️ Далее", f"chat:account:{aid}:{page+1}"))
+    if nav: buttons.append(nav)
+    buttons += [[("📋 Выбранные чаты",f"chat:refresh:{aid}:{page}")], [("⬅️ К чатам","chat:menu"),("🏠 Главное меню","nav:home")]]
+    await edit(c,f"Чаты аккаунта #{aid}\nСтраница {page+1} из {max_page+1} · Всего доступно: {len(dialogs)}\n🟢 включён для работы и обучения · ▫️ исключён.",kb(buttons))
+
 @router.callback_query(F.data.startswith("chat:select:"))
 async def chat_select(c):
     if not await check_cb(c): return
-    _,_,_,aid_s,cid_s=c.data.split(":"); aid,cid=int(aid_s),int(cid_s)
+    parts=c.data.split(":"); aid,cid=int(parts[3]),int(parts[4]); page=int(parts[5]) if len(parts)>5 and parts[5].isdigit() else 0
     async with SessionFactory() as db: a=await db.get(Account,aid)
     client=TelegramClient(a.session_path,cfg.telegram_api_id,cfg.telegram_api_hash,proxy=telethon_proxy(a.proxy_config_encrypted))
     try:
@@ -1124,10 +1151,16 @@ async def chat_select(c):
         else:
             db.add(ChatBinding(account_id=aid, chat_id=cid, title=title, enabled=True, auto_discovered=True))
         await db.commit()
-    await chat_account_refresh(c,aid)
-async def chat_account_refresh(c,aid):
+    await chat_account_refresh(c,aid,page)
+@router.callback_query(F.data.startswith("chat:refresh:"))
+async def chat_refresh(c):
+    if not await check_cb(c): return
+    parts = c.data.split(":")
+    aid = int(parts[2]); page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
+    await chat_account_refresh(c, aid, page)
+async def chat_account_refresh(c,aid,page=0):
     async with SessionFactory() as db: bs=list((await db.scalars(select(ChatBinding).where(ChatBinding.account_id==aid).order_by(ChatBinding.id))).all())
-    await edit(c,f"Выбранные чаты аккаунта #{aid}. Чтобы добавить другие, загрузите список существующих чатов.",kb([[(f"{'🟢' if b.enabled else '⚪'} {b.title[:36]}",f"chat:toggle:{b.id}")] for b in bs]+[[("↻ Загрузить существующие чаты",f"chat:account:{aid}")],[("⬅️ К чатам","chat:menu")]]))
+    await edit(c,f"Выбранные чаты аккаунта #{aid}. 🟢 включён · ⚪ исключён.",kb([[(f"{'🟢' if b.enabled else '⚪'} {b.title[:36]}",f"chat:toggle:{b.id}")] for b in bs[:40]]+[[("↻ Загрузить список чатов",f"chat:account:{aid}:{page}")],[("⬅️ К чатам","chat:menu"),("🏠 Главное меню","nav:home")]]))
 @router.callback_query(F.data.startswith("chat:toggle:"))
 async def chat_toggle(c):
     if not await check_cb(c): return
