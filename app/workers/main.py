@@ -323,6 +323,13 @@ async def main():
             if key:
                 await redis.delete(key)
 
+    async def set_connection_status(aid: int, status: str) -> None:
+        async with SessionFactory() as db:
+            account = await db.get(Account, aid)
+            if account:
+                account.connection_status = status
+                await db.commit()
+
     async def sync_account_dialogs(client: TelegramClient, aid: int) -> dict[int, str]:
         discovered = []
         try:
@@ -366,15 +373,19 @@ async def main():
 
     async def connect_account(account, binding_rows):
         if not cfg.telegram_api_id or not cfg.telegram_api_hash:
+            await set_connection_status(account.id, "error")
             return
+        await set_connection_status(account.id, "connecting")
         client=TelegramClient(account.session_path,cfg.telegram_api_id,cfg.telegram_api_hash,proxy=telethon_proxy(account.proxy_config_encrypted))
         try:
             await client.connect()
             if not await client.is_user_authorized():
                 logging.error("Account %s session is unauthorized",account.id)
+                await set_connection_status(account.id, "unauthorized")
                 await client.disconnect()
                 return
             labels = await sync_account_dialogs(client, account.id)
+            await set_connection_status(account.id, "connected")
             watched[account.id]=labels
             client.add_event_handler(lambda event, aid=account.id, labels=labels: on_message(event,aid=aid,labels=labels),events.NewMessage(incoming=True))
             clients[account.id]=client
@@ -383,6 +394,7 @@ async def main():
             logging.info("Connected account %s; watching %d eligible chats",account.id,len(labels))
         except Exception:
             logging.exception("Could not connect account %s",account.id)
+            await set_connection_status(account.id, "error")
             if client.is_connected():
                 await client.disconnect()
 
@@ -390,9 +402,10 @@ async def main():
         while True:
             try:
                 async with SessionFactory() as db:
-                    all_accounts=list((await db.scalars(select(Account).where(Account.enabled.is_(True)))).all())
+                    all_accounts=list((await db.scalars(select(Account)).all()).all()) if False else list((await db.scalars(select(Account))).all())
                     bindings=list((await db.scalars(select(ChatBinding).where(ChatBinding.enabled.is_(True)))).all())
-                accounts=[account for account in all_accounts if not account.manual_pause]
+                all_by_id={account.id:account for account in all_accounts}
+                accounts=[account for account in all_accounts if account.enabled and not account.manual_pause]
                 active={a.id:a for a in accounts}
                 now = datetime.now(timezone.utc)
                 for account in all_accounts:
@@ -430,6 +443,9 @@ async def main():
                         if client and client.is_connected():
                             await client.disconnect()
                         watched.pop(aid,None); account_snapshot.pop(aid,None)
+                        previous = all_by_id.get(aid)
+                        status = "paused" if previous and previous.manual_pause else ("disconnected" if not previous or not previous.enabled else "error")
+                        await set_connection_status(aid, status)
                 by_account=defaultdict(list)
                 for b in bindings:
                     by_account[b.account_id].append(b)
