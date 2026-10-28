@@ -48,7 +48,7 @@ async def home_text():
         agents = list((await db.scalars(select(AIAgent))).all())
         ai_on = await global_ai_enabled(db)
         pending = len((await db.scalars(select(Draft).where(Draft.status == DraftStatus.PENDING))).all())
-    training = sum(a.learning_status in {"training", "stopping"} for a in accounts)
+    training = sum(not a.manual_pause and a.learning_status in {"training", "stopping"} for a in accounts)
     paused = sum(a.manual_pause for a in accounts)
     return (
         "🧭 AtcivPerson\nПанель управления Telegram-аккаунтами\n\n"
@@ -189,9 +189,11 @@ async def acc_status(c):
     active_chat_accounts = {b.account_id for b in bindings}
     selected = []
     for account in rows:
-        if account.learning_status in {"training", "stopping"}:
+        if account.manual_pause:
+            current = "idle"
+        elif account.learning_status in {"training", "stopping"}:
             current = "training"
-        elif account.enabled and not account.manual_pause and account.connection_status == "connected" and account.id in active_chat_accounts:
+        elif account.enabled and account.connection_status == "connected" and account.id in active_chat_accounts:
             current = "work"
         else:
             current = "idle"
@@ -385,7 +387,7 @@ async def acc_view(c):
     learning = a.learning_status in {"training", "stopping"}
     if learning and a.learning_ends_at:
         deadline = a.learning_ends_at.strftime("%d.%m.%Y %H:%M UTC")
-        learning_text = f"обучение · {a.learning_limit} сообщений · до {deadline}" if a.learning_status == "training" else "завершается"
+        learning_text = f"обучение на паузе · {a.learning_limit} сообщений · до {deadline}" if a.manual_pause else (f"обучение · {a.learning_limit} сообщений · до {deadline}" if a.learning_status == "training" else "завершается")
     else:
         learning_text = "контекст сохранён" if a.learning_prompt.strip() else "не запускалось"
     conn_label = {"connected": "подключён", "connecting": "подключается", "paused": "пауза", "disconnected": "отключён", "error": "ошибка подключения", "unauthorized": "сессия не авторизована"}.get(a.connection_status, a.connection_status)
