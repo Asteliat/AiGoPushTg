@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from enum import StrEnum
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from app.storage.db import Base
 
@@ -59,4 +59,16 @@ class AuditEvent(Base):
     action: Mapped[str] = mapped_column(String(80), index=True)
     object_type: Mapped[str] = mapped_column(String(80), default="")
     object_id: Mapped[str] = mapped_column(String(80), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ChatBinding(Base):
+    __tablename__ = "chat_bindings"
+    __table_args__ = (UniqueConstraint("account_id", "chat_id", name="uq_account_chat_binding"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), index=True)
+    chat_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    title: Mapped[str] = mapped_column(String(255), default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
