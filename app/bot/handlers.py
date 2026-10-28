@@ -134,11 +134,11 @@ async def menu_new_draft(message: Message, state: FSMContext) -> None:
     await message.answer("Пришлите текст входящего сообщения, для которого нужно подготовить черновик. Чтобы выйти, нажмите кнопку «❌ Отмена».", reply_markup=CANCEL_KEYBOARD)
 
 @router.message(MenuInput.draft, F.text.in_({"❌ Отмена", "Отмена"}))
-@router.message(MenuInput.persona, F.text == "Отмена")
-@router.message(MenuInput.example, F.text == "Отмена")
-@router.message(MenuInput.chat_select, F.text == "Отмена")
-@router.message(MenuInput.chat_disable, F.text == "Отмена")
-@router.message(MenuInput.account_mode, F.text == "Отмена")
+@router.message(MenuInput.persona, F.text.in_({"❌ Отмена", "Отмена"}))
+@router.message(MenuInput.example, F.text.in_({"❌ Отмена", "Отмена"}))
+@router.message(MenuInput.chat_select, F.text.in_({"❌ Отмена", "Отмена"}))
+@router.message(MenuInput.chat_disable, F.text.in_({"❌ Отмена", "Отмена"}))
+@router.message(MenuInput.account_mode, F.text.in_({"❌ Отмена", "Отмена"}))
 async def cancel_menu_input(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer("Действие отменено.", reply_markup=MAIN_MENU)
