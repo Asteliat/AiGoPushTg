@@ -79,7 +79,12 @@ async def denied(message: Message) -> None:
 async def start(message: Message) -> None:
     if not allowed(message.from_user.id if message.from_user else None):
         await denied(message); return
-    await message.answer("AtcivPerson — управление своими аккаунтами и ИИ-черновиками.\n\n/accounts — аккаунты\n/chats — выбранные чаты\n/chat_select ID_АККАУНТА CHAT_ID — выбрать существующий чат\n/chat_disable ID_АККАУНТА CHAT_ID — отключить чат\n/personas — персоны\n/persona_add НАЗВАНИЕ | СТИЛЬ — создать персону\n/examples — число примеров\n/example_add ID | ВХОДЯЩЕЕ || ОТВЕТ — добавить пример\n/drafts — ожидающие черновики\n/draft ТЕКСТ — создать черновик\n/help — помощь\n\nАвтоматической отправки сообщений в чаты нет.")
+    await message.answer(
+        "AtcivPerson — управление аккаунтами и ИИ-черновиками. Выберите действие кнопками меню ниже.\n\n"
+        "Подключение пользовательских аккаунтов выполняется владельцем через доверенный терминал.\n"
+        "ИИ готовит черновики; сообщения в чаты автоматически не отправляются.",
+        reply_markup=MAIN_MENU,
+    )
 
 @router.message(Command("help"))
 async def help_cmd(message: Message) -> None:
