@@ -885,8 +885,21 @@ async def persona_style(m,state):
     style=(m.text or "").strip()
     if not style or len(style)>5000: await m.answer("Текст должен быть от 1 до 5000 символов.",reply_markup=CANCEL); return
     d=await state.get_data()
-    async with SessionFactory() as db: p=Persona(name=d["persona_name"],description="Создана через бот",style_instructions=style); db.add(p); await db.commit()
-    await state.clear(); await m.answer("Персона сохранена.",reply_markup=MAIN)
+    async with SessionFactory() as db:
+        if d.get("persona_edit_id"):
+            p = await db.get(Persona, d["persona_edit_id"])
+            if not p:
+                await finish_prompt(m, state, "Персона не найдена.")
+                return
+            p.style_instructions = style
+            label = "Общая персона обновлена. Изменения применены ко всем использующим её аккаунтам."
+        else:
+            p=Persona(name=d["persona_name"],description="Создана через бот",style_instructions=style)
+            db.add(p)
+            label = "Персона сохранена."
+        await db.commit()
+        await db.refresh(p)
+    await finish_prompt(m, state, label, kb([[("🎭 К персонам","persona:menu")],[("🏠 Главное меню","nav:home")]]))
 @router.callback_query(F.data.startswith("persona:view:"))
 async def persona_view(c):
     if not await check_cb(c): return
@@ -894,7 +907,19 @@ async def persona_view(c):
     async with SessionFactory() as db:
         p=await db.get(Persona,pid); n=len((await db.scalars(select(Example).where(Example.persona_id==pid))).all())
     if not p: await c.answer("Персона не найдена",show_alert=True); return
-    await edit(c,f"🎭 {p.name}\n\n{p.style_instructions[:2500]}\n\nПримеров: {n}",kb([[("🧩 Добавить пример",f"example:add:{pid}")],[("🗑 Удалить персону",f"persona:delete:{pid}")],[("⬅️ К персонам","persona:menu")]]))
+    await edit(c,f"🎭 {p.name}\n\n{p.style_instructions[:2200]}\n\nПримеров: {n}",kb([[("✏️ Изменить стиль",f"persona:edit:{pid}")],[("🧩 Добавить пример",f"example:add:{pid}")],[("🗑 Удалить персону",f"persona:delete:{pid}")],[("⬅️ К персонам","persona:menu"),("🏠 Главное меню","nav:home")]]))
+@router.callback_query(F.data.startswith("persona:edit:"))
+async def persona_edit_start(c, state: FSMContext):
+    if not await check_cb(c): return
+    pid = int(c.data.split(":")[2])
+    async with SessionFactory() as db:
+        persona = await db.get(Persona, pid)
+    if not persona: await c.answer("Персона не найдена", show_alert=True); return
+    await state.clear()
+    await state.update_data(persona_edit_id=pid, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
+    await state.set_state(Flow.persona_style)
+    await edit(c, f"Изменение общей персоны «{persona.name}». Изменения сразу повлияют на все аккаунты, которые её используют. Отправьте новый стиль (до 5000 символов).", CANCEL)
+
 @router.callback_query(F.data.startswith("persona:delete:"))
 async def persona_delete(c):
     if not await check_cb(c): return
@@ -988,15 +1013,21 @@ async def example_view(c):
     eid=int(c.data.split(":")[2])
     async with SessionFactory() as db: e=await db.get(Example,eid); p=await db.get(Persona,e.persona_id) if e and e.persona_id else None
     if not e: await c.answer("Пример не найден",show_alert=True); return
-    await edit(c,f"Пример #{eid} · {p.name if p else 'Общий'}\n\nВходящее:\n{e.incoming_text[:1600]}\n\nОтвет:\n{e.preferred_reply[:1600]}",kb([[("🗑 Удалить",f"example:delete:{eid}")],[("⬅️ К примерам","example:menu")]]))
+    back = f"example:account:{e.account_id}" if e.account_id else "example:menu"
+    scope = f"Аккаунт #{e.account_id}" if e.account_id else (p.name if p else "Общий")
+    await edit(c,f"Пример #{eid} · {scope}\n\nВходящее:\n{e.incoming_text[:1500]}\n\nОтвет:\n{e.preferred_reply[:1500]}",kb([[("🗑 Удалить",f"example:delete:{eid}")],[("⬅️ Назад",back),("🏠 Главное меню","nav:home")]]))
 @router.callback_query(F.data.startswith("example:delete:"))
 async def example_delete(c):
     if not await check_cb(c): return
     eid=int(c.data.split(":")[2])
     async with SessionFactory() as db:
         e=await db.get(Example,eid)
+        account_id = e.account_id if e else None
         if e: await db.delete(e); await db.commit()
-    await example_menu(c)
+    if account_id:
+        await edit(c, "Пример удалён.", kb([[("💡 К примерам аккаунта", f"example:account:{account_id}")], [("🏠 Главное меню", "nav:home")]]))
+    else:
+        await example_menu(c)
 
 # Chats
 @router.message(F.text=="💬 Чаты")
