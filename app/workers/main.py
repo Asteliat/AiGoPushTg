@@ -1,6 +1,7 @@
-"""Watch explicitly selected dialogs and forward AI drafts to the operator; never send to chats."""
+"""Watch selected dialogs; send AI replies only for accounts configured for automatic mode."""
 import asyncio
 import logging
+from datetime import datetime, timezone
 import re
 from collections import defaultdict
 from aiogram import Bot
@@ -10,7 +11,7 @@ from app.ai.provider import AIUnavailableError
 from app.services.drafts import create_draft
 from app.settings import get_settings
 from app.storage.db import SessionFactory, init_db
-from app.storage.models import Account, ChatBinding
+from app.storage.models import Account, ChatBinding, Draft, DraftStatus
 
 
 async def heartbeat(redis) -> None:
@@ -84,6 +85,8 @@ async def main() -> None:
                         return
                 async with SessionFactory() as db:
                     try:
+                        current_account = await db.get(Account, account.id)
+                        reply_mode = current_account.reply_mode if current_account else "manual"
                         draft = await create_draft(
                             db,
                             incoming_text=incoming,
@@ -96,14 +99,44 @@ async def main() -> None:
                     except Exception:
                         logging.exception("Could not create draft for account %s", account.id)
                         return
+
+                sent_automatically = False
+                if reply_mode == "automatic":
+                    try:
+                        # Only reply in this explicitly selected dialog. Group messages
+                        # have already passed the mention/reply-to-account check above.
+                        await event.reply(draft.proposed_text)
+                        sent_automatically = True
+                        async with SessionFactory() as db:
+                            saved_draft = await db.get(Draft, draft.id)
+                            if saved_draft and saved_draft.status == DraftStatus.PENDING.value:
+                                saved_draft.status = DraftStatus.APPROVED.value
+                                saved_draft.reviewed_at = datetime.now(timezone.utc)
+                                await db.commit()
+                    except Exception:
+                        logging.exception("Automatic reply failed for account %s in chat %s", account.id, event.chat_id)
+
                 for admin_id in cfg.admin_id_set:
                     try:
-                        await bot.send_message(
-                            admin_id,
-                            f"Новое сообщение в выбранном чате\nАккаунт: {account.display_name}\nЧат: {label}\n\n"
-                            f"Входящее:\n{incoming[:1400]}\n\nЧерновик ИИ #{draft.id}:\n{draft.proposed_text[:1800]}\n\n"
-                            "Это только подсказка. В чат ничего не отправлено.",
-                        )
+                        if sent_automatically:
+                            text = (
+                                f"Автоматический ответ отправлен\nАккаунт: {account.display_name}\nЧат: {label}\n"
+                                f"Черновик #{draft.id}\n\nВходящее:\n{incoming[:1200]}\n\n"
+                                f"Отправленный ответ:\n{draft.proposed_text[:1600]}"
+                            )
+                        elif reply_mode == "automatic":
+                            text = (
+                                f"Не удалось отправить автоматический ответ\nАккаунт: {account.display_name}\nЧат: {label}\n"
+                                f"Черновик #{draft.id} сохранён для ручной проверки.\n\n"
+                                f"Входящее:\n{incoming[:1200]}\n\nОтвет ИИ:\n{draft.proposed_text[:1600]}"
+                            )
+                        else:
+                            text = (
+                                f"Новое сообщение в выбранном чате\nАккаунт: {account.display_name}\nЧат: {label}\n\n"
+                                f"Входящее:\n{incoming[:1200]}\n\nЧерновик ИИ #{draft.id}:\n{draft.proposed_text[:1600]}\n\n"
+                                "Режим ручной: в чат ничего не отправлено."
+                            )
+                        await bot.send_message(admin_id, text)
                     except Exception:
                         logging.exception("Could not notify administrator %s", admin_id)
 
