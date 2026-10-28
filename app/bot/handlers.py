@@ -30,6 +30,13 @@ MAIN_MENU = ReplyKeyboardMarkup(
     input_field_placeholder="Выберите действие…",
 )
 
+ACCOUNT_MODE_KEYBOARD = ReplyKeyboardMarkup(
+    keyboard=[[KeyboardButton(text="🤖 Автомат"), KeyboardButton(text="✍️ Ручной")], [KeyboardButton(text="❌ Отмена")]],
+    resize_keyboard=True,
+    one_time_keyboard=True,
+    input_field_placeholder="Выберите режим аккаунта",
+)
+
 CANCEL_KEYBOARD = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text="❌ Отмена")]],
     resize_keyboard=True,
@@ -44,6 +51,7 @@ class MenuInput(StatesGroup):
     chat_select = State()
     chat_disable = State()
     account_mode = State()
+    account_mode_choice = State()
 
 async def show_accounts(message: Message) -> None:
     async with SessionFactory() as session:
@@ -139,6 +147,7 @@ async def menu_new_draft(message: Message, state: FSMContext) -> None:
 @router.message(MenuInput.chat_select, F.text.in_({"❌ Отмена", "Отмена"}))
 @router.message(MenuInput.chat_disable, F.text.in_({"❌ Отмена", "Отмена"}))
 @router.message(MenuInput.account_mode, F.text.in_({"❌ Отмена", "Отмена"}))
+@router.message(MenuInput.account_mode_choice, F.text.in_({"❌ Отмена", "Отмена"}))
 async def cancel_menu_input(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer("Действие отменено.", reply_markup=MAIN_MENU)
@@ -232,27 +241,22 @@ async def menu_account_mode(message: Message, state: FSMContext) -> None:
     if not allowed(message.from_user.id if message.from_user else None): await denied(message); return
     await state.set_state(MenuInput.account_mode)
     await message.answer(
-        "Введите ID аккаунта и режим через пробел:\n"
-        "1 автомат — ответы будут отправляться автоматически\n"
-        "1 ручной — бот будет только присылать черновики\n"
-        "Новые аккаунты по умолчанию работают в автоматическом режиме. "
-        "Чтобы выйти, нажмите кнопку «❌ Отмена»",
+        "Введите ID Telegram-аккаунта из раздела «👤 Аккаунты».\n"
+        "Чтобы выйти, нажмите кнопку «❌ Отмена».",
         reply_markup=CANCEL_KEYBOARD,
     )
 
-@router.message(MenuInput.account_mode)
+@router.message(MenuInput.account_mode_choice, F.text.in_({"🤖 Автомат", "✍️ Ручной"}))
 async def menu_save_account_mode(message: Message, state: FSMContext) -> None:
     if not allowed(message.from_user.id if message.from_user else None): await denied(message); return
-    parts = (message.text or "").strip().lower().split()
-    if len(parts) != 2 or not parts[0].isdigit() or parts[1] not in {"автомат", "автоматический", "auto", "ручной", "manual"}:
-        await message.answer("Формат: ID_АККАУНТА автомат или ID_АККАУНТА ручной")
-        return
-    account_id = int(parts[0])
-    mode = "automatic" if parts[1] in {"автомат", "автоматический", "auto"} else "manual"
+    data = await state.get_data()
+    account_id = data.get("account_mode_id")
+    mode = "automatic" if message.text == "🤖 Автомат" else "manual"
     async with SessionFactory() as session:
-        account = await session.get(Account, account_id)
+        account = await session.get(Account, account_id) if account_id else None
         if not account:
-            await message.answer("Аккаунт с таким ID не найден.")
+            await state.clear()
+            await message.answer("Аккаунт с таким ID не найден. Начните заново через «⚙️ Режим аккаунта».", reply_markup=MAIN_MENU)
             return
         account.reply_mode = mode
         await session.commit()
@@ -260,6 +264,29 @@ async def menu_save_account_mode(message: Message, state: FSMContext) -> None:
     await state.clear()
     label = "автоматический" if mode == "automatic" else "ручной"
     await message.answer(f"Для аккаунта #{account_id} · {name} установлен {label} режим.", reply_markup=MAIN_MENU)
+
+@router.message(MenuInput.account_mode)
+async def menu_account_mode_account_id(message: Message, state: FSMContext) -> None:
+    if not allowed(message.from_user.id if message.from_user else None): await denied(message); return
+    raw = (message.text or "").strip()
+    if not raw.isdigit():
+        await message.answer("Введите только числовой ID аккаунта из раздела «👤 Аккаунты».")
+        return
+    account_id = int(raw)
+    async with SessionFactory() as session:
+        account = await session.get(Account, account_id)
+        if not account:
+            await message.answer("Аккаунт с таким ID не найден. Проверьте раздел «👤 Аккаунты» и попробуйте ещё раз.")
+            return
+        name = account.display_name
+        current_mode = account.reply_mode
+    await state.update_data(account_mode_id=account_id)
+    await state.set_state(MenuInput.account_mode_choice)
+    current_label = "автоматический" if current_mode == "automatic" else "ручной"
+    await message.answer(
+        f"Аккаунт: #{account_id} · {name}\nТекущий режим: {current_label}.\nВыберите новый режим:",
+        reply_markup=ACCOUNT_MODE_KEYBOARD,
+    )
 
 @router.message(F.text == "🔕 Отключить чат")
 async def menu_disable_chat(message: Message, state: FSMContext) -> None:
