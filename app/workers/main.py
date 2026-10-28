@@ -3,7 +3,7 @@ import asyncio
 import json
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 from aiogram import Bot
 from telethon import TelegramClient, events
@@ -32,6 +32,7 @@ async def main():
     watched: dict[int,dict[int,str]]={}
     account_snapshot: dict[int,Account]={}
     learning_tasks: dict[int,asyncio.Task]={}
+    last_discovery: dict[int,datetime] = {}
 
     async def on_message(event, *, aid, labels):
         label=labels.get(event.chat_id)
@@ -322,6 +323,47 @@ async def main():
             if key:
                 await redis.delete(key)
 
+    async def sync_account_dialogs(client: TelegramClient, aid: int) -> dict[int, str]:
+        discovered = []
+        try:
+            async for dialog in client.iter_dialogs():
+                entity = dialog.entity
+                if getattr(entity, "deleted", False) or getattr(entity, "bot", False):
+                    continue
+                title = (dialog.name or "").strip()
+                if not title:
+                    continue
+                discovered.append((int(dialog.id), title[:255]))
+            async with SessionFactory() as db:
+                current_bindings = list((await db.scalars(
+                    select(ChatBinding).where(ChatBinding.account_id == aid)
+                )).all())
+                by_chat = {binding.chat_id: binding for binding in current_bindings}
+                for chat_id, title in discovered:
+                    binding = by_chat.get(chat_id)
+                    if binding:
+                        binding.title = title
+                    else:
+                        db.add(ChatBinding(
+                            account_id=aid, chat_id=chat_id, title=title,
+                            enabled=True, auto_discovered=True,
+                        ))
+                await db.commit()
+            logging.info("Discovered %d eligible dialogs for account %s", len(discovered), aid)
+        except Exception:
+            # A transient history/dialogs failure must not take the whole account offline.
+            logging.exception("Could not refresh dialogs for account %s", aid)
+        finally:
+            last_discovery[aid] = datetime.now(timezone.utc)
+        async with SessionFactory() as db:
+            current_bindings = list((await db.scalars(
+                select(ChatBinding).where(
+                    ChatBinding.account_id == aid,
+                    ChatBinding.enabled.is_(True),
+                )
+            )).all())
+        return {binding.chat_id: binding.title for binding in current_bindings}
+
     async def connect_account(account, binding_rows):
         if not cfg.telegram_api_id or not cfg.telegram_api_hash:
             return
@@ -332,28 +374,7 @@ async def main():
                 logging.error("Account %s session is unauthorized",account.id)
                 await client.disconnect()
                 return
-            # Discover dialogs the account can access. Existing manual disables are preserved.
-            discovered = []
-            async for dialog in client.iter_dialogs():
-                entity = dialog.entity
-                if getattr(entity, "deleted", False) or getattr(entity, "bot", False):
-                    continue
-                title = (dialog.name or "").strip()
-                if not title:
-                    continue
-                discovered.append((int(dialog.id), title[:255]))
-            async with SessionFactory() as db:
-                current_bindings = list((await db.scalars(select(ChatBinding).where(ChatBinding.account_id == account.id))).all())
-                by_chat = {binding.chat_id: binding for binding in current_bindings}
-                for chat_id, title in discovered:
-                    binding = by_chat.get(chat_id)
-                    if binding:
-                        binding.title = title
-                    else:
-                        db.add(ChatBinding(account_id=account.id, chat_id=chat_id, title=title, enabled=True, auto_discovered=True))
-                await db.commit()
-                current_bindings = list((await db.scalars(select(ChatBinding).where(ChatBinding.account_id == account.id, ChatBinding.enabled.is_(True)))).all())
-            labels={b.chat_id:b.title for b in current_bindings}
+            labels = await sync_account_dialogs(client, account.id)
             watched[account.id]=labels
             client.add_event_handler(lambda event, aid=account.id, labels=labels: on_message(event,aid=aid,labels=labels),events.NewMessage(incoming=True))
             clients[account.id]=client
@@ -416,8 +437,12 @@ async def main():
                         await connect_account(account,by_account.get(aid,[]))
                     else:
                         labels=watched.get(aid,{})
-                        labels.clear()
-                        labels.update({b.chat_id:b.title for b in by_account.get(aid,[])})
+                        if now - last_discovery.get(aid, datetime.min.replace(tzinfo=timezone.utc)) >= timedelta(minutes=5):
+                            labels.clear()
+                            labels.update(await sync_account_dialogs(clients[aid], aid))
+                        else:
+                            labels.clear()
+                            labels.update({b.chat_id:b.title for b in by_account.get(aid,[])})
                     if account.learning_status in {"training", "stopping"} and aid in clients:
                         learning = learning_tasks.get(aid)
                         if learning is None or learning.done():
