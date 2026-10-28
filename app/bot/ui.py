@@ -568,7 +568,7 @@ async def chat_select(c):
             b.enabled = not b.enabled
             b.title = title
         else:
-            db.add(ChatBinding(account_id=aid, chat_id=cid, title=title, enabled=True)
+            db.add(ChatBinding(account_id=aid, chat_id=cid, title=title, enabled=True))
         await db.commit()
     await chat_account_refresh(c,aid)
 async def chat_account_refresh(c,aid):
