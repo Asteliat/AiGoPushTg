@@ -77,7 +77,7 @@ async def cancel(m: Message, state: FSMContext):
 @router.message(F.text == "ℹ️ Помощь")
 async def help_menu(m: Message):
     if await check_msg(m):
-        await m.answer("Управление аккаунтами, чатами, персонами, примерами и ИИ-агентами доступно кнопками. Подключение аккаунта использует QR-вход Telegram; при необходимости может запросить пароль 2FA в личном чате. Бот пытается удалять секретные сообщения сразу после получения. Используйте только собственные аккаунты.", reply_markup=MAIN)
+        await m.answer("Управление аккаунтами, чатами, персонами, примерами и ИИ-агентами доступно кнопками. Подключение аккаунта использует QR-вход Telegram. Если Telegram требует пароль 2FA, бот не принимает его и предлагает подключить аккаунт через доверенный терминал. Используйте только собственные аккаунты.", reply_markup=MAIN)
 
 @router.callback_query(F.data=="nav:home")
 async def home_cb(c: CallbackQuery, state: FSMContext):
