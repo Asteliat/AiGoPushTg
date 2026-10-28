@@ -176,7 +176,7 @@ async def main():
                 return
 
             chat_ids = [binding.chat_id for binding in bindings]
-            labels = {binding.chat_id: binding.title for binding in bindings}
+            labels = {binding.chat_id: f"Чат {index + 1}" for index, binding in enumerate(bindings)}
             key = f"atcivperson:learning:{aid}:{int(started.timestamp())}"
             had_buffer = bool(await redis.exists(key))
 
@@ -211,7 +211,7 @@ async def main():
                             history.append({
                                 "chat_id": int(binding.chat_id),
                                 "message_id": int(message.id),
-                                "chat": binding.title[:80],
+                                "chat": labels.get(binding.chat_id, "выбранный чат"),
                                 "text": body[:450],
                                 "outgoing": bool(message.out),
                                 "date": message.date.isoformat() if message.date else "",

@@ -203,7 +203,7 @@ async def acc_view(c):
     learning = a.learning_status in {"training", "stopping"}
     if learning and a.learning_ends_at:
         deadline = a.learning_ends_at.strftime("%d.%m.%Y %H:%M UTC")
-        learning_text = f"обучение · до {deadline}" if a.learning_status == "training" else "завершается"
+        learning_text = f"обучение · {a.learning_limit} сообщений · до {deadline}" if a.learning_status == "training" else "завершается"
     else:
         learning_text = "контекст сохранён" if a.learning_prompt.strip() else "не запускалось"
     txt=f"👤 {a.display_name} (@{a.username or 'нет username'})\nID: #{aid}\nАккаунт: {'включён' if a.enabled else 'выключен'}\nИИ для аккаунта: {'включён' if a.ai_enabled else 'выключен'}\nГлобальный ИИ должен быть включён.\nРежим: {'автоматический' if a.reply_mode=='automatic' else 'ручной'}\nАгент: {agent.name if agent else 'не назначен'}\nПерсона: {persona.name if persona else 'не назначена'}\nАктивных чатов: {chats}\nАвтообучение: {learning_text}"
