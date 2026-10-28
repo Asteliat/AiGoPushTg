@@ -23,6 +23,7 @@ MAIN_MENU = ReplyKeyboardMarkup(
         [KeyboardButton(text="📝 Черновики"), KeyboardButton(text="✨ Создать черновик")],
         [KeyboardButton(text="➕ Добавить персону"), KeyboardButton(text="➕ Добавить пример")],
         [KeyboardButton(text="🔗 Выбрать чат"), KeyboardButton(text="🔕 Отключить чат")],
+        [KeyboardButton(text="⚙️ Режим аккаунта")],
         [KeyboardButton(text="ℹ️ Помощь")],
     ],
     resize_keyboard=True,
@@ -35,11 +36,12 @@ class MenuInput(StatesGroup):
     draft = State()
     chat_select = State()
     chat_disable = State()
+    account_mode = State()
 
 async def show_accounts(message: Message) -> None:
     async with SessionFactory() as session:
         rows = (await session.scalars(select(Account).order_by(Account.id))).all()
-    await message.answer("\n".join(f"#{r.id} · {r.display_name} · @{r.username or 'нет username'} · {'включён' if r.enabled else 'выключен'}" for r in rows) or "Аккаунтов нет. Подключите аккаунт через CLI.")
+    await message.answer("\n".join(f"#{r.id} · {r.display_name} · @{r.username or 'нет username'} · {'включён' if r.enabled else 'выключен'} · режим: {'автоматический' if r.reply_mode == 'automatic' else 'ручной'}" for r in rows) or "Аккаунтов нет. Подключите аккаунт через CLI.")
 
 async def show_chats(message: Message) -> None:
     async with SessionFactory() as session:
@@ -82,7 +84,7 @@ async def start(message: Message) -> None:
     await message.answer(
         "AtcivPerson — управление аккаунтами и ИИ-черновиками. Выберите действие кнопками меню ниже.\n\n"
         "Подключение пользовательских аккаунтов выполняется владельцем через доверенный терминал.\n"
-        "ИИ готовит черновики; сообщения в чаты автоматически не отправляются.",
+        "Режим ответов настраивается отдельно для каждого аккаунта: автоматический по умолчанию или ручной.",
         reply_markup=MAIN_MENU,
     )
 
@@ -90,7 +92,7 @@ async def start(message: Message) -> None:
 async def help_cmd(message: Message) -> None:
     if not allowed(message.from_user.id if message.from_user else None):
         await denied(message); return
-    await message.answer("Подключение пользовательского аккаунта выполняется владельцем в доверенном терминале: python -m app.telegram_gateway.enroll. Никогда не отправляйте боту коды входа, пароль 2FA или session-файлы. ИИ только предлагает черновики; публикация выполняется вручную вне этого приложения.\n/persona_add НАЗВАНИЕ | СТИЛЬ — создать персону\n/example_add ID | ВХОДЯЩЕЕ || ОТВЕТ — добавить пример (0 — общая подборка)")
+    await message.answer("Подключение пользовательского аккаунта выполняется владельцем в доверенном терминале: python -m app.telegram_gateway.enroll. Никогда не отправляйте боту коды входа, пароль 2FA или session-файлы. Режим ответа задаётся отдельно для каждого аккаунта; по умолчанию включён автоматический режим. В ручном режиме бот присылает только черновики.\n/persona_add НАЗВАНИЕ | СТИЛЬ — создать персону\n/example_add ID | ВХОДЯЩЕЕ || ОТВЕТ — добавить пример (0 — общая подборка)")
 
 
 @router.message(F.text == "👤 Аккаунты")
@@ -129,6 +131,7 @@ async def menu_new_draft(message: Message, state: FSMContext) -> None:
 @router.message(MenuInput.example, F.text == "Отмена")
 @router.message(MenuInput.chat_select, F.text == "Отмена")
 @router.message(MenuInput.chat_disable, F.text == "Отмена")
+@router.message(MenuInput.account_mode, F.text == "Отмена")
 async def cancel_menu_input(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer("Действие отменено.", reply_markup=MAIN_MENU)
@@ -217,6 +220,39 @@ async def menu_save_chat(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(f"Чат «{found.name}» выбран для аккаунта #{account_id}.", reply_markup=MAIN_MENU)
 
+@router.message(F.text == "⚙️ Режим аккаунта")
+async def menu_account_mode(message: Message, state: FSMContext) -> None:
+    if not allowed(message.from_user.id if message.from_user else None): await denied(message); return
+    await state.set_state(MenuInput.account_mode)
+    await message.answer(
+        "Введите ID аккаунта и режим через пробел:\n"
+        "1 автомат — ответы будут отправляться автоматически\n"
+        "1 ручной — бот будет только присылать черновики\n"
+        "Новые аккаунты по умолчанию работают в автоматическом режиме. "
+        "Для отмены: «Отмена»"
+    )
+
+@router.message(MenuInput.account_mode)
+async def menu_save_account_mode(message: Message, state: FSMContext) -> None:
+    if not allowed(message.from_user.id if message.from_user else None): await denied(message); return
+    parts = (message.text or "").strip().lower().split()
+    if len(parts) != 2 or not parts[0].isdigit() or parts[1] not in {"автомат", "автоматический", "auto", "ручной", "manual"}:
+        await message.answer("Формат: ID_АККАУНТА автомат или ID_АККАУНТА ручной")
+        return
+    account_id = int(parts[0])
+    mode = "automatic" if parts[1] in {"автомат", "автоматический", "auto"} else "manual"
+    async with SessionFactory() as session:
+        account = await session.get(Account, account_id)
+        if not account:
+            await message.answer("Аккаунт с таким ID не найден.")
+            return
+        account.reply_mode = mode
+        await session.commit()
+        name = account.display_name
+    await state.clear()
+    label = "автоматический" if mode == "automatic" else "ручной"
+    await message.answer(f"Для аккаунта #{account_id} · {name} установлен {label} режим.", reply_markup=MAIN_MENU)
+
 @router.message(F.text == "🔕 Отключить чат")
 async def menu_disable_chat(message: Message, state: FSMContext) -> None:
     if not allowed(message.from_user.id if message.from_user else None): await denied(message); return
@@ -257,7 +293,7 @@ async def menu_make_draft(message: Message, state: FSMContext) -> None:
 @router.message(F.text == "ℹ️ Помощь")
 async def menu_help(message: Message) -> None:
     if not allowed(message.from_user.id if message.from_user else None): await denied(message); return
-    await message.answer("Выберите нужный раздел кнопками. Подключение аккаунтов выполняется владельцем через CLI: python -m app.telegram_gateway.enroll. Список диалогов: python -m app.telegram_gateway.dialogs ID_АККАУНТА. Не отправляйте боту коды входа, пароль 2FA или session-файлы. ИИ только готовит черновики; сообщения в чаты автоматически не отправляются.", reply_markup=MAIN_MENU)
+    await message.answer("Выберите нужный раздел кнопками. Подключение аккаунтов выполняется владельцем через CLI: python -m app.telegram_gateway.enroll. Список диалогов: python -m app.telegram_gateway.dialogs ID_АККАУНТА. Не отправляйте боту коды входа, пароль 2FA или session-файлы. Режим ответа настраивается для каждого аккаунта; автоматический включён по умолчанию, ручной режим отправляет только черновики.", reply_markup=MAIN_MENU)
 
 @router.message(Command("accounts"))
 async def accounts(message: Message) -> None:
