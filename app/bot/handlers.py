@@ -30,6 +30,13 @@ MAIN_MENU = ReplyKeyboardMarkup(
     input_field_placeholder="Выберите действие…",
 )
 
+CANCEL_KEYBOARD = ReplyKeyboardMarkup(
+    keyboard=[[KeyboardButton(text="❌ Отмена")]],
+    resize_keyboard=True,
+    one_time_keyboard=True,
+    input_field_placeholder="Нажмите «❌ Отмена» для выхода",
+)
+
 class MenuInput(StatesGroup):
     persona = State()
     example = State()
@@ -124,9 +131,9 @@ async def menu_drafts(message: Message) -> None:
 async def menu_new_draft(message: Message, state: FSMContext) -> None:
     if not allowed(message.from_user.id if message.from_user else None): await denied(message); return
     await state.set_state(MenuInput.draft)
-    await message.answer("Пришлите текст входящего сообщения, для которого нужно подготовить черновик. Для отмены нажмите «Отмена».")
+    await message.answer("Пришлите текст входящего сообщения, для которого нужно подготовить черновик. Чтобы выйти, нажмите кнопку «❌ Отмена».", reply_markup=CANCEL_KEYBOARD)
 
-@router.message(MenuInput.draft, F.text == "Отмена")
+@router.message(MenuInput.draft, F.text.in_({"❌ Отмена", "Отмена"}))
 @router.message(MenuInput.persona, F.text == "Отмена")
 @router.message(MenuInput.example, F.text == "Отмена")
 @router.message(MenuInput.chat_select, F.text == "Отмена")
@@ -140,7 +147,7 @@ async def cancel_menu_input(message: Message, state: FSMContext) -> None:
 async def menu_add_persona(message: Message, state: FSMContext) -> None:
     if not allowed(message.from_user.id if message.from_user else None): await denied(message); return
     await state.set_state(MenuInput.persona)
-    await message.answer("Введите название и стиль в формате:\nНазвание | инструкции стиля\nНапример: Дружелюбная | Пишет тепло и кратко.\nДля отмены: «Отмена»")
+    await message.answer("Введите название и стиль в формате:\nНазвание | инструкции стиля\nНапример: Дружелюбная | Пишет тепло и кратко.\nЧтобы выйти, нажмите кнопку «❌ Отмена».", reply_markup=CANCEL_KEYBOARD)
 
 @router.message(MenuInput.persona)
 async def menu_save_persona(message: Message, state: FSMContext) -> None:
@@ -163,7 +170,7 @@ async def menu_save_persona(message: Message, state: FSMContext) -> None:
 async def menu_add_example(message: Message, state: FSMContext) -> None:
     if not allowed(message.from_user.id if message.from_user else None): await denied(message); return
     await state.set_state(MenuInput.example)
-    await message.answer("Пришлите пример в формате:\nID персоны | входящее сообщение || предпочтительный ответ\nУкажите 0 для общей подборки. Удалите личные данные перед сохранением.\nДля отмены: «Отмена»")
+    await message.answer("Пришлите пример в формате:\nID персоны | входящее сообщение || предпочтительный ответ\nУкажите 0 для общей подборки. Удалите личные данные перед сохранением.\nЧтобы выйти, нажмите кнопку «❌ Отмена».", reply_markup=CANCEL_KEYBOARD)
 
 @router.message(MenuInput.example)
 async def menu_save_example(message: Message, state: FSMContext) -> None:
@@ -189,7 +196,7 @@ async def menu_save_example(message: Message, state: FSMContext) -> None:
 async def menu_select_chat(message: Message, state: FSMContext) -> None:
     if not allowed(message.from_user.id if message.from_user else None): await denied(message); return
     await state.set_state(MenuInput.chat_select)
-    await message.answer("Введите ID аккаунта и ID существующего чата через пробел. ID чатов можно посмотреть командой dialogs.py.\nНапример: 1 -1001234567890\nДля отмены: «Отмена»")
+    await message.answer("Введите ID аккаунта и ID существующего чата через пробел. ID чатов можно посмотреть командой dialogs.py.\nНапример: 1 -1001234567890\nЧтобы выйти, нажмите кнопку «❌ Отмена».", reply_markup=CANCEL_KEYBOARD)
 
 @router.message(MenuInput.chat_select)
 async def menu_save_chat(message: Message, state: FSMContext) -> None:
@@ -229,7 +236,8 @@ async def menu_account_mode(message: Message, state: FSMContext) -> None:
         "1 автомат — ответы будут отправляться автоматически\n"
         "1 ручной — бот будет только присылать черновики\n"
         "Новые аккаунты по умолчанию работают в автоматическом режиме. "
-        "Для отмены: «Отмена»"
+        "Чтобы выйти, нажмите кнопку «❌ Отмена»",
+        reply_markup=CANCEL_KEYBOARD,
     )
 
 @router.message(MenuInput.account_mode)
@@ -257,7 +265,7 @@ async def menu_save_account_mode(message: Message, state: FSMContext) -> None:
 async def menu_disable_chat(message: Message, state: FSMContext) -> None:
     if not allowed(message.from_user.id if message.from_user else None): await denied(message); return
     await state.set_state(MenuInput.chat_disable)
-    await message.answer("Введите ID аккаунта и ID чата через пробел. Для отмены: «Отмена»")
+    await message.answer("Введите ID аккаунта и ID чата через пробел. Чтобы выйти, нажмите кнопку «❌ Отмена».", reply_markup=CANCEL_KEYBOARD)
 
 @router.message(MenuInput.chat_disable)
 async def menu_do_disable_chat(message: Message, state: FSMContext) -> None:
