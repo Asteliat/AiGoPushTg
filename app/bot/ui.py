@@ -251,19 +251,27 @@ async def agents(m):
     await agents_screen(m)
 async def agents_screen(m):
     async with SessionFactory() as db:
-        aa=list((await db.scalars(select(AIAgent).order_by(AIAgent.id))).all()); on=await global_ai_enabled(db)
+        aa=list((await db.scalars(select(AIAgent).order_by(AIAgent.id))).all())
+        on=await global_ai_enabled(db)
         enabled_count=len((await db.scalars(select(Account).where(Account.ai_enabled.is_(True)))).all())
     buttons=[[(f"{'⭐ ' if a.is_default else ''}{'🟢' if a.enabled else '⚪'} {a.name}",f"agent:view:{a.id}")] for a in aa]
     buttons += [[(("🟢 Выключить ИИ для всех" if on else "🤖 Включить ИИ для всех"),"agent:global")],
-                [("🔀 Назначить агент всем аккаунтам","agent:assignall")],[("➕ Добавить ИИ-агента","agent:add")],[("⬅️ Главное меню","nav:home")]]
+                [("⏸ Выключить ИИ на аккаунтах" if enabled_count else "🤖 Включить ИИ на аккаунтах","agent:accounts_toggle")],
+                [("🔀 Назначить агент всем аккаунтам","agent:assignall")],
+                [("➕ Добавить ИИ-агента","agent:add")], [("⬅️ Главное меню","nav:home")]]
     await m.answer(f"🤖 ИИ-агенты\nГлобально: {'включён' if on else 'выключен'}\nАккаунтов с локальным ИИ: {enabled_count}",reply_markup=kb(buttons))
 @router.callback_query(F.data=="agent:menu")
 async def agents_cb(c):
     if not await check_cb(c): return
     async with SessionFactory() as db:
-        aa=list((await db.scalars(select(AIAgent).order_by(AIAgent.id))).all()); on=await global_ai_enabled(db)
+        aa=list((await db.scalars(select(AIAgent).order_by(AIAgent.id))).all())
+        on=await global_ai_enabled(db)
+        enabled_count=len((await db.scalars(select(Account).where(Account.ai_enabled.is_(True)))).all())
     buttons=[[(f"{'⭐ ' if a.is_default else ''}{'🟢' if a.enabled else '⚪'} {a.name}",f"agent:view:{a.id}")] for a in aa]
-    buttons += [[(("🟢 Выключить ИИ для всех" if on else "🤖 Включить ИИ для всех"),"agent:global")],[("🔀 Назначить агент всем аккаунтам","agent:assignall")],[("➕ Добавить ИИ-агента","agent:add")],[("⬅️ Главное меню","nav:home")]]
+    buttons += [[(("🟢 Выключить ИИ для всех" if on else "🤖 Включить ИИ для всех"),"agent:global")],
+                [("⏸ Выключить ИИ на аккаунтах" if enabled_count else "🤖 Включить ИИ на аккаунтах","agent:accounts_toggle")],
+                [("🔀 Назначить агент всем аккаунтам","agent:assignall")],
+                [("➕ Добавить ИИ-агента","agent:add")], [("⬅️ Главное меню","nav:home")]]
     await edit(c,f"🤖 ИИ-агенты · глобально {'включён' if on else 'выключен'}",kb(buttons))
 @router.callback_query(F.data=="agent:accounts_toggle")
 async def accounts_ai_toggle(c):
