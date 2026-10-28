@@ -926,28 +926,62 @@ async def example_menu(c):
     buttons=[[(f"#{e.id} · {ps.get(e.persona_id,'Общие')} · {e.incoming_text[:24]}",f"example:view:{e.id}")] for e in es]
     buttons += [[("➕ Добавить общий пример","example:add:0")],[("⬅️ Главное меню","nav:home")]]
     await edit(c,"🧩 Примеры",kb(buttons))
+@router.callback_query(F.data.startswith("example:account:"))
+async def account_examples(c):
+    if not await check_cb(c): return
+    aid = int(c.data.split(":")[2])
+    async with SessionFactory() as db:
+        account = await db.get(Account, aid)
+        examples = list((await db.scalars(select(Example).where(Example.account_id == aid).order_by(Example.id.desc()).limit(15))).all())
+        common_count = len((await db.scalars(select(Example).where(Example.account_id.is_(None), Example.consent_confirmed.is_(True)))).all())
+    if not account: await c.answer("Аккаунт не найден", show_alert=True); return
+    buttons = [[(f"#{e.id} · {e.incoming_text[:30]}", f"example:view:{e.id}")] for e in examples]
+    buttons += [[("➕ Добавить пример аккаунта", f"example:addacc:{aid}")],
+                [("💡 Общая библиотека примеров", "example:menu")],
+                [("⬅️ К аккаунту", f"acc:view:{aid}"), ("🏠 Главное меню", "nav:home")]]
+    await edit(c, f"Примеры аккаунта #{aid}\nИндивидуальных: {len(examples)} · Общих доступно: {common_count}", kb(buttons))
+
+@router.callback_query(F.data.startswith("example:addacc:"))
+async def account_example_add(c, state: FSMContext):
+    if not await check_cb(c): return
+    aid = int(c.data.split(":")[2])
+    async with SessionFactory() as db:
+        if not await db.get(Account, aid): await c.answer("Аккаунт не найден", show_alert=True); return
+    await state.clear()
+    await state.update_data(example_pid=0, example_account_id=aid, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
+    await state.set_state(Flow.example_incoming)
+    await edit(c, "Добавление примера для конкретного аккаунта. Отправьте входящее сообщение без личных данных.", CANCEL)
+
 @router.callback_query(F.data.startswith("example:add:"))
 async def example_add(c,state):
     if not await check_cb(c): return
     pid=int(c.data.split(":")[2])
     async with SessionFactory() as db:
         if pid and not await db.get(Persona,pid): await c.answer("Персона не найдена",show_alert=True); return
-    await state.clear(); await state.update_data(example_pid=pid); await state.set_state(Flow.example_incoming)
-    await c.message.answer("Введите входящее сообщение для примера. Удалите личные данные и сохраняйте только разрешённый текст.",reply_markup=CANCEL); await c.answer()
+    await state.clear(); await state.update_data(example_pid=pid, example_account_id=None, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id); await state.set_state(Flow.example_incoming)
+    await edit(c, "Введите входящее сообщение для примера. Удалите личные данные и сохраняйте только разрешённый текст.", CANCEL)
 @router.message(Flow.example_incoming)
 async def example_incoming(m,state):
     if not await check_msg(m) or not await private(m): return
     v=(m.text or "").strip()
-    if not v or len(v)>6000: await m.answer("Введите текст до 6000 символов.",reply_markup=CANCEL); return
-    await state.update_data(example_incoming=v); await state.set_state(Flow.example_reply); await m.answer("Введите предпочтительный ответ.",reply_markup=CANCEL)
+    if not v or len(v)>3500: await prompt_message(m,state,"Введите текст до 3500 символов."); return
+    await delete_msg(m)
+    await state.update_data(example_incoming=v); await state.set_state(Flow.example_reply); await prompt_message(m,state,"Введите предпочтительный ответ.")
 @router.message(Flow.example_reply)
 async def example_reply(m,state):
     if not await check_msg(m) or not await private(m): return
     v=(m.text or "").strip()
-    if not v or len(v)>6000: await m.answer("Введите ответ до 6000 символов.",reply_markup=CANCEL); return
+    if not v or len(v)>3500: await prompt_message(m,state,"Введите ответ до 3500 символов."); return
     d=await state.get_data()
-    async with SessionFactory() as db: e=Example(persona_id=d["example_pid"] or None,title="Добавлено через бот",incoming_text=d["example_incoming"],preferred_reply=v,consent_confirmed=True); db.add(e); await db.commit()
-    await state.clear(); await m.answer("Пример сохранён.",reply_markup=MAIN)
+    async with SessionFactory() as db:
+        e=Example(account_id=d.get("example_account_id"),persona_id=d["example_pid"] or None,title="Добавлено через бот",incoming_text=d["example_incoming"],preferred_reply=v,consent_confirmed=True)
+        db.add(e)
+        await db.commit()
+    if d.get("example_account_id"):
+        aid = d["example_account_id"]
+        await finish_prompt(m,state,"Пример аккаунта сохранён.",kb([[("💡 Примеры аккаунта",f"example:account:{aid}")],[("🏠 Главное меню","nav:home")]]))
+    else:
+        await finish_prompt(m,state,"Общий пример сохранён.",kb([[("💡 К примерам","example:menu")],[("🏠 Главное меню","nav:home")]]))
 @router.callback_query(F.data.startswith("example:view:"))
 async def example_view(c):
     if not await check_cb(c): return
@@ -1048,6 +1082,40 @@ async def drafts(m):
     if not ds: await m.answer("Ожидающих черновиков нет.",reply_markup=MAIN); return
     for d in ds:
         await m.answer(f"Черновик #{d.id} · {d.chat_label}\n\nВходящее:\n{d.incoming_text[:900]}\n\nОтвет ИИ:\n{d.proposed_text[:1600]}\n\nАвтоматической отправки этой кнопкой нет.",reply_markup=kb([[("✓ Отметить рассмотренным",f"draft:approve:{d.id}"),("Отклонить",f"draft:reject:{d.id}")]]))
+@router.callback_query(F.data=="drafts:menu")
+async def drafts_menu(c):
+    if not await check_cb(c): return
+    async with SessionFactory() as db:
+        drafts = list((await db.scalars(select(Draft).where(Draft.status == DraftStatus.PENDING).order_by(Draft.id.desc()).limit(20))).all())
+    buttons = [[(f"📝 #{d.id} · {d.chat_label[:28]}", f"draft:view:{d.id}")] for d in drafts]
+    buttons += [[("✨ Создать черновик", "draft:new")], [("🏠 Главное меню", "nav:home")]]
+    await edit(c, f"📝 Черновики на проверке · {len(drafts)}" if drafts else "📝 Ожидающих черновиков нет.", kb(buttons))
+
+@router.callback_query(F.data.startswith("draft:view:"))
+async def draft_view(c):
+    if not await check_cb(c): return
+    did = int(c.data.split(":")[2])
+    async with SessionFactory() as db: draft = await db.get(Draft, did)
+    if not draft: await c.answer("Черновик не найден", show_alert=True); return
+    await edit(c, f"📝 Черновик #{draft.id} · {draft.chat_label}\n\nВходящее:\n{draft.incoming_text[:1000]}\n\nПредложение ИИ:\n{draft.proposed_text[:1800]}\n\nСообщение в исходный чат автоматически не отправляется.", kb([
+        [("✓ Принять", f"draft:approve:{draft.id}"), ("✕ Отклонить", f"draft:reject:{draft.id}")],
+        [("⬅️ К черновикам", "drafts:menu"), ("🏠 Главное меню", "nav:home")],
+    ]))
+
+@router.callback_query(F.data=="draft:new")
+async def draft_new(c, state: FSMContext):
+    if not await check_cb(c): return
+    async with SessionFactory() as db:
+        if not await global_ai_enabled(db):
+            await c.answer("Сначала включите глобальный ИИ в разделе «ИИ-агенты».", show_alert=True); return
+        has = await db.scalar(select(AIAgent.id).where(AIAgent.enabled.is_(True)))
+    if not has:
+        await c.answer("Сначала создайте ИИ-агента.", show_alert=True); return
+    await state.clear()
+    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
+    await state.set_state(Flow.draft_text)
+    await edit(c, "✨ Отправьте текст входящего сообщения, для которого нужно подготовить черновик. Ответ не будет отправлен автоматически.", CANCEL)
+
 @router.callback_query(F.data.startswith("draft:"))
 async def draft_review(c):
     if not await check_cb(c): return
