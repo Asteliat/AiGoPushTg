@@ -143,12 +143,12 @@ async def cancel_cb(c: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data=="nav:help")
 async def help_cb(c: CallbackQuery):
     if not await check_cb(c): return
-    await edit(c, "ℹ️ <b>Помощь</b>\n\nУправляйте аккаунтами, чатами, персонами, примерами и ИИ-агентами через inline-кнопки. Подключение выполняется через QR. Если Telegram запросит пароль 2FA, бот не принимает его — используйте доверенный терминал. Используйте только собственные аккаунты или аккаунты с разрешением владельца.", back_home())
+    await edit(c, "ℹ️ Помощь\n\nУправляйте аккаунтами, чатами, персонами, примерами и ИИ-агентами через inline-кнопки. Подключение выполняется через QR. Если Telegram запросит пароль 2FA, бот не принимает его — используйте доверенный терминал. Используйте только собственные аккаунты или аккаунты с разрешением владельца.", back_home())
 
 @router.callback_query(F.data=="nav:settings")
 async def settings_cb(c: CallbackQuery):
     if not await check_cb(c): return
-    await edit(c, "⚙️ <b>Настройки</b>\n\nГлобальные настройки ИИ находятся в разделе «ИИ-агенты». Секреты задаются в .env на сервере и не отображаются в интерфейсе.", back_home())
+    await edit(c, "⚙️ Настройки\n\nГлобальные настройки ИИ находятся в разделе «ИИ-агенты». Секреты задаются в .env на сервере и не отображаются в интерфейсе.", back_home())
 
 # Account menu and QR login
 @router.message(F.text=="👤 Аккаунты")
@@ -157,7 +157,7 @@ async def accounts(m: Message):
     await accounts_screen(m)
 async def accounts_screen(m):
     async with SessionFactory() as db: rows=list((await db.scalars(select(Account).order_by(Account.id))).all())
-    buttons=[[(f"{'🟢' if a.enabled else '⚪'} #{a.id} · {a.display_name[:28]}",f"acc:view:{a.id}")] for a in rows]
+    buttons=[[(f"{'⏸' if a.manual_pause else ('🟢' if a.enabled else '⚪')} #{a.id} · {a.display_name[:28]}",f"acc:view:{a.id}")] for a in rows]
     buttons += [[("🟢 В работе","acc:status:work"),("🧠 На обучении","acc:status:training")], [("💤 В простое","acc:status:idle")]]
     buttons += [[("➕ Добавить аккаунт через QR","acc:add")],[("⬅️ Главное меню","nav:home")]]
     await m.answer("👤 Аккаунты\nВыберите аккаунт или подключите новый." if rows else "Аккаунтов пока нет. Подключите первый аккаунт кнопкой ниже.",reply_markup=kb(buttons))
@@ -165,7 +165,7 @@ async def accounts_screen(m):
 async def acc_list(c):
     if not await check_cb(c): return
     async with SessionFactory() as db: rows=list((await db.scalars(select(Account).order_by(Account.id))).all())
-    buttons=[[(f"{'🟢' if a.enabled else '⚪'} #{a.id} · {a.display_name[:28]}",f"acc:view:{a.id}")] for a in rows]
+    buttons=[[(f"{'⏸' if a.manual_pause else ('🟢' if a.enabled else '⚪')} #{a.id} · {a.display_name[:28]}",f"acc:view:{a.id}")] for a in rows]
     buttons += [[("🟢 В работе","acc:status:work"),("🧠 На обучении","acc:status:training")], [("💤 В простое","acc:status:idle")]]
     buttons += [[("➕ Добавить аккаунт через QR","acc:add")],[("⬅️ Главное меню","nav:home")]]
     await edit(c,"👤 Аккаунты",kb(buttons))
@@ -184,7 +184,7 @@ async def acc_status(c):
     for account in rows:
         if account.learning_status in {"training", "stopping"}:
             current = "training"
-        elif account.enabled and account.id in active_chat_accounts:
+        elif account.enabled and not account.manual_pause and account.id in active_chat_accounts:
             current = "work"
         else:
             current = "idle"
@@ -580,6 +580,8 @@ async def acc_learning_menu(c):
         await c.answer("Аккаунт не найден", show_alert=True); return
     if not account.enabled:
         await c.answer("Сначала включите аккаунт.", show_alert=True); return
+    if account.manual_pause:
+        await c.answer("Сначала возобновите работу аккаунта.", show_alert=True); return
     if account.reply_mode != "manual":
         await c.answer("Перед обучением переключите режим ответов на «Ручной».", show_alert=True); return
     if not chat_count:
@@ -1058,7 +1060,7 @@ async def chat_account(c):
     if not cfg.telegram_api_id or not cfg.telegram_api_hash: await c.answer("Не заданы Telegram API credentials.",show_alert=True); return
     async with SessionFactory() as db: a=await db.get(Account,aid)
     if not a: await c.answer("Аккаунт не найден",show_alert=True); return
-    client=TelegramClient(a.session_path,cfg.telegram_api_id,cfg.telegram_api_hash)
+    client=TelegramClient(a.session_path,cfg.telegram_api_id,cfg.telegram_api_hash,proxy=telethon_proxy(a.proxy_config_encrypted))
     try:
         await client.connect()
         if not await client.is_user_authorized(): await c.answer("Сессия не авторизована",show_alert=True); return
@@ -1075,7 +1077,7 @@ async def chat_select(c):
     if not await check_cb(c): return
     _,_,_,aid_s,cid_s=c.data.split(":"); aid,cid=int(aid_s),int(cid_s)
     async with SessionFactory() as db: a=await db.get(Account,aid)
-    client=TelegramClient(a.session_path,cfg.telegram_api_id,cfg.telegram_api_hash)
+    client=TelegramClient(a.session_path,cfg.telegram_api_id,cfg.telegram_api_hash,proxy=telethon_proxy(a.proxy_config_encrypted))
     try:
         await client.connect(); entity=await client.get_entity(cid)
         title=getattr(entity,"title",None) or getattr(entity,"username",None) or " ".join(x for x in [getattr(entity,"first_name",None),getattr(entity,"last_name",None)] if x) or str(cid)
