@@ -20,6 +20,7 @@ router = Router()
 cfg = get_settings()
 LOGIN_TASKS: dict[int, asyncio.Task] = {}
 PHONE_LOGIN_DATA: dict[int, dict] = {}
+QR_LOGIN_DATA: dict[int, dict] = {}
 
 # All navigation uses inline keyboards.
 
@@ -29,7 +30,7 @@ class Flow(StatesGroup):
     example_incoming=State(); example_reply=State(); draft_text=State()
     proxy_host=State(); proxy_port=State(); proxy_username=State(); proxy_password=State()
     learning_prompt_edit=State(); persona_override=State()
-    phone_number=State(); phone_code=State(); phone_password=State()
+    phone_number=State(); phone_code=State(); phone_password=State(); qr_password=State()
 
 def admin(uid): return uid is not None and uid in cfg.admin_id_set
 def kb(rows):
@@ -123,6 +124,7 @@ async def start(m: Message, state: FSMContext):
     if await check_msg(m):
         await state.clear()
         await cleanup_phone_login(m.from_user.id)
+        await cleanup_qr_login(m.from_user.id)
         await show_home(m)
 @router.message(F.text.in_({"❌ Отмена","Отмена"}))
 async def cancel(m: Message, state: FSMContext):
@@ -131,6 +133,7 @@ async def cancel(m: Message, state: FSMContext):
         task=LOGIN_TASKS.pop(m.from_user.id, None)
         if task and not task.done(): task.cancel()
         await cleanup_phone_login(m.from_user.id)
+        await cleanup_qr_login(m.from_user.id)
         await m.answer("Действие отменено.", reply_markup=MAIN)
 
 @router.callback_query(F.data=="nav:home")
@@ -146,6 +149,7 @@ async def cancel_cb(c: CallbackQuery, state: FSMContext):
     task = LOGIN_TASKS.pop(c.from_user.id, None)
     if task and not task.done(): task.cancel()
     await cleanup_phone_login(c.from_user.id)
+    await cleanup_qr_login(c.from_user.id)
     await edit(c, "Действие отменено.\n\n" + await home_text(), MAIN)
 
 @router.callback_query(F.data=="nav:settings")
@@ -246,7 +250,7 @@ async def start_qr_login(bot, uid, state: FSMContext, proxy_config=None):
     await state.clear()
     if not await edit_anchor(bot, ui_data, "Готовлю QR-вход…", kb([[("❌ Отменить подключение", "nav:cancel")]])):
         await bot.send_message(uid, "Готовлю QR-вход…", reply_markup=kb([[("❌ Отменить подключение", "nav:cancel")]]))
-    task = asyncio.create_task(qr_login(bot, uid, proxy_config, encrypted, ui_data))
+    task = asyncio.create_task(qr_login(bot, uid, proxy_config, encrypted, ui_data, state))
     LOGIN_TASKS[uid] = task
 
 @router.callback_query(F.data=="acc:add:direct")
@@ -543,11 +547,12 @@ async def phone_password_received(m: Message, state: FSMContext):
         password = ""
         await prompt_message(m, state, f"Пароль 2FA не принят ({type(exc).__name__}). Попробуйте ещё раз или отмените вход.")
 
-async def qr_login(bot, uid, proxy_config=None, encrypted_proxy=None, ui_data=None):
+async def qr_login(bot, uid, proxy_config=None, encrypted_proxy=None, ui_data=None, state=None):
     folder=cfg.data_dir/"sessions"; folder.mkdir(parents=True,exist_ok=True); os.chmod(folder,0o700)
     session_path=folder/("account_"+secrets.token_hex(8))
     client=TelegramClient(str(session_path),cfg.telegram_api_id,cfg.telegram_api_hash, proxy=telethon_proxy(config=proxy_config))
     success = False
+    keep_client = False
     qr_message_id = None
     try:
         await client.connect()
@@ -560,9 +565,22 @@ async def qr_login(bot, uid, proxy_config=None, encrypted_proxy=None, ui_data=No
         try:
             await qr.wait(timeout=120)
         except SessionPasswordNeededError:
-            twofa_text = "Telegram запросил пароль 2FA. Бот не принимает этот пароль. Подключите аккаунт через доверенный терминал."
-            if not await edit_anchor(bot, ui_data or {}, twofa_text, MAIN):
-                await bot.send_message(uid, twofa_text, reply_markup=MAIN)
+            if state is None:
+                raise RuntimeError("Telegram запросил пароль 2FA, но состояние входа недоступно.")
+            QR_LOGIN_DATA[uid] = {
+                "client": client, "session_path": session_path, "proxy_config": proxy_config,
+                "encrypted_proxy": encrypted_proxy, "ui_data": ui_data or {},
+            }
+            keep_client = True
+            await state.set_state(Flow.qr_password)
+            twofa_text = (
+                "🔐 Telegram запросил пароль двухэтапной аутентификации (2FA).\\n\\n"
+                "Отправьте пароль в этот личный чат. Бот не сохраняет его в БД и не выводит в логи, "
+                "а сообщение удаляется по возможности. Удаление не гарантируется — используйте только "
+                "собственный доверенный сервер. Нажмите «Отмена», если передумали."
+            )
+            if not await edit_anchor(bot, ui_data or {}, twofa_text, CANCEL):
+                await bot.send_message(uid, twofa_text, reply_markup=CANCEL)
             return
         me=await client.get_me()
         if not me: raise RuntimeError("Telegram не вернул профиль.")
@@ -595,14 +613,80 @@ async def qr_login(bot, uid, proxy_config=None, encrypted_proxy=None, ui_data=No
             try: await bot.delete_message(uid, qr_message_id)
             except Exception: pass
         try:
-            await client.disconnect()
+            if not keep_client:
+                await client.disconnect()
         finally:
-            if not success:
+            if not success and not keep_client:
                 for suffix in (".session", ".session-journal", ".session-wal", ".session-shm"):
                     try:
                         os.unlink(str(session_path) + suffix)
                     except FileNotFoundError:
                         pass
+
+async def cleanup_qr_login(uid: int) -> None:
+    data = QR_LOGIN_DATA.pop(uid, None)
+    if not data:
+        return
+    client = data.get("client")
+    if client:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+    path = data.get("session_path")
+    if path:
+        for suffix in (".session", ".session-journal", ".session-wal", ".session-shm"):
+            try:
+                os.unlink(str(path) + suffix)
+            except FileNotFoundError:
+                pass
+
+@router.message(Flow.qr_password)
+async def qr_password_received(m: Message, state: FSMContext):
+    if not await check_msg(m) or not await private(m): return
+    uid = m.from_user.id
+    password = m.text or ""
+    await delete_msg(m)
+    data = QR_LOGIN_DATA.get(uid)
+    if not data or not data.get("client"):
+        await state.clear()
+        await finish_prompt(m, state, "Сеанс QR-входа истёк. Начните подключение заново.", MAIN)
+        return
+    try:
+        await data["client"].sign_in(password=password)
+        password = ""
+        me = await data["client"].get_me()
+        if not me:
+            raise RuntimeError("Telegram не вернул профиль.")
+        name = " ".join(x for x in [me.first_name, me.last_name] if x) or str(me.id)
+        async with SessionFactory() as db:
+            row = await db.scalar(select(Account).where(Account.telegram_user_id == me.id))
+            if row:
+                row.username, row.display_name, row.session_path, row.enabled = me.username, name, str(data["session_path"]), True
+                row.manual_pause = False
+                row.connection_status = "connecting"
+                row.proxy_config_encrypted = data["encrypted_proxy"]
+            else:
+                db.add(Account(
+                    telegram_user_id=me.id, username=me.username, display_name=name,
+                    session_path=str(data["session_path"]), enabled=True, connection_status="connecting",
+                    reply_mode="manual", ai_enabled=False, proxy_config_encrypted=data["encrypted_proxy"],
+                ))
+            await db.commit()
+        try: os.chmod(str(data["session_path"]) + ".session", 0o600)
+        except OSError: pass
+        ui_data = data.get("ui_data") or await state.get_data()
+        await state.clear()
+        QR_LOGIN_DATA.pop(uid, None)
+        try: await data["client"].disconnect()
+        except Exception: pass
+        result_text = f"Аккаунт «{name}» подключён. ИИ выключен до отдельного включения в настройках."
+        if not await edit_anchor(m.bot, ui_data, result_text, kb([[("👤 Открыть аккаунты", "acc:list")], [("🏠 Главное меню", "nav:home")]])):
+            await m.answer(result_text, reply_markup=MAIN)
+    except Exception as exc:
+        password = ""
+        await prompt_message(m, state, f"Пароль 2FA не принят ({type(exc).__name__}). Попробуйте ещё раз или нажмите «Отмена».")
+
 @router.callback_query(F.data.startswith("acc:view:"))
 async def acc_view(c):
     if not await check_cb(c): return
