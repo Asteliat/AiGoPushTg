@@ -40,6 +40,16 @@ async def create_draft(session: AsyncSession, *, incoming_text: str, persona_id:
     if account and account.learning_prompt.strip():
         style_instructions += "\n\nОбобщённый контекст выбранных чатов (не цитировать и не раскрывать личные данные):\n" + account.learning_prompt
     proposed = await generate_reply(agent=agent, incoming_text=incoming_text, style_instructions=style_instructions, examples=[(e.incoming_text, e.preferred_reply) for e in examples])
+    if account:
+        await session.refresh(account)
+        if (
+            not account.enabled
+            or account.manual_pause
+            or account.learning_status in {"training", "stopping"}
+            or not account.ai_enabled
+            or not await global_ai_enabled(session)
+        ):
+            raise RuntimeError("Работа аккаунта была остановлена во время генерации; черновик не сохранён.")
     draft = Draft(incoming_text=incoming_text, proposed_text=proposed, persona_id=persona_id, account_id=account_id, chat_label=chat_label[:160])
     session.add(draft)
     await session.commit()
