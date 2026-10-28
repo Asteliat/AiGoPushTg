@@ -1,23 +1,105 @@
 from openai import AsyncOpenAI
-from app.settings import get_settings
+from app.storage.models import AIAgent
 
 class AIUnavailableError(RuntimeError):
     pass
 
-async def generate_reply(*, incoming_text: str, style_instructions: str, examples: list[tuple[str, str]]) -> str:
-    cfg = get_settings()
-    if not cfg.ai_enabled or not cfg.ai_api_key:
-        raise AIUnavailableError("ИИ отключён: настройте AI_ENABLED=true и AI_API_KEY в .env.")
-    client = AsyncOpenAI(api_key=cfg.ai_api_key, base_url=cfg.ai_base_url, timeout=cfg.ai_timeout_seconds)
+async def generate_reply(*, agent: AIAgent, incoming_text: str, style_instructions: str, examples: list[tuple[str, str]]) -> str:
+    if not agent.enabled or not agent.api_key.strip():
+        raise AIUnavailableError("ИИ-агент выключен или у него не заполнен API-ключ.")
+    if not agent.base_url.strip() or not agent.model.strip():
+        raise AIUnavailableError("Заполните адрес API и модель в настройках ИИ-агента.")
+    client = AsyncOpenAI(api_key=agent.api_key, base_url=agent.base_url, timeout=agent.timeout_seconds)
     sample = "\n\n".join(f"Сообщение: {a}\nПредпочтительный ответ: {b}" for a, b in examples[:8]) or "Примеров нет."
-    response = await client.chat.completions.create(
-        model=cfg.ai_model, temperature=0.7,
-        messages=[
-            {"role": "system", "content": "Составь только черновик ответа для проверки оператором; никогда не отправляй его сам. Не выдавай ИИ за человека, не выдумывай факты, не помогай со спамом, преследованием или скоординированным обманом. Не копируй персональные данные. Стиль: " + (style_instructions or "кратко, уважительно и естественно") + "\nПримеры:\n" + sample},
-            {"role": "user", "content": "Подготовь черновик ответа на сообщение:\n" + incoming_text},
-        ],
-    )
+    try:
+        response = await client.chat.completions.create(
+            model=agent.model, temperature=0.7,
+            messages=[
+                {"role": "system", "content": "Составь черновик ответа. Не выдумывай факты, не помогай со спамом, преследованием или скоординированным обманом. Не копируй персональные данные. Стиль: " + (style_instructions or "кратко, уважительно и естественно") + "\nПримеры:\n" + sample},
+                {"role": "user", "content": "Подготовь ответ на сообщение:\n" + incoming_text},
+            ],
+        )
+    except Exception as exc:
+        raise AIUnavailableError(f"Ошибка провайдера ИИ: {type(exc).__name__}: {str(exc)[:300]}") from exc
     result = response.choices[0].message.content
     if not result or not result.strip():
         raise AIUnavailableError("Провайдер ИИ вернул пустой ответ.")
     return result.strip()
+
+
+async def summarize_chat_context(*, agent: AIAgent, messages: list[dict]) -> str:
+    """Create a compact, non-verbatim context summary from temporary chat samples."""
+    if not agent.enabled or not agent.api_key.strip():
+        raise AIUnavailableError("ИИ-агент выключен или у него не заполнен API-ключ.")
+    if not agent.base_url.strip() or not agent.model.strip():
+        raise AIUnavailableError("Заполните адрес API и модель в настройках ИИ-агента.")
+    if not messages:
+        raise AIUnavailableError("Недостаточно сообщений для обучения.")
+    client = AsyncOpenAI(api_key=agent.api_key, base_url=agent.base_url, timeout=agent.timeout_seconds)
+
+    def render(batch: list[dict]) -> str:
+        lines = []
+        for item in batch:
+            direction = "сообщение аккаунта" if item.get("outgoing") else "сообщение собеседника"
+            text = str(item.get("text", "")).replace("\x00", "")[:450]
+            chat = str(item.get("chat", "чат"))[:80]
+            if text.strip():
+                lines.append(f"[{chat}; {direction}] {text}")
+        return "\n".join(lines)
+
+    summaries: list[str] = []
+    try:
+        # Process every sampled message in small batches to avoid sending a huge prompt.
+        for offset in range(0, len(messages), 60):
+            batch = render(messages[offset:offset + 60])
+            if not batch:
+                continue
+            response = await client.chat.completions.create(
+                model=agent.model,
+                temperature=0.2,
+                max_tokens=450,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Ты анализируешь выбранный чат для помощи оператору в подготовке черновиков. "
+                            "Сделай краткую сводку тем, терминов, контекста и общих норм общения. "
+                            "Не копируй сообщения дословно, не сохраняй имена, usernames, контакты, "
+                            "адреса, секреты или другие персональные данные. Не имитируй конкретного "
+                            "участника и не делай выводов о его чувствительных свойствах. "
+                            "Не предлагай спам, манипуляции или обход правил платформы."
+                        ),
+                    },
+                    {"role": "user", "content": "Обобщи эти сообщения без цитирования:\n" + batch},
+                ],
+            )
+            part = response.choices[0].message.content
+            if part and part.strip():
+                summaries.append(part.strip()[:2500])
+        if not summaries:
+            raise AIUnavailableError("ИИ не смог подготовить сводку по выбранным сообщениям.")
+        response = await client.chat.completions.create(
+            model=agent.model,
+            temperature=0.2,
+            max_tokens=700,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Объедини заметки в мини-контекст для генерации черновиков ответов. "
+                        "Верни только компактные инструкции на русском: основные темы, термины, "
+                        "общий тон и уместные границы общения. Не включай личные данные, имена, "
+                        "дословные цитаты и имитацию конкретного человека. Максимум 1800 символов."
+                    ),
+                },
+                {"role": "user", "content": "\n\n".join(summaries)},
+            ],
+        )
+    except AIUnavailableError:
+        raise
+    except Exception as exc:
+        raise AIUnavailableError(f"Не удалось обобщить контекст: {type(exc).__name__}: {str(exc)[:220]}") from exc
+    result = response.choices[0].message.content
+    if not result or not result.strip():
+        raise AIUnavailableError("Провайдер ИИ вернул пустую сводку.")
+    return result.strip()[:2500]

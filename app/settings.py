@@ -3,7 +3,7 @@ from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore", env_ignore_empty=True)
     bot_token: str = ""
     api_secret_key: str = ""
     admin_ids: str = ""
@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     ai_api_key: str = ""
     ai_model: str = "gpt-4o-mini"
     ai_timeout_seconds: float = 45.0
+    proxy_encryption_key: str = ""
 
     @property
     def admin_id_set(self) -> set[int]:
