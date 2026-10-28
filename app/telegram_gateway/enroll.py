@@ -41,5 +41,7 @@ async def main() -> None:
         await client.disconnect()
 
 if __name__ == "__main__":
-    asyncio.run(init_db())
-    asyncio.run(main())
+    async def run() -> None:
+        await init_db()
+        await main()
+    asyncio.run(run())
