@@ -83,6 +83,60 @@ async def draft_command(message: Message) -> None:
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✓ Принять для ручного использования", callback_data=f"draft:approve:{d.id}"), InlineKeyboardButton(text="Отклонить", callback_data=f"draft:reject:{d.id}")]])
     await message.answer(f"Черновик #{d.id}:\n\n{d.proposed_text}\n\nСообщение не отправлено.", reply_markup=kb)
 
+
+@router.message(Command("persona_add"))
+async def persona_add(message: Message) -> None:
+    if not allowed(message.from_user.id if message.from_user else None):
+        await denied(message); return
+    raw = (message.text or "").partition(" ")[2]
+    name, sep, style = raw.partition("|")
+    name, style = name.strip(), style.strip()
+    if not sep or not name or not style:
+        await message.answer("Формат: /persona_add название | инструкции стиля")
+        return
+    if len(name) > 80 or len(style) > 5000:
+        await message.answer("Название: до 80 символов; инструкции: до 5000 символов.")
+        return
+    async with SessionFactory() as session:
+        existing = await session.scalar(select(Persona).where(Persona.name == name))
+        if existing:
+            await message.answer("Персона с таким названием уже существует.")
+            return
+        item = Persona(name=name, description="Создана через управляющего бота", style_instructions=style)
+        session.add(item)
+        await session.commit()
+        await session.refresh(item)
+    await message.answer(f"Персона #{item.id} «{item.name}» создана.")
+
+@router.message(Command("example_add"))
+async def example_add(message: Message) -> None:
+    if not allowed(message.from_user.id if message.from_user else None):
+        await denied(message); return
+    raw = (message.text or "").partition(" ")[2]
+    left, sep, reply = raw.partition("||")
+    persona_raw, bar, incoming = left.partition("|")
+    if not sep or not bar or not incoming.strip() or not reply.strip():
+        await message.answer("Формат: /example_add ID_ПЕРСОНЫ | входящее сообщение || предпочтительный ответ\nДля общей подборки укажите 0 вместо ID.")
+        return
+    try:
+        persona_id = int(persona_raw.strip())
+    except ValueError:
+        await message.answer("ID персоны должен быть числом (0 — общая подборка).")
+        return
+    incoming, reply = incoming.strip(), reply.strip()
+    if max(len(incoming), len(reply)) > 6000:
+        await message.answer("Каждая часть должна быть не длиннее 6000 символов.")
+        return
+    async with SessionFactory() as session:
+        if persona_id and not await session.get(Persona, persona_id):
+            await message.answer("Персона с таким ID не найдена.")
+            return
+        item = Example(persona_id=persona_id or None, title="Добавлено оператором", incoming_text=incoming, preferred_reply=reply, consent_confirmed=True)
+        session.add(item)
+        await session.commit()
+        await session.refresh(item)
+    await message.answer(f"Пример #{item.id} сохранён. Сохраняйте только текст, который вы вправе использовать, предварительно удаляя личные данные.")
+
 @router.callback_query(F.data.startswith("draft:"))
 async def review_draft(callback: CallbackQuery) -> None:
     if not allowed(callback.from_user.id):
