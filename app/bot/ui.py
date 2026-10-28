@@ -269,9 +269,11 @@ async def agents_cb(c):
         aa=list((await db.scalars(select(AIAgent).order_by(AIAgent.id))).all())
         on=await global_ai_enabled(db)
         enabled_count=len((await db.scalars(select(Account).where(Account.ai_enabled.is_(True)))).all())
+        total_accounts=len((await db.scalars(select(Account))).all())
+    all_accounts_ai=total_accounts > 0 and enabled_count == total_accounts
     buttons=[[(f"{'⭐ ' if a.is_default else ''}{'🟢' if a.enabled else '⚪'} {a.name}",f"agent:view:{a.id}")] for a in aa]
     buttons += [[(("🟢 Выключить ИИ для всех" if on else "🤖 Включить ИИ для всех"),"agent:global")],
-                [("⏸ Выключить ИИ на аккаунтах" if enabled_count else "🤖 Включить ИИ на аккаунтах","agent:accounts_toggle")],
+                [("⏸ Выключить ИИ на аккаунтах" if all_accounts_ai else "🤖 Включить ИИ на аккаунтах","agent:accounts_toggle")],
                 [("🔀 Назначить агент всем аккаунтам","agent:assignall")],
                 [("➕ Добавить ИИ-агента","agent:add")], [("⬅️ Главное меню","nav:home")]]
     await edit(c,f"🤖 ИИ-агенты · глобально {'включён' if on else 'выключен'}",kb(buttons))
