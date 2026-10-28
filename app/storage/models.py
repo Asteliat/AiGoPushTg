@@ -28,6 +28,7 @@ class Account(Base):
     proxy_config_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
     manual_pause: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
+    connection_status: Mapped[str] = mapped_column(String(20), default="disconnected", server_default="disconnected", nullable=False)
     persona_style_override: Mapped[str] = mapped_column(Text, default="", server_default="", nullable=False)
     reply_mode: Mapped[str] = mapped_column(String(20), default="manual", server_default="manual", nullable=False)
     ai_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
