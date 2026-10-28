@@ -5,7 +5,7 @@ from aiogram import F, Router
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, Message, ReplyKeyboardMarkup, BufferedInputFile
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, BufferedInputFile
 from sqlalchemy import select
 from telethon import TelegramClient
 from telethon.errors import SessionPasswordNeededError
@@ -20,23 +20,68 @@ router = Router()
 cfg = get_settings()
 LOGIN_TASKS: dict[int, asyncio.Task] = {}
 
-MAIN = ReplyKeyboardMarkup(keyboard=[
-    [KeyboardButton(text="👤 Аккаунты"), KeyboardButton(text="💬 Чаты")],
-    [KeyboardButton(text="🤖 ИИ-агенты"), KeyboardButton(text="🎭 Персоны")],
-    [KeyboardButton(text="🧩 Примеры"), KeyboardButton(text="📝 Черновики")],
-    [KeyboardButton(text="✨ Создать черновик"), KeyboardButton(text="ℹ️ Помощь")],
-], resize_keyboard=True)
-CANCEL = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="❌ Отмена")]], resize_keyboard=True)
+# All navigation uses inline keyboards.
 
 class Flow(StatesGroup):
     agent_name=State(); agent_url=State(); agent_key=State(); agent_model=State(); agent_timeout=State()
     agent_edit=State(); persona_name=State(); persona_style=State()
     example_incoming=State(); example_reply=State(); draft_text=State()
     proxy_host=State(); proxy_port=State(); proxy_username=State(); proxy_password=State()
+    learning_prompt_edit=State(); persona_override=State()
 
 def admin(uid): return uid is not None and uid in cfg.admin_id_set
 def kb(rows):
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=t, callback_data=d) for t,d in row] for row in rows])
+
+MAIN = kb([
+    [("👤 Аккаунты", "acc:list"), ("🤖 ИИ-агенты", "agent:menu")],
+    [("🎭 Персоны", "persona:menu"), ("💡 Примеры", "example:menu")],
+    [("💬 Чаты", "chat:menu"), ("📝 Черновики", "drafts:menu")],
+    [("✨ Создать черновик", "draft:new"), ("⚙️ Настройки", "nav:settings")],
+    [("ℹ️ Помощь", "nav:help")],
+])
+CANCEL = kb([[("❌ Отмена", "nav:cancel")]])
+
+async def home_text():
+    async with SessionFactory() as db:
+        accounts = list((await db.scalars(select(Account).order_by(Account.id))).all())
+        agents = list((await db.scalars(select(AIAgent))).all())
+        ai_on = await global_ai_enabled(db)
+        pending = len((await db.scalars(select(Draft).where(Draft.status == DraftStatus.PENDING))).all())
+    training = sum(a.learning_status in {"training", "stopping"} for a in accounts)
+    paused = sum(a.manual_pause for a in accounts)
+    return (
+        "🧭 <b>AtcivPerson</b>\nПанель управления Telegram-аккаунтами\n\n"
+        f"👤 Аккаунтов: <b>{len(accounts)}</b> · ⏸ На паузе: <b>{paused}</b>\n"
+        f"🧠 На обучении: <b>{training}</b>\n"
+        f"🤖 ИИ-агентов: <b>{len(agents)}</b> · Глобальный ИИ: <b>{'включён' if ai_on else 'выключен'}</b>\n"
+        f"📝 Черновиков на проверке: <b>{pending}</b>\n\nВыберите раздел ниже."
+    )
+
+async def edit_anchor(bot, data, text, keyboard):
+    chat_id, message_id = data.get("ui_chat_id"), data.get("ui_message_id")
+    if not chat_id or not message_id:
+        return False
+    try:
+        await bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=keyboard, parse_mode="HTML")
+        return True
+    except Exception as exc:
+        if "message is not modified" in str(exc).lower():
+            return True
+        return False
+
+async def prompt_message(m, state, text):
+    data = await state.get_data()
+    await delete_msg(m)
+    if not await edit_anchor(m.bot, data, text, CANCEL):
+        await m.answer(text, reply_markup=CANCEL)
+
+async def finish_prompt(m, state, text, keyboard=MAIN):
+    data = await state.get_data()
+    await delete_msg(m)
+    await state.clear()
+    if not await edit_anchor(m.bot, data, text, keyboard):
+        await m.answer(text, reply_markup=keyboard)
 async def check_msg(m):
     if not admin(m.from_user.id if m.from_user else None):
         await m.answer("Доступ закрыт. Проверьте ADMIN_IDS."); return False
@@ -53,17 +98,17 @@ async def delete_msg(m):
     try: await m.delete()
     except Exception: pass
 async def show_home(m):
-    async with SessionFactory() as db:
-        nacc=len((await db.scalars(select(Account))).all())
-        nagent=len((await db.scalars(select(AIAgent))).all())
-        on=await global_ai_enabled(db)
-    await m.answer(f"AtcivPerson · управление\nАккаунтов: {nacc}\nИИ-агентов: {nagent}\nГлобальный ИИ: {'включён' if on else 'выключен'}", reply_markup=MAIN)
+    await m.answer(await home_text(), reply_markup=MAIN, parse_mode="HTML")
 async def edit(c, text, keyboard):
     if c.message:
-        try: await c.message.edit_text(text, reply_markup=keyboard)
-        except Exception: await c.message.answer(text, reply_markup=keyboard)
+        try:
+            await c.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+        except Exception as exc:
+            if "message is not modified" not in str(exc).lower():
+                try: await c.message.answer(text, reply_markup=keyboard, parse_mode="HTML")
+                except Exception: pass
     await c.answer()
-def back_home(): return kb([[("⬅️ Главное меню","nav:home")]])
+def back_home(): return kb([[('🏠 Главное меню','nav:home')]])
 
 @router.message(CommandStart())
 async def start(m: Message, state: FSMContext):
@@ -85,8 +130,25 @@ async def help_menu(m: Message):
 async def home_cb(c: CallbackQuery, state: FSMContext):
     if not await check_cb(c): return
     await state.clear()
-    if c.message: await c.message.answer("Главное меню:", reply_markup=MAIN)
-    await c.answer()
+    await edit(c, await home_text(), MAIN)
+
+@router.callback_query(F.data=="nav:cancel")
+async def cancel_cb(c: CallbackQuery, state: FSMContext):
+    if not await check_cb(c): return
+    await state.clear()
+    task = LOGIN_TASKS.pop(c.from_user.id, None)
+    if task and not task.done(): task.cancel()
+    await edit(c, "Действие отменено.\n\n" + await home_text(), MAIN)
+
+@router.callback_query(F.data=="nav:help")
+async def help_cb(c: CallbackQuery):
+    if not await check_cb(c): return
+    await edit(c, "ℹ️ <b>Помощь</b>\n\nУправляйте аккаунтами, чатами, персонами, примерами и ИИ-агентами через inline-кнопки. Подключение выполняется через QR. Если Telegram запросит пароль 2FA, бот не принимает его — используйте доверенный терминал. Используйте только собственные аккаунты или аккаунты с разрешением владельца.", back_home())
+
+@router.callback_query(F.data=="nav:settings")
+async def settings_cb(c: CallbackQuery):
+    if not await check_cb(c): return
+    await edit(c, "⚙️ <b>Настройки</b>\n\nГлобальные настройки ИИ находятся в разделе «ИИ-агенты». Секреты задаются в .env на сервере и не отображаются в интерфейсе.", back_home())
 
 # Account menu and QR login
 @router.message(F.text=="👤 Аккаунты")
