@@ -1,6 +1,6 @@
 # Phone-based Telegram account login
 
-The account onboarding menu supports QR and phone-number login, each with direct or configured-proxy connection.
+The account onboarding menu supports QR and phone-number login, each with direct or configured-proxy connection. Both flows support Telegram two-step verification: after the QR is scanned or the phone code is accepted, the bot prompts for the 2FA password if Telegram requires it.
 
 For phone login, Telegram sends a one-time code in Telegram or by SMS. If two-step verification is enabled, the bot can accept the second factor in the private chat. The app does not write that value to PostgreSQL or application logs and attempts to delete the incoming message. Telegram message deletion is not guaranteed, and the bot/server owner can access messages sent to the bot. Use this only on a server you trust; for sensitive accounts, prefer a trusted terminal.
 
