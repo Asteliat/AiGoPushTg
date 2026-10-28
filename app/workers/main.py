@@ -43,7 +43,7 @@ async def main():
             return
         async with SessionFactory() as db:
             current=await db.get(Account,aid)
-            if not current or not current.enabled or current.manual_pause or not current.ai_enabled or not await global_ai_enabled(db):
+            if not current or not current.enabled or current.manual_pause or current.learning_status in {"training", "stopping"} or not current.ai_enabled or not await global_ai_enabled(db):
                 return
             if not current.ai_agent_id:
                 logging.info("Account %s has AI enabled but no agent assigned",aid)
@@ -402,7 +402,7 @@ async def main():
         while True:
             try:
                 async with SessionFactory() as db:
-                    all_accounts=list((await db.scalars(select(Account)).all()).all()) if False else list((await db.scalars(select(Account))).all())
+                    all_accounts=list((await db.scalars(select(Account))).all())
                     bindings=list((await db.scalars(select(ChatBinding).where(ChatBinding.enabled.is_(True)))).all())
                 all_by_id={account.id:account for account in all_accounts}
                 accounts=[account for account in all_accounts if account.enabled and not account.manual_pause]

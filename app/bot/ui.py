@@ -164,7 +164,7 @@ async def accounts(m: Message):
     await accounts_screen(m)
 async def accounts_screen(m):
     async with SessionFactory() as db: rows=list((await db.scalars(select(Account).order_by(Account.id))).all())
-    buttons=[[(f"{'⏸' if a.manual_pause else ('🟢' if a.enabled else '⚪')} #{a.id} · {a.display_name[:28]}",f"acc:view:{a.id}")] for a in rows]
+    buttons=[[(f"{'⏸' if a.manual_pause else ('🟢' if a.connection_status == 'connected' else '⚪')} #{a.id} · {a.display_name[:28]}",f"acc:view:{a.id}")] for a in rows]
     buttons += [[("🟢 В работе","acc:status:work"),("🧠 На обучении","acc:status:training")], [("💤 В простое","acc:status:idle")]]
     buttons += [[("➕ Добавить аккаунт через QR","acc:add")],[("⬅️ Главное меню","nav:home")]]
     await m.answer("👤 Аккаунты\nВыберите аккаунт или подключите новый." if rows else "Аккаунтов пока нет. Подключите первый аккаунт кнопкой ниже.",reply_markup=kb(buttons))
@@ -172,7 +172,7 @@ async def accounts_screen(m):
 async def acc_list(c):
     if not await check_cb(c): return
     async with SessionFactory() as db: rows=list((await db.scalars(select(Account).order_by(Account.id))).all())
-    buttons=[[(f"{'⏸' if a.manual_pause else ('🟢' if a.enabled else '⚪')} #{a.id} · {a.display_name[:28]}",f"acc:view:{a.id}")] for a in rows]
+    buttons=[[(f"{'⏸' if a.manual_pause else ('🟢' if a.connection_status == 'connected' else '⚪')} #{a.id} · {a.display_name[:28]}",f"acc:view:{a.id}")] for a in rows]
     buttons += [[("🟢 В работе","acc:status:work"),("🧠 На обучении","acc:status:training")], [("💤 В простое","acc:status:idle")]]
     buttons += [[("➕ Добавить аккаунт через QR","acc:add")],[("⬅️ Главное меню","nav:home")]]
     await edit(c,"👤 Аккаунты",kb(buttons))
@@ -191,7 +191,7 @@ async def acc_status(c):
     for account in rows:
         if account.learning_status in {"training", "stopping"}:
             current = "training"
-        elif account.enabled and not account.manual_pause and account.id in active_chat_accounts:
+        elif account.enabled and not account.manual_pause and account.connection_status == "connected" and account.id in active_chat_accounts:
             current = "work"
         else:
             current = "idle"
@@ -341,9 +341,10 @@ async def qr_login(bot, uid, proxy_config=None, encrypted_proxy=None, ui_data=No
             row=await db.scalar(select(Account).where(Account.telegram_user_id==me.id))
             if row:
                 row.username,row.display_name,row.session_path,row.enabled=me.username,name,str(session_path),True
+                row.connection_status="connecting"
                 row.proxy_config_encrypted=encrypted_proxy
             else:
-                db.add(Account(telegram_user_id=me.id,username=me.username,display_name=name,session_path=str(session_path),enabled=True,reply_mode="manual",ai_enabled=False,proxy_config_encrypted=encrypted_proxy))
+                db.add(Account(telegram_user_id=me.id,username=me.username,display_name=name,session_path=str(session_path),enabled=True,connection_status="connecting",reply_mode="manual",ai_enabled=False,proxy_config_encrypted=encrypted_proxy))
             await db.commit()
         success = True
         try: os.chmod(str(session_path)+".session",0o600)
@@ -387,7 +388,8 @@ async def acc_view(c):
         learning_text = f"обучение · {a.learning_limit} сообщений · до {deadline}" if a.learning_status == "training" else "завершается"
     else:
         learning_text = "контекст сохранён" if a.learning_prompt.strip() else "не запускалось"
-    txt=f"👤 {a.display_name} (@{a.username or 'нет username'})\nID: #{aid}\nПодключение: {'включено' if a.enabled else 'выключено'}\nРабота: {'⏸ на паузе' if a.manual_pause else ('активна' if a.enabled else 'отключена')}\nИИ для аккаунта: {'включён' if a.ai_enabled else 'выключен'}\nРежим ответов: {'автоматический' if a.reply_mode=='automatic' else 'ручной'}\nАгент: {agent.name if agent else 'не назначен'}\nПерсона: {persona.name if persona else 'не назначена'}\nАктивных чатов: {chats}\nОбучение: {learning_text}\nИндивидуальные правила: {'заданы' if a.persona_style_override.strip() else 'нет'}"
+    conn_label = {"connected": "подключён", "connecting": "подключается", "paused": "пауза", "disconnected": "отключён", "error": "ошибка подключения", "unauthorized": "сессия не авторизована"}.get(a.connection_status, a.connection_status)
+    txt=f"👤 {a.display_name} (@{a.username or 'нет username'})\nID: #{aid}\nАккаунт: {'включён' if a.enabled else 'выключен'}\nСоединение: {conn_label}\nРабота: {'⏸ на паузе' if a.manual_pause else ('активна' if a.enabled else 'отключена')}\nИИ для аккаунта: {'включён' if a.ai_enabled else 'выключен'}\nРежим ответов: {'автоматический' if a.reply_mode=='automatic' else 'ручной'}\nАгент: {agent.name if agent else 'не назначен'}\nПерсона: {persona.name if persona else 'не назначена'}\nАктивных чатов: {chats}\nОбучение: {learning_text}\nИндивидуальные правила: {'заданы' if a.persona_style_override.strip() else 'нет'}"
     buttons=[
         [(("▶️ Возобновить работу" if a.manual_pause else "⏸ Пауза работы"),f"acc:pause:{aid}")],
         [(("⏸ Отключить аккаунт" if a.enabled else "▶️ Подключить аккаунт"),f"acc:toggle:{aid}")],
@@ -410,6 +412,7 @@ async def acc_pause(c):
         a=await db.get(Account,aid)
         if not a: await c.answer("Аккаунт не найден",show_alert=True); return
         a.manual_pause=not a.manual_pause
+        a.connection_status = "paused" if a.manual_pause else "connecting"
         await db.commit()
     await acc_view(c)
 
@@ -422,7 +425,9 @@ async def acc_toggle(c):
         if not a: await c.answer("Аккаунт не найден",show_alert=True); return
         if a.enabled and a.learning_status in {"training", "stopping"}:
             await c.answer("Сначала завершите автообучение, затем отключайте аккаунт.", show_alert=True); return
-        a.enabled=not a.enabled; await db.commit()
+        a.enabled=not a.enabled
+        a.connection_status = "connecting" if a.enabled else "disconnected"
+        await db.commit()
     await acc_view(c)
 @router.callback_query(F.data.startswith("acc:ai:"))
 async def acc_ai(c):
