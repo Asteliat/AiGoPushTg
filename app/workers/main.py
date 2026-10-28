@@ -130,6 +130,7 @@ async def main():
                         ).order_by(AIAgent.id))
                     if agent and agent.api_key.strip():
                         account.learning_prompt = await summarize_chat_context(agent=agent, messages=samples)
+                        account.learning_completed_at = datetime.now(timezone.utc)
                         summary_saved = True
                 account.learning_status = "idle"
                 account.learning_started_at = None
@@ -295,6 +296,7 @@ async def main():
                         )
                     if agent:
                         account.learning_prompt = await summarize_chat_context(agent=agent, messages=samples)
+                        account.learning_completed_at = datetime.now(timezone.utc)
                         summary_saved = True
                     else:
                         logging.warning("No enabled AI agent for learning on account %s", aid)

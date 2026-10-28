@@ -63,6 +63,9 @@ async def list_accounts(session: AsyncSession = Depends(get_session)) -> list[di
             "ai_agent_id": r.ai_agent_id,
             "persona_id": r.persona_id,
             "reply_mode": r.reply_mode,
+            "learning_status": r.learning_status,
+            "learning_completed_at": r.learning_completed_at,
+            "learning_limit": r.learning_limit,
         }
         for r in rows
     ]

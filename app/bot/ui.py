@@ -417,7 +417,11 @@ async def acc_view(c):
         deadline = a.learning_ends_at.strftime("%d.%m.%Y %H:%M UTC")
         learning_text = f"обучение на паузе · {a.learning_limit} сообщений · до {deadline}" if a.manual_pause else (f"обучение · {a.learning_limit} сообщений · до {deadline}" if a.learning_status == "training" else "завершается")
     else:
-        learning_text = "контекст сохранён" if a.learning_prompt.strip() else "не запускалось"
+        if a.learning_prompt.strip() and a.learning_completed_at:
+            completed = a.learning_completed_at.strftime("%d.%m.%Y %H:%M UTC")
+            learning_text = f"контекст сохранён · обновлён {completed}"
+        else:
+            learning_text = "контекст сохранён вручную" if a.learning_prompt.strip() else "не запускалось"
     conn_label = {"connected": "подключён", "connecting": "подключается", "paused": "пауза", "disconnected": "отключён", "error": "ошибка подключения", "unauthorized": "сессия не авторизована"}.get(a.connection_status, a.connection_status)
     txt=f"👤 {a.display_name} (@{a.username or 'нет username'})\nID: #{aid}\nАккаунт: {'включён' if a.enabled else 'выключен'}\nСоединение: {conn_label}\nРабота: {'⏸ на паузе' if a.manual_pause else ('активна' if a.enabled else 'отключена')}\nИИ для аккаунта: {'включён' if a.ai_enabled else 'выключен'}\nРежим ответов: {'автоматический' if a.reply_mode=='automatic' else 'ручной'}\nАгент: {agent.name if agent else 'не назначен'}\nПерсона: {persona.name if persona else 'не назначена'}\nАктивных чатов: {chats}\nОбучение: {learning_text}\nПрокси: {'настроен' if a.proxy_config_encrypted else 'нет'}\nИндивидуальные правила: {'заданы' if a.persona_style_override.strip() else 'нет'}"
     buttons=[
@@ -580,11 +584,16 @@ async def acc_learning_prompt(c):
         await c.answer("Аккаунт не найден", show_alert=True); return
     prompt = account.learning_prompt or ""
     shown = prompt[:3000] if prompt.strip() else "Контекст пока не сохранён. Можно запустить обучение или добавить текст вручную."
-    buttons = [
-        [("✏️ Редактировать контекст", f"acc:context:edit:{aid}")],
-        [("🧠 Запустить обучение заново", f"acc:learn:{aid}")],
-    ]
-    if prompt.strip():
+    training_active = account.learning_status == "training"
+    training_stopping = account.learning_status == "stopping"
+    buttons = [[("✏️ Редактировать контекст", f"acc:context:edit:{aid}")]]
+    if training_active:
+        buttons.append([("⏹ Остановить обучение", f"learn:stop:{aid}")])
+    elif training_stopping:
+        buttons.append([("⏳ Обучение завершается", f"acc:view:{aid}")])
+    else:
+        buttons.append([("🧠 Запустить / повторить обучение", f"acc:learn:{aid}")])
+    if prompt.strip() and not training_active and not training_stopping:
         buttons.append([("🗑 Очистить контекст", f"acc:context:clear:{aid}")])
     buttons.append([("⬅️ К аккаунту", f"acc:view:{aid}"), ("🏠 Главное меню", "nav:home")])
     await edit(c, f"🧠 Контекст обучения · аккаунт #{aid}\n\n{shown}", kb(buttons))

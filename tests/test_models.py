@@ -5,7 +5,7 @@ def test_draft_status_values() -> None:
 
 
 def test_account_has_learning_controls() -> None:
-    assert {"learning_status", "learning_started_at", "learning_ends_at", "learning_limit", "learning_prompt"} <= set(Account.__table__.columns.keys())
+    assert {"learning_status", "learning_started_at", "learning_ends_at", "learning_completed_at", "learning_limit", "learning_prompt"} <= set(Account.__table__.columns.keys())
 
 def test_account_has_pause_and_personal_context_controls() -> None:
     columns = set(Account.__table__.columns.keys())

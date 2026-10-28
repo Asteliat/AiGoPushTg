@@ -37,6 +37,7 @@ class Account(Base):
     learning_status: Mapped[str] = mapped_column(String(20), default="idle", server_default="idle", nullable=False)
     learning_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     learning_ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    learning_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     learning_limit: Mapped[int] = mapped_column(Integer, default=500, server_default="500", nullable=False)
     learning_prompt: Mapped[str] = mapped_column(Text, default="", server_default="", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
