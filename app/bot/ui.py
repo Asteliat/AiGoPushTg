@@ -121,7 +121,9 @@ def back_home(): return kb([[('🏠 Главное меню','nav:home')]])
 @router.message(CommandStart())
 async def start(m: Message, state: FSMContext):
     if await check_msg(m):
-        await state.clear(); await show_home(m)
+        await state.clear()
+        await cleanup_phone_login(m.from_user.id)
+        await show_home(m)
 @router.message(F.text.in_({"❌ Отмена","Отмена"}))
 async def cancel(m: Message, state: FSMContext):
     if await check_msg(m):
@@ -172,7 +174,7 @@ async def accounts_screen(m):
     async with SessionFactory() as db: rows=list((await db.scalars(select(Account).order_by(Account.id))).all())
     buttons=[[(f"{'⏸' if a.manual_pause else ('🟢' if a.connection_status == 'connected' else '⚪')} #{a.id} · {a.display_name[:28]}",f"acc:view:{a.id}")] for a in rows]
     buttons += [[("🟢 В работе","acc:status:work"),("🧠 На обучении","acc:status:training")], [("💤 В простое","acc:status:idle")]]
-    buttons += [[("➕ Добавить аккаунт через QR","acc:add")],[("⬅️ Главное меню","nav:home")]]
+    buttons += [[("➕ Добавить аккаунт","acc:add")],[("⬅️ Главное меню","nav:home")]]
     await m.answer("👤 Аккаунты\nВыберите аккаунт или подключите новый." if rows else "Аккаунтов пока нет. Подключите первый аккаунт кнопкой ниже.",reply_markup=kb(buttons))
 @router.callback_query(F.data=="acc:list")
 async def acc_list(c):
@@ -180,7 +182,7 @@ async def acc_list(c):
     async with SessionFactory() as db: rows=list((await db.scalars(select(Account).order_by(Account.id))).all())
     buttons=[[(f"{'⏸' if a.manual_pause else ('🟢' if a.connection_status == 'connected' else '⚪')} #{a.id} · {a.display_name[:28]}",f"acc:view:{a.id}")] for a in rows]
     buttons += [[("🟢 В работе","acc:status:work"),("🧠 На обучении","acc:status:training")], [("💤 В простое","acc:status:idle")]]
-    buttons += [[("➕ Добавить аккаунт через QR","acc:add")],[("⬅️ Главное меню","nav:home")]]
+    buttons += [[("➕ Добавить аккаунт","acc:add")],[("⬅️ Главное меню","nav:home")]]
     await edit(c,"👤 Аккаунты",kb(buttons))
 
 @router.callback_query(F.data.startswith("acc:status:"))
