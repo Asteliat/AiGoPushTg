@@ -296,7 +296,10 @@ async def proxy_username(m: Message, state: FSMContext):
     if value == "-":
         data = await state.get_data()
         config = {"type": data["proxy_type"], "host": data["proxy_host"], "port": data["proxy_port"], "username": "", "password": ""}
-        await start_qr_login(m.bot, m.from_user.id, state, config)
+        if data.get("proxy_account_id"):
+            await save_account_proxy(m, state, config)
+        else:
+            await start_qr_login(m.bot, m.from_user.id, state, config)
         return
     if not value or len(value) > 255:
         await prompt_message(m, state, "Логин должен быть от 1 до 255 символов или «-»."); return
@@ -313,7 +316,31 @@ async def proxy_password(m: Message, state: FSMContext):
         await prompt_message(m, state, "Пароль должен быть от 1 до 255 символов."); return
     data = await state.get_data()
     config = {"type": data["proxy_type"], "host": data["proxy_host"], "port": data["proxy_port"], "username": data["proxy_username"], "password": password}
-    await start_qr_login(m.bot, m.from_user.id, state, config)
+    if data.get("proxy_account_id"):
+        await save_account_proxy(m, state, config)
+    else:
+        await start_qr_login(m.bot, m.from_user.id, state, config)
+
+async def save_account_proxy(m: Message, state: FSMContext, config: dict):
+    data = await state.get_data()
+    aid = data.get("proxy_account_id")
+    try:
+        encrypted = encrypt_proxy(config)
+    except ProxyConfigurationError as exc:
+        await prompt_message(m, state, str(exc))
+        return
+    async with SessionFactory() as db:
+        account = await db.get(Account, aid)
+        if not account:
+            await finish_prompt(m, state, "Аккаунт не найден.")
+            return
+        account.proxy_config_encrypted = encrypted
+        account.connection_status = "paused" if account.manual_pause else ("connecting" if account.enabled else "disconnected")
+        await db.commit()
+    await finish_prompt(m, state, "Прокси сохранён зашифрованно. Worker переподключит аккаунт автоматически.", kb([
+        [("🌐 Настройки прокси", f"acc:proxysettings:{aid}")],
+        [("👤 К аккаунту", f"acc:view:{aid}"), ("🏠 Главное меню", "nav:home")],
+    ]))
 
 async def qr_login(bot, uid, proxy_config=None, encrypted_proxy=None, ui_data=None):
     folder=cfg.data_dir/"sessions"; folder.mkdir(parents=True,exist_ok=True); os.chmod(folder,0o700)
@@ -392,7 +419,7 @@ async def acc_view(c):
     else:
         learning_text = "контекст сохранён" if a.learning_prompt.strip() else "не запускалось"
     conn_label = {"connected": "подключён", "connecting": "подключается", "paused": "пауза", "disconnected": "отключён", "error": "ошибка подключения", "unauthorized": "сессия не авторизована"}.get(a.connection_status, a.connection_status)
-    txt=f"👤 {a.display_name} (@{a.username or 'нет username'})\nID: #{aid}\nАккаунт: {'включён' if a.enabled else 'выключен'}\nСоединение: {conn_label}\nРабота: {'⏸ на паузе' if a.manual_pause else ('активна' if a.enabled else 'отключена')}\nИИ для аккаунта: {'включён' if a.ai_enabled else 'выключен'}\nРежим ответов: {'автоматический' if a.reply_mode=='automatic' else 'ручной'}\nАгент: {agent.name if agent else 'не назначен'}\nПерсона: {persona.name if persona else 'не назначена'}\nАктивных чатов: {chats}\nОбучение: {learning_text}\nИндивидуальные правила: {'заданы' if a.persona_style_override.strip() else 'нет'}"
+    txt=f"👤 {a.display_name} (@{a.username or 'нет username'})\nID: #{aid}\nАккаунт: {'включён' if a.enabled else 'выключен'}\nСоединение: {conn_label}\nРабота: {'⏸ на паузе' if a.manual_pause else ('активна' if a.enabled else 'отключена')}\nИИ для аккаунта: {'включён' if a.ai_enabled else 'выключен'}\nРежим ответов: {'автоматический' if a.reply_mode=='automatic' else 'ручной'}\nАгент: {agent.name if agent else 'не назначен'}\nПерсона: {persona.name if persona else 'не назначена'}\nАктивных чатов: {chats}\nОбучение: {learning_text}\nПрокси: {'настроен' if a.proxy_config_encrypted else 'нет'}\nИндивидуальные правила: {'заданы' if a.persona_style_override.strip() else 'нет'}"
     buttons=[
         [(("▶️ Возобновить работу" if a.manual_pause else "⏸ Пауза работы"),f"acc:pause:{aid}")],
         [(("⏸ Отключить аккаунт" if a.enabled else "▶️ Подключить аккаунт"),f"acc:toggle:{aid}")],
@@ -400,6 +427,7 @@ async def acc_view(c):
         [(f"Режим: {'Автомат' if a.reply_mode=='automatic' else 'Ручной'} · изменить",f"acc:mode:{aid}")],
         [("🧠 Назначить ИИ-агента",f"acc:agents:{aid}")],
         [("🎭 Назначить персону",f"acc:personas:{aid}")],
+        [("🌐 Настройки прокси",f"acc:proxysettings:{aid}")],
         [("✏️ Индивидуальные правила",f"acc:personaoverride:{aid}")],
         [("💡 Примеры аккаунта",f"example:account:{aid}")],
         [("💬 Чаты аккаунта",f"chat:account:{aid}")],
@@ -407,6 +435,57 @@ async def acc_view(c):
         [("🧠 Контекст обучения",f"acc:learnprompt:{aid}")],
         [("⬅️ К аккаунтам","acc:list"),("🏠 Главное меню","nav:home")]]
     await edit(c,txt,kb(buttons))
+@router.callback_query(F.data.startswith("acc:proxysettings:"))
+async def acc_proxy_settings(c):
+    if not await check_cb(c): return
+    aid = int(c.data.split(":")[2])
+    async with SessionFactory() as db:
+        account = await db.get(Account, aid)
+    if not account: await c.answer("Аккаунт не найден", show_alert=True); return
+    current = "прокси настроен" if account.proxy_config_encrypted else "прямое соединение"
+    await edit(c, f"🌐 Настройки прокси аккаунта #{aid}\nТекущее подключение: {current}. Настройки сохраняются зашифрованными.", kb([
+        [("🔄 Изменить прокси", f"acc:proxyset:{aid}")],
+        [("🚫 Убрать прокси", f"acc:proxyclear:{aid}")],
+        [("⬅️ К аккаунту", f"acc:view:{aid}"), ("🏠 Главное меню", "nav:home")],
+    ]))
+
+@router.callback_query(F.data.startswith("acc:proxyset:"))
+async def acc_proxy_set(c, state: FSMContext):
+    if not await check_cb(c): return
+    aid = int(c.data.split(":")[2])
+    if not cfg.proxy_encryption_key.strip():
+        await c.answer("Сначала задайте PROXY_ENCRYPTION_KEY в .env.", show_alert=True); return
+    await state.clear()
+    await state.update_data(proxy_account_id=aid, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
+    await edit(c, "Выберите тип прокси для существующего аккаунта:", kb([
+        [("SOCKS5", "proxy:type:socks5"), ("HTTP", "proxy:type:http")],
+        [("⬅️ Отмена", f"acc:proxysettings:{aid}")],
+    ]))
+
+@router.callback_query(F.data.startswith("acc:proxyclear:"))
+async def acc_proxy_clear_confirm(c):
+    if not await check_cb(c): return
+    aid = int(c.data.split(":")[2])
+    await edit(c, f"Убрать прокси у аккаунта #{aid}? После этого worker переподключит его напрямую, если аккаунт включён и не на паузе.", kb([
+        [("🚫 Да, убрать прокси", f"acc:proxyclearconfirm:{aid}")],
+        [("⬅️ Отмена", f"acc:proxysettings:{aid}")],
+    ]))
+
+@router.callback_query(F.data.startswith("acc:proxyclearconfirm:"))
+async def acc_proxy_clear(c):
+    if not await check_cb(c): return
+    aid = int(c.data.split(":")[2])
+    async with SessionFactory() as db:
+        account = await db.get(Account, aid)
+        if not account: await c.answer("Аккаунт не найден", show_alert=True); return
+        account.proxy_config_encrypted = None
+        account.connection_status = "paused" if account.manual_pause else ("connecting" if account.enabled else "disconnected")
+        await db.commit()
+    await edit(c, f"Прокси аккаунта #{aid} удалён. Worker переподключится согласно состоянию аккаунта.", kb([
+        [("🌐 Настройки прокси", f"acc:proxysettings:{aid}")],
+        [("👤 К аккаунту", f"acc:view:{aid}"), ("🏠 Главное меню", "nav:home")],
+    ]))
+
 @router.callback_query(F.data.startswith("acc:pause:"))
 async def acc_pause(c):
     if not await check_cb(c): return
