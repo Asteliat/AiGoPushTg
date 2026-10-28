@@ -518,6 +518,8 @@ async def acc_context_edit_start(c, state: FSMContext):
         account = await db.get(Account, aid)
     if not account:
         await c.answer("Аккаунт не найден", show_alert=True); return
+    if account.learning_status in {"training", "stopping"}:
+        await c.answer("Сначала завершите или остановите обучение, чтобы не потерять изменения.", show_alert=True); return
     await state.clear()
     await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, context_account_id=aid)
     await state.set_state(Flow.learning_prompt_edit)
@@ -547,6 +549,12 @@ async def acc_context_edit_save(m: Message, state: FSMContext):
 async def acc_context_clear_confirm(c):
     if not await check_cb(c): return
     aid = int(c.data.split(":")[3])
+    async with SessionFactory() as db:
+        account = await db.get(Account, aid)
+    if not account:
+        await c.answer("Аккаунт не найден", show_alert=True); return
+    if account.learning_status in {"training", "stopping"}:
+        await c.answer("Сначала завершите или остановите обучение.", show_alert=True); return
     await edit(c, f"Очистить сохранённый контекст обучения аккаунта #{aid}? Переписка в Telegram не удаляется.", kb([
         [("🗑 Да, очистить", f"acc:context:clearconfirm:{aid}")],
         [("⬅️ Отмена", f"acc:learnprompt:{aid}")],
@@ -559,6 +567,8 @@ async def acc_context_clear(c):
     async with SessionFactory() as db:
         account = await db.get(Account, aid)
         if not account: await c.answer("Аккаунт не найден", show_alert=True); return
+        if account.learning_status in {"training", "stopping"}:
+            await c.answer("Обучение уже идёт; контекст не очищен.", show_alert=True); return
         account.learning_prompt = ""
         await db.commit()
     await edit(c, f"Контекст аккаунта #{aid} очищен.", kb([
