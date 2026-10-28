@@ -245,6 +245,8 @@ async def acc_mode(c):
     async with SessionFactory() as db:
         a=await db.get(Account,aid)
         if not a: await c.answer("Аккаунт не найден",show_alert=True); return
+        if a.learning_status in {"training", "stopping"} and a.reply_mode == "manual":
+            await c.answer("Нельзя включить автоматические ответы во время обучения.", show_alert=True); return
         a.reply_mode="manual" if a.reply_mode=="automatic" else "automatic"; await db.commit()
     await acc_view(c)
 @router.callback_query(F.data.startswith("acc:agents:"))
@@ -316,11 +318,22 @@ async def acc_learning_menu(c):
     if not ai_on or not enabled_agent:
         await c.answer("Включите глобальный ИИ и настройте хотя бы одного ИИ-агента.", show_alert=True); return
     buttons = [
+        [("✅ Подтверждаю право на обработку", f"learn:confirm:{aid}")],
+        [("⬅️ Назад", f"acc:view:{aid}")],
+    ]
+    await edit(c, f"🧠 Автообучение · аккаунт #{aid}\n\nБудут обработаны только выбранные чаты. Система сохранит краткую сводку тем и общего тона, а временные тексты удалит после завершения. Новые сообщения в выбранных чатах будут учитываться до остановки или максимум 3 дня. Перед продолжением подтвердите, что имеете право передавать эти сообщения выбранному ИИ-провайдеру. Обучение доступно только в ручном режиме ответов и само не отправляет сообщения.", kb(buttons))
+
+
+@router.callback_query(F.data.startswith("learn:confirm:"))
+async def acc_learning_confirm(c):
+    if not await check_cb(c): return
+    aid = int(c.data.split(":")[2])
+    buttons = [
         [("Изучить последние 500 сообщений", f"learn:start:{aid}:500")],
         [("Изучить последние 1000 сообщений", f"learn:start:{aid}:1000")],
         [("⬅️ Назад", f"acc:view:{aid}")],
     ]
-    await edit(c, f"🧠 Автообучение · аккаунт #{aid}\n\nБудут обработаны только выбранные чаты. Система сохранит краткую сводку тем и общего тона, а временные тексты удалит после завершения. Новые сообщения в выбранных чатах будут учитываться до остановки или максимум 3 дня. В процессе не отправляются сообщения в исходные чаты.", kb(buttons))
+    await edit(c, f"Выберите объём выборки для аккаунта #{aid}. В анализ попадут текстовые сообщения из выбранных активных чатов; сырые тексты временно хранятся в Redis и удаляются после завершения.", kb(buttons))
 
 @router.callback_query(F.data.startswith("learn:start:"))
 async def acc_learning_start(c):
@@ -341,6 +354,8 @@ async def acc_learning_start(c):
             await c.answer("Сначала выберите хотя бы один чат", show_alert=True); return
         if account.learning_status in {"training", "stopping"}:
             await c.answer("Обучение уже запущено", show_alert=True); return
+        if account.reply_mode != "manual":
+            await c.answer("Перед обучением переключите режим ответов на «Ручной».", show_alert=True); return
         if not await global_ai_enabled(db):
             await c.answer("Сначала включите глобальный ИИ", show_alert=True); return
         agent = await db.get(AIAgent, account.ai_agent_id) if account.ai_agent_id else None
