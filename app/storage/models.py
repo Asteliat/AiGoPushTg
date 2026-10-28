@@ -27,6 +27,8 @@ class Account(Base):
     session_path: Mapped[str] = mapped_column(String(512))
     proxy_config_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
+    manual_pause: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
+    persona_style_override: Mapped[str] = mapped_column(Text, default="", server_default="", nullable=False)
     reply_mode: Mapped[str] = mapped_column(String(20), default="manual", server_default="manual", nullable=False)
     ai_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
     ai_agent_id: Mapped[int | None] = mapped_column(ForeignKey("ai_agents.id", ondelete="SET NULL"), nullable=True, index=True)
@@ -53,6 +55,7 @@ class Example(Base):
     __tablename__ = "examples"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), nullable=True, index=True)
     persona_id: Mapped[int | None] = mapped_column(ForeignKey("personas.id", ondelete="SET NULL"), nullable=True)
     title: Mapped[str] = mapped_column(String(160), default="")
     incoming_text: Mapped[str] = mapped_column(Text)
@@ -92,6 +95,7 @@ class ChatBinding(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), index=True)
+    auto_discovered: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
     chat_id: Mapped[int] = mapped_column(BigInteger, index=True)
     title: Mapped[str] = mapped_column(String(255), default="")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)

@@ -1,4 +1,4 @@
-"""Dynamic account worker. Only explicitly selected chats are observed."""
+"""Dynamic account worker with per-account pause and automatic eligible-chat discovery."""
 import asyncio
 import json
 import logging
@@ -42,7 +42,7 @@ async def main():
             return
         async with SessionFactory() as db:
             current=await db.get(Account,aid)
-            if not current or not current.enabled or not current.ai_enabled or not await global_ai_enabled(db):
+            if not current or not current.enabled or current.manual_pause or not current.ai_enabled or not await global_ai_enabled(db):
                 return
             if not current.ai_agent_id:
                 logging.info("Account %s has AI enabled but no agent assigned",aid)
@@ -326,13 +326,34 @@ async def main():
                 logging.error("Account %s session is unauthorized",account.id)
                 await client.disconnect()
                 return
-            labels={b.chat_id:b.title for b in binding_rows if b.account_id==account.id and b.enabled}
+            # Discover dialogs the account can access. Existing manual disables are preserved.
+            discovered = []
+            async for dialog in client.iter_dialogs():
+                entity = dialog.entity
+                if getattr(entity, "deleted", False) or getattr(entity, "bot", False):
+                    continue
+                title = (dialog.name or "").strip()
+                if not title:
+                    continue
+                discovered.append((int(dialog.id), title[:255]))
+            async with SessionFactory() as db:
+                current_bindings = list((await db.scalars(select(ChatBinding).where(ChatBinding.account_id == account.id))).all())
+                by_chat = {binding.chat_id: binding for binding in current_bindings}
+                for chat_id, title in discovered:
+                    binding = by_chat.get(chat_id)
+                    if binding:
+                        binding.title = title
+                    else:
+                        db.add(ChatBinding(account_id=account.id, chat_id=chat_id, title=title, enabled=True, auto_discovered=True))
+                await db.commit()
+                current_bindings = list((await db.scalars(select(ChatBinding).where(ChatBinding.account_id == account.id, ChatBinding.enabled.is_(True)))).all())
+            labels={b.chat_id:b.title for b in current_bindings}
             watched[account.id]=labels
             client.add_event_handler(lambda event, aid=account.id, labels=labels: on_message(event,aid=aid,labels=labels),events.NewMessage(incoming=True))
             clients[account.id]=client
             tasks[account.id]=asyncio.create_task(client.run_until_disconnected())
             account_snapshot[account.id]=account
-            logging.info("Connected account %s; watching %d selected chats",account.id,len(labels))
+            logging.info("Connected account %s; watching %d eligible chats",account.id,len(labels))
         except Exception:
             logging.exception("Could not connect account %s",account.id)
             if client.is_connected():
@@ -342,7 +363,7 @@ async def main():
         while True:
             try:
                 async with SessionFactory() as db:
-                    accounts=list((await db.scalars(select(Account).where(Account.enabled.is_(True)))).all())
+                    accounts=list((await db.scalars(select(Account).where(Account.enabled.is_(True), Account.manual_pause.is_(False)))).all())
                     bindings=list((await db.scalars(select(ChatBinding).where(ChatBinding.enabled.is_(True)))).all())
                 active={a.id:a for a in accounts}
                 now = datetime.now(timezone.utc)

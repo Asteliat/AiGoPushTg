@@ -57,6 +57,7 @@ async def list_accounts(session: AsyncSession = Depends(get_session)) -> list[di
             "username": r.username,
             "display_name": r.display_name,
             "enabled": r.enabled,
+            "manual_pause": r.manual_pause,
             "ai_enabled": r.ai_enabled,
             "ai_agent_id": r.ai_agent_id,
             "persona_id": r.persona_id,

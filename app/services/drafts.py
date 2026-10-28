@@ -1,4 +1,4 @@
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.ai.provider import generate_reply
 from app.storage.models import Account, AIAgent, AppSetting, Draft, Example, Persona
@@ -22,10 +22,19 @@ async def create_draft(session: AsyncSession, *, incoming_text: str, persona_id:
         raise RuntimeError("Нет настроенного ИИ-агента. Откройте раздел «🤖 ИИ-агенты» и добавьте профиль.")
     persona = await session.get(Persona, persona_id) if persona_id else None
     query = select(Example).where(Example.consent_confirmed.is_(True))
+    general_examples = Example.account_id.is_(None)
     if persona_id:
-        query = query.where((Example.persona_id == persona_id) | (Example.persona_id.is_(None)))
+        general_examples = and_(general_examples, or_(Example.persona_id == persona_id, Example.persona_id.is_(None)))
+    else:
+        general_examples = and_(general_examples, Example.persona_id.is_(None))
+    if account:
+        query = query.where(or_(Example.account_id == account.id, general_examples))
+    else:
+        query = query.where(general_examples)
     examples = list((await session.scalars(query.order_by(Example.id.desc()).limit(8))).all())
     style_instructions = persona.style_instructions if persona else ""
+    if account and account.persona_style_override.strip():
+        style_instructions += "\n\nИндивидуальные правила аккаунта:\n" + account.persona_style_override
     if account and account.learning_prompt.strip():
         style_instructions += "\n\nОбобщённый контекст выбранных чатов (не цитировать и не раскрывать личные данные):\n" + account.learning_prompt
     proposed = await generate_reply(agent=agent, incoming_text=incoming_text, style_instructions=style_instructions, examples=[(e.incoming_text, e.preferred_reply) for e in examples])
