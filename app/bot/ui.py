@@ -14,6 +14,7 @@ from app.services.drafts import create_draft, global_ai_enabled
 from app.settings import get_settings
 from app.storage.db import SessionFactory
 from app.storage.models import Account, AIAgent, AppSetting, ChatBinding, Draft, DraftStatus, Example, Persona
+from app.telegram_gateway.proxy import ProxyConfigurationError, encrypt_proxy, telethon_proxy
 
 router = Router()
 cfg = get_settings()
@@ -31,6 +32,7 @@ class Flow(StatesGroup):
     agent_name=State(); agent_url=State(); agent_key=State(); agent_model=State(); agent_timeout=State()
     agent_edit=State(); persona_name=State(); persona_style=State()
     example_incoming=State(); example_reply=State(); draft_text=State()
+    proxy_host=State(); proxy_port=State(); proxy_username=State(); proxy_password=State()
 
 def admin(uid): return uid is not None and uid in cfg.admin_id_set
 def kb(rows):
@@ -138,17 +140,107 @@ async def acc_add(c, state: FSMContext):
         await c.answer("Откройте личный чат с ботом.",show_alert=True); return
     if not cfg.telegram_api_id or not cfg.telegram_api_hash:
         await c.answer("Заполните TELEGRAM_API_ID и TELEGRAM_API_HASH в .env.",show_alert=True); return
-    uid=c.from_user.id
-    if uid in LOGIN_TASKS and not LOGIN_TASKS[uid].done():
-        await c.answer("Вход уже запущен. Отмените текущий процесс перед новым.",show_alert=True); return
     await state.clear()
-    task=asyncio.create_task(qr_login(c.message.bot,uid))
-    LOGIN_TASKS[uid]=task
-    await c.answer("Готовлю QR-вход…")
-async def qr_login(bot, uid):
+    await edit(c, "Как подключить Telegram-аккаунт?", kb([[("🌐 Подключить через прокси", "acc:add:proxy")], [("➡️ Без прокси", "acc:add:direct")], [("⬅️ Назад", "acc:list")]]))
+
+async def start_qr_login(bot, uid, state: FSMContext, proxy_config=None):
+    if uid in LOGIN_TASKS and not LOGIN_TASKS[uid].done():
+        await bot.send_message(uid, "Вход уже запущен. Отмените текущий процесс перед новым.")
+        return
+    try:
+        encrypted = encrypt_proxy(proxy_config) if proxy_config else None
+    except ProxyConfigurationError as exc:
+        await bot.send_message(uid, str(exc), reply_markup=MAIN)
+        return
+    await state.clear()
+    task = asyncio.create_task(qr_login(bot, uid, proxy_config, encrypted))
+    LOGIN_TASKS[uid] = task
+    await bot.send_message(uid, "Готовлю QR-вход…")
+
+@router.callback_query(F.data=="acc:add:direct")
+async def acc_add_direct(c, state: FSMContext):
+    if not await check_cb(c): return
+    if not c.message or c.message.chat.type != "private":
+        await c.answer("Откройте личный чат с ботом.", show_alert=True); return
+    if not cfg.telegram_api_id or not cfg.telegram_api_hash:
+        await c.answer("Заполните TELEGRAM_API_ID и TELEGRAM_API_HASH в .env.", show_alert=True); return
+    await c.answer()
+    await start_qr_login(c.message.bot, c.from_user.id, state)
+
+@router.callback_query(F.data=="acc:add:proxy")
+async def acc_add_proxy(c, state: FSMContext):
+    if not await check_cb(c): return
+    if not c.message or c.message.chat.type != "private":
+        await c.answer("Откройте личный чат с ботом.", show_alert=True); return
+    if not cfg.telegram_api_id or not cfg.telegram_api_hash:
+        await c.answer("Заполните TELEGRAM_API_ID и TELEGRAM_API_HASH в .env.", show_alert=True); return
+    if not cfg.proxy_encryption_key.strip():
+        await c.answer("Сначала задайте PROXY_ENCRYPTION_KEY в .env и перезапустите приложение.", show_alert=True); return
+    await state.clear()
+    await edit(c, "Выберите тип прокси:", kb([[("SOCKS5", "proxy:type:socks5"), ("HTTP", "proxy:type:http")], [("⬅️ Назад", "acc:add")]]))
+
+@router.callback_query(F.data.startswith("proxy:type:"))
+async def proxy_type(c, state: FSMContext):
+    if not await check_cb(c): return
+    kind = c.data.rsplit(":", 1)[-1]
+    if kind not in {"socks5", "http"}:
+        await c.answer("Неизвестный тип прокси.", show_alert=True); return
+    await state.update_data(proxy_type=kind)
+    await state.set_state(Flow.proxy_host)
+    await c.answer()
+    if c.message: await c.message.answer("Введите IP-адрес или домен прокси:", reply_markup=CANCEL)
+
+@router.message(Flow.proxy_host)
+async def proxy_host(m: Message, state: FSMContext):
+    if not await check_msg(m) or not await private(m): return
+    host = (m.text or "").strip()
+    if not host or len(host) > 253 or any(ch.isspace() for ch in host) or "://" in host or "/" in host:
+        await m.answer("Введите только IP или домен, без протокола и пути.", reply_markup=CANCEL); return
+    await state.update_data(proxy_host=host)
+    await state.set_state(Flow.proxy_port)
+    await m.answer("Введите порт прокси (1–65535):", reply_markup=CANCEL)
+
+@router.message(Flow.proxy_port)
+async def proxy_port(m: Message, state: FSMContext):
+    if not await check_msg(m) or not await private(m): return
+    value = (m.text or "").strip()
+    if not value.isdigit() or not 1 <= int(value) <= 65535:
+        await m.answer("Порт должен быть числом от 1 до 65535.", reply_markup=CANCEL); return
+    await state.update_data(proxy_port=int(value))
+    await state.set_state(Flow.proxy_username)
+    await m.answer("Логин прокси или «-», если авторизация не нужна:", reply_markup=CANCEL)
+
+@router.message(Flow.proxy_username)
+async def proxy_username(m: Message, state: FSMContext):
+    if not await check_msg(m) or not await private(m): return
+    value = (m.text or "").strip()
+    await delete_msg(m)
+    if value == "-":
+        data = await state.get_data()
+        config = {"type": data["proxy_type"], "host": data["proxy_host"], "port": data["proxy_port"], "username": "", "password": ""}
+        await start_qr_login(m.bot, m.from_user.id, state, config)
+        return
+    if not value or len(value) > 255:
+        await m.answer("Логин должен быть от 1 до 255 символов или «-».", reply_markup=CANCEL); return
+    await state.update_data(proxy_username=value)
+    await state.set_state(Flow.proxy_password)
+    await m.answer("Введите пароль прокси. Сообщение будет удалено по возможности:", reply_markup=CANCEL)
+
+@router.message(Flow.proxy_password)
+async def proxy_password(m: Message, state: FSMContext):
+    if not await check_msg(m) or not await private(m): return
+    password = (m.text or "").strip()
+    await delete_msg(m)
+    if not password or len(password) > 255:
+        await m.answer("Пароль должен быть от 1 до 255 символов.", reply_markup=CANCEL); return
+    data = await state.get_data()
+    config = {"type": data["proxy_type"], "host": data["proxy_host"], "port": data["proxy_port"], "username": data["proxy_username"], "password": password}
+    await start_qr_login(m.bot, m.from_user.id, state, config)
+
+async def qr_login(bot, uid, proxy_config=None, encrypted_proxy=None):
     folder=cfg.data_dir/"sessions"; folder.mkdir(parents=True,exist_ok=True); os.chmod(folder,0o700)
     session_path=folder/("account_"+secrets.token_hex(8))
-    client=TelegramClient(str(session_path),cfg.telegram_api_id,cfg.telegram_api_hash)
+    client=TelegramClient(str(session_path),cfg.telegram_api_id,cfg.telegram_api_hash, proxy=telethon_proxy(config=proxy_config))
     success = False
     try:
         await client.connect()
@@ -168,7 +260,8 @@ async def qr_login(bot, uid):
         async with SessionFactory() as db:
             row=await db.scalar(select(Account).where(Account.telegram_user_id==me.id))
             if row: row.username,row.display_name,row.session_path,row.enabled=me.username,name,str(session_path),True
-            else: db.add(Account(telegram_user_id=me.id,username=me.username,display_name=name,session_path=str(session_path),enabled=True,reply_mode="manual",ai_enabled=False))
+            row.proxy_config_encrypted=encrypted_proxy
+            else: db.add(Account(telegram_user_id=me.id,username=me.username,display_name=name,session_path=str(session_path),enabled=True,reply_mode="manual",ai_enabled=False,proxy_config_encrypted=encrypted_proxy))
             await db.commit()
         success = True
         try: os.chmod(str(session_path)+".session",0o600)

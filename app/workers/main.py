@@ -13,6 +13,7 @@ from app.services.drafts import create_draft, global_ai_enabled
 from app.settings import get_settings
 from app.storage.db import SessionFactory, init_db
 from app.storage.models import Account, AIAgent, ChatBinding, Draft, DraftStatus
+from app.telegram_gateway.proxy import telethon_proxy
 
 async def heartbeat(redis):
     while True:
@@ -318,7 +319,7 @@ async def main():
     async def connect_account(account, binding_rows):
         if not cfg.telegram_api_id or not cfg.telegram_api_hash:
             return
-        client=TelegramClient(account.session_path,cfg.telegram_api_id,cfg.telegram_api_hash)
+        client=TelegramClient(account.session_path,cfg.telegram_api_id,cfg.telegram_api_hash,proxy=telethon_proxy(account.proxy_config_encrypted))
         try:
             await client.connect()
             if not await client.is_user_authorized():

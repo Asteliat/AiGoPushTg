@@ -25,6 +25,7 @@ class Account(Base):
     username: Mapped[str | None] = mapped_column(String(64), nullable=True)
     display_name: Mapped[str] = mapped_column(String(160), default="")
     session_path: Mapped[str] = mapped_column(String(512))
+    proxy_config_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
     reply_mode: Mapped[str] = mapped_column(String(20), default="manual", server_default="manual", nullable=False)
     ai_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)

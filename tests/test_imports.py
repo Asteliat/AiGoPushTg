@@ -7,5 +7,6 @@ def test_application_modules_import() -> None:
         "app.api.main",
         "app.workers.main",
         "app.telegram_gateway.enroll",
+        "app.telegram_gateway.proxy",
     ):
         import_module(module)
