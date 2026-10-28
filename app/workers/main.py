@@ -390,11 +390,12 @@ async def main():
         while True:
             try:
                 async with SessionFactory() as db:
-                    accounts=list((await db.scalars(select(Account).where(Account.enabled.is_(True), Account.manual_pause.is_(False)))).all())
+                    all_accounts=list((await db.scalars(select(Account).where(Account.enabled.is_(True)))).all())
                     bindings=list((await db.scalars(select(ChatBinding).where(ChatBinding.enabled.is_(True)))).all())
+                accounts=[account for account in all_accounts if not account.manual_pause]
                 active={a.id:a for a in accounts}
                 now = datetime.now(timezone.utc)
-                for account in accounts:
+                for account in all_accounts:
                     expires = account.learning_ends_at
                     if expires and expires.tzinfo is None:
                         expires = expires.replace(tzinfo=timezone.utc)

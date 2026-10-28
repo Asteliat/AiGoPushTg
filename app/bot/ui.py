@@ -103,7 +103,7 @@ async def edit(c, text, keyboard):
     # Every ordinary menu offers a direct route home. Input screens retain their cancel button.
     has_home = any(button.callback_data == "nav:home" for row in keyboard.inline_keyboard for button in row)
     has_cancel = any(button.callback_data == "nav:cancel" for row in keyboard.inline_keyboard for button in row)
-    if not has_home and not has_cancel:
+    if not has_home and not has_cancel and keyboard is not MAIN:
         rows = [list(row) for row in keyboard.inline_keyboard]
         rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="nav:home")])
         keyboard = InlineKeyboardMarkup(inline_keyboard=rows)
