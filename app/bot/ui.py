@@ -419,7 +419,7 @@ async def acc_view(c):
     else:
         if a.learning_prompt.strip() and a.learning_completed_at:
             completed = a.learning_completed_at.strftime("%d.%m.%Y %H:%M UTC")
-            learning_text = f"контекст сохранён · обновлён {completed}"
+            learning_text = f"контекст сохранён · последнее обучение {completed}"
         else:
             learning_text = "контекст сохранён вручную" if a.learning_prompt.strip() else "не запускалось"
     conn_label = {"connected": "подключён", "connecting": "подключается", "paused": "пауза", "disconnected": "отключён", "error": "ошибка подключения", "unauthorized": "сессия не авторизована"}.get(a.connection_status, a.connection_status)
