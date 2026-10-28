@@ -363,18 +363,32 @@ async def acc_view(c):
         learning_text = f"обучение · {a.learning_limit} сообщений · до {deadline}" if a.learning_status == "training" else "завершается"
     else:
         learning_text = "контекст сохранён" if a.learning_prompt.strip() else "не запускалось"
-    txt=f"👤 {a.display_name} (@{a.username or 'нет username'})\nID: #{aid}\nАккаунт: {'включён' if a.enabled else 'выключен'}\nИИ для аккаунта: {'включён' if a.ai_enabled else 'выключен'}\nГлобальный ИИ должен быть включён.\nРежим: {'автоматический' if a.reply_mode=='automatic' else 'ручной'}\nАгент: {agent.name if agent else 'не назначен'}\nПерсона: {persona.name if persona else 'не назначена'}\nАктивных чатов: {chats}\nАвтообучение: {learning_text}"
+    txt=f"👤 {a.display_name} (@{a.username or 'нет username'})\nID: #{aid}\nПодключение: {'включено' if a.enabled else 'выключено'}\nРабота: {'⏸ на паузе' if a.manual_pause else ('активна' if a.enabled else 'отключена')}\nИИ для аккаунта: {'включён' if a.ai_enabled else 'выключен'}\nРежим ответов: {'автоматический' if a.reply_mode=='automatic' else 'ручной'}\nАгент: {agent.name if agent else 'не назначен'}\nПерсона: {persona.name if persona else 'не назначена'}\nАктивных чатов: {chats}\nОбучение: {learning_text}\nИндивидуальные правила: {'заданы' if a.persona_style_override.strip() else 'нет'}"
     buttons=[
-        [(("⏸ Выключить" if a.enabled else "▶️ Включить"),f"acc:toggle:{aid}")],
+        [(("▶️ Возобновить работу" if a.manual_pause else "⏸ Пауза работы"),f"acc:pause:{aid}")],
+        [(("⏸ Отключить аккаунт" if a.enabled else "▶️ Подключить аккаунт"),f"acc:toggle:{aid}")],
         [(("🤖 Выключить ИИ" if a.ai_enabled else "🤖 Включить ИИ"),f"acc:ai:{aid}")],
         [(f"Режим: {'Автомат' if a.reply_mode=='automatic' else 'Ручной'} · изменить",f"acc:mode:{aid}")],
         [("🧠 Назначить ИИ-агента",f"acc:agents:{aid}")],
         [("🎭 Назначить персону",f"acc:personas:{aid}")],
-        [("💬 Выбрать чаты",f"chat:account:{aid}")],
+        [("✏️ Индивидуальные правила",f"acc:personaoverride:{aid}")],
+        [("💡 Примеры аккаунта",f"example:account:{aid}")],
+        [("💬 Чаты аккаунта",f"chat:account:{aid}")],
         [((("⏳ Завершается обучение" if a.learning_status == "stopping" else "⏹ Закончить обучение") if learning else "🧠 Автообучение"), (f"learn:stop:{aid}" if learning else f"acc:learn:{aid}"))],
-        [("📋 Контекст обучения",f"acc:learnprompt:{aid}")],
-        [("⬅️ К аккаунтам","acc:list")]]
+        [("🧠 Контекст обучения",f"acc:learnprompt:{aid}")],
+        [("⬅️ К аккаунтам","acc:list"),("🏠 Главное меню","nav:home")]]
     await edit(c,txt,kb(buttons))
+@router.callback_query(F.data.startswith("acc:pause:"))
+async def acc_pause(c):
+    if not await check_cb(c): return
+    aid=int(c.data.split(":")[2])
+    async with SessionFactory() as db:
+        a=await db.get(Account,aid)
+        if not a: await c.answer("Аккаунт не найден",show_alert=True); return
+        a.manual_pause=not a.manual_pause
+        await db.commit()
+    await acc_view(c)
+
 @router.callback_query(F.data.startswith("acc:toggle:"))
 async def acc_toggle(c):
     if not await check_cb(c): return
@@ -448,12 +462,108 @@ async def acc_learning_prompt(c):
     aid = int(c.data.split(":")[2])
     async with SessionFactory() as db:
         account = await db.get(Account, aid)
-        prompt = account.learning_prompt if account else ""
     if not account:
         await c.answer("Аккаунт не найден", show_alert=True); return
-    if not prompt.strip():
-        await c.answer("Контекст ещё не сохранён", show_alert=True); return
-    await edit(c, f"📋 Контекст обучения · аккаунт #{aid}\n\n{prompt[:3500]}", kb([[("⬅️ К аккаунту", f"acc:view:{aid}")]]))
+    prompt = account.learning_prompt or ""
+    shown = prompt[:3000] if prompt.strip() else "Контекст пока не сохранён. Можно запустить обучение или добавить текст вручную."
+    buttons = [
+        [("✏️ Редактировать контекст", f"acc:context:edit:{aid}")],
+        [("🧠 Запустить обучение заново", f"acc:learn:{aid}")],
+    ]
+    if prompt.strip():
+        buttons.append([("🗑 Очистить контекст", f"acc:context:clear:{aid}")])
+    buttons.append([("⬅️ К аккаунту", f"acc:view:{aid}"), ("🏠 Главное меню", "nav:home")])
+    await edit(c, f"🧠 Контекст обучения · аккаунт #{aid}\n\n{shown}", kb(buttons))
+
+@router.callback_query(F.data.startswith("acc:context:edit:"))
+async def acc_context_edit_start(c, state: FSMContext):
+    if not await check_cb(c): return
+    aid = int(c.data.split(":")[3])
+    async with SessionFactory() as db:
+        account = await db.get(Account, aid)
+    if not account:
+        await c.answer("Аккаунт не найден", show_alert=True); return
+    await state.clear()
+    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, context_account_id=aid)
+    await state.set_state(Flow.learning_prompt_edit)
+    await edit(c, f"Редактирование контекста аккаунта #{aid}\nОтправьте новый текст одним сообщением (до 3500 символов). Старый контекст останется, пока вы не отправите новый. Для отмены нажмите кнопку ниже.", CANCEL)
+
+@router.message(Flow.learning_prompt_edit)
+async def acc_context_edit_save(m: Message, state: FSMContext):
+    if not await check_msg(m) or not await private(m): return
+    value = (m.text or "").strip()
+    data = await state.get_data()
+    if not value or len(value) > 3500:
+        await prompt_message(m, state, "Контекст должен содержать от 1 до 3500 символов. Отправьте исправленный текст или нажмите «Отмена».")
+        return
+    async with SessionFactory() as db:
+        account = await db.get(Account, data["context_account_id"])
+        if not account:
+            await finish_prompt(m, state, "Аккаунт не найден.", kb([[("🏠 Главное меню", "nav:home")]])); return
+        account.learning_prompt = value
+        await db.commit()
+    aid = data["context_account_id"]
+    await finish_prompt(m, state, "Контекст сохранён. Он применяется только к этому аккаунту.", kb([
+        [("📋 Открыть контекст", f"acc:learnprompt:{aid}")],
+        [("👤 К аккаунту", f"acc:view:{aid}"), ("🏠 Главное меню", "nav:home")],
+    ]))
+
+@router.callback_query(F.data.startswith("acc:context:clear:"))
+async def acc_context_clear_confirm(c):
+    if not await check_cb(c): return
+    aid = int(c.data.split(":")[3])
+    await edit(c, f"Очистить сохранённый контекст обучения аккаунта #{aid}? Переписка в Telegram не удаляется.", kb([
+        [("🗑 Да, очистить", f"acc:context:clearconfirm:{aid}")],
+        [("⬅️ Отмена", f"acc:learnprompt:{aid}")],
+    ]))
+
+@router.callback_query(F.data.startswith("acc:context:clearconfirm:"))
+async def acc_context_clear(c):
+    if not await check_cb(c): return
+    aid = int(c.data.split(":")[3])
+    async with SessionFactory() as db:
+        account = await db.get(Account, aid)
+        if not account: await c.answer("Аккаунт не найден", show_alert=True); return
+        account.learning_prompt = ""
+        await db.commit()
+    await edit(c, f"Контекст аккаунта #{aid} очищен.", kb([
+        [("🧠 Открыть контекст", f"acc:learnprompt:{aid}")],
+        [("👤 К аккаунту", f"acc:view:{aid}"), ("🏠 Главное меню", "nav:home")],
+    ]))
+
+@router.callback_query(F.data.startswith("acc:personaoverride:"))
+async def acc_persona_override_start(c, state: FSMContext):
+    if not await check_cb(c): return
+    aid = int(c.data.split(":")[2])
+    async with SessionFactory() as db:
+        account = await db.get(Account, aid)
+    if not account: await c.answer("Аккаунт не найден", show_alert=True); return
+    await state.clear()
+    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, persona_override_account_id=aid)
+    await state.set_state(Flow.persona_override)
+    current = account.persona_style_override or "не заданы"
+    await edit(c, f"Индивидуальные правила аккаунта #{aid}\n\nТекущие: {current[:1200]}\n\nОтправьте новый текст до 3500 символов. Для очистки отправьте /clear.", CANCEL)
+
+@router.message(Flow.persona_override)
+async def acc_persona_override_save(m: Message, state: FSMContext):
+    if not await check_msg(m) or not await private(m): return
+    value = (m.text or "").strip()
+    data = await state.get_data()
+    if value == "/clear": value = ""
+    elif not value or len(value) > 3500:
+        await prompt_message(m, state, "Введите от 1 до 3500 символов или /clear для очистки.")
+        return
+    async with SessionFactory() as db:
+        account = await db.get(Account, data["persona_override_account_id"])
+        if not account:
+            await finish_prompt(m, state, "Аккаунт не найден.", kb([[("🏠 Главное меню", "nav:home")]])); return
+        account.persona_style_override = value
+        await db.commit()
+    aid = data["persona_override_account_id"]
+    await finish_prompt(m, state, "Индивидуальные правила сохранены.", kb([
+        [("👤 К аккаунту", f"acc:view:{aid}")],
+        [("🏠 Главное меню", "nav:home")],
+    ]))
 
 @router.callback_query(F.data.startswith("acc:learn:"))
 async def acc_learning_menu(c):
@@ -480,7 +590,7 @@ async def acc_learning_menu(c):
         [("✅ Подтверждаю право на обработку", f"learn:confirm:{aid}")],
         [("⬅️ Назад", f"acc:view:{aid}")],
     ]
-    await edit(c, f"🧠 Автообучение · аккаунт #{aid}\n\nБудут обработаны только выбранные чаты. Система сохранит краткую сводку тем и общего тона, а временные тексты удалит после завершения. Новые сообщения в выбранных чатах будут учитываться до остановки или максимум 3 дня. Перед продолжением подтвердите, что имеете право передавать эти сообщения выбранному ИИ-провайдеру. Обучение доступно только в ручном режиме ответов и само не отправляет сообщения.", kb(buttons))
+    await edit(c, f"🧠 Автообучение · аккаунт #{aid}\n\nБудут обработаны все доступные подходящие чаты аккаунта. Система сохранит краткую сводку, временные тексты удалит после завершения. Новые сообщения учитываются до остановки или максимум 3 дня. Подтвердите право передавать эти сообщения выбранному ИИ-провайдеру. Обучение не отправляет сообщения в чаты.", kb(buttons))
 
 
 @router.callback_query(F.data.startswith("learn:confirm:"))
@@ -492,7 +602,7 @@ async def acc_learning_confirm(c):
         [("Изучить последние 1000 сообщений", f"learn:start:{aid}:1000")],
         [("⬅️ Назад", f"acc:view:{aid}")],
     ]
-    await edit(c, f"Выберите объём выборки для аккаунта #{aid}. В анализ попадут текстовые сообщения из выбранных активных чатов; сырые тексты временно хранятся в Redis и удаляются после завершения.", kb(buttons))
+    await edit(c, f"Выберите объём выборки для аккаунта #{aid}. Будут собраны последние 500 или 1000 подходящих текстовых сообщений по всем доступным чатам. Временные данные удаляются после завершения.", kb(buttons))
 
 @router.callback_query(F.data.startswith("learn:start:"))
 async def acc_learning_start(c):
@@ -803,7 +913,7 @@ async def examples(m):
     await example_screen(m)
 async def example_screen(m):
     async with SessionFactory() as db:
-        es=list((await db.scalars(select(Example).order_by(Example.id.desc()).limit(15))).all())
+        es=list((await db.scalars(select(Example).where(Example.account_id.is_(None)).order_by(Example.id.desc()).limit(15))).all())
         ps={p.id:p.name for p in (await db.scalars(select(Persona))).all()}
     buttons=[[(f"#{e.id} · {ps.get(e.persona_id,'Общие')} · {e.incoming_text[:24]}",f"example:view:{e.id}")] for e in es]
     buttons += [[("➕ Добавить общий пример","example:add:0")],[("⬅️ Главное меню","nav:home")]]
@@ -812,7 +922,7 @@ async def example_screen(m):
 async def example_menu(c):
     if not await check_cb(c): return
     async with SessionFactory() as db:
-        es=list((await db.scalars(select(Example).order_by(Example.id.desc()).limit(15))).all()); ps={p.id:p.name for p in (await db.scalars(select(Persona))).all()}
+        es=list((await db.scalars(select(Example).where(Example.account_id.is_(None)).order_by(Example.id.desc()).limit(15))).all()); ps={p.id:p.name for p in (await db.scalars(select(Persona))).all()}
     buttons=[[(f"#{e.id} · {ps.get(e.persona_id,'Общие')} · {e.incoming_text[:24]}",f"example:view:{e.id}")] for e in es]
     buttons += [[("➕ Добавить общий пример","example:add:0")],[("⬅️ Главное меню","nav:home")]]
     await edit(c,"🧩 Примеры",kb(buttons))
@@ -912,7 +1022,7 @@ async def chat_select(c):
             b.enabled = not b.enabled
             b.title = title
         else:
-            db.add(ChatBinding(account_id=aid, chat_id=cid, title=title, enabled=True))
+            db.add(ChatBinding(account_id=aid, chat_id=cid, title=title, enabled=True, auto_discovered=True))
         await db.commit()
     await chat_account_refresh(c,aid)
 async def chat_account_refresh(c,aid):
