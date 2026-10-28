@@ -100,6 +100,13 @@ async def delete_msg(m):
 async def show_home(m):
     await m.answer(await home_text(), reply_markup=MAIN)
 async def edit(c, text, keyboard):
+    # Every ordinary menu offers a direct route home. Input screens retain their cancel button.
+    has_home = any(button.callback_data == "nav:home" for row in keyboard.inline_keyboard for button in row)
+    has_cancel = any(button.callback_data == "nav:cancel" for row in keyboard.inline_keyboard for button in row)
+    if not has_home and not has_cancel:
+        rows = [list(row) for row in keyboard.inline_keyboard]
+        rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="nav:home")])
+        keyboard = InlineKeyboardMarkup(inline_keyboard=rows)
     if c.message:
         try:
             await c.message.edit_text(text, reply_markup=keyboard)
@@ -311,17 +318,21 @@ async def qr_login(bot, uid, proxy_config=None, encrypted_proxy=None, ui_data=No
     session_path=folder/("account_"+secrets.token_hex(8))
     client=TelegramClient(str(session_path),cfg.telegram_api_id,cfg.telegram_api_hash, proxy=telethon_proxy(config=proxy_config))
     success = False
+    qr_message_id = None
     try:
         await client.connect()
         qr=await client.qr_login()
         import qrcode
         img=qrcode.make(qr.url); stream=io.BytesIO(); img.save(stream,format="PNG")
-        await bot.send_photo(uid,BufferedInputFile(stream.getvalue(),filename="telegram-login.png"),
+        qr_message = await bot.send_photo(uid,BufferedInputFile(stream.getvalue(),filename="telegram-login.png"),
             caption="Отсканируйте QR в Telegram: Настройки → Устройства → Подключить устройство. Не пересылайте QR другим людям. Ожидаю подтверждение…")
+        qr_message_id = qr_message.message_id
         try:
             await qr.wait(timeout=120)
         except SessionPasswordNeededError:
-            await bot.send_message(uid,"Для этого аккаунта Telegram запросил дополнительную проверку 2FA. Бот не принимает пароль 2FA. Подключите такой аккаунт через защищённый терминал или используйте отдельный безопасный способ авторизации.")
+            twofa_text = "Telegram запросил пароль 2FA. Бот не принимает этот пароль. Подключите аккаунт через доверенный терминал."
+            if not await edit_anchor(bot, ui_data or {}, twofa_text, MAIN):
+                await bot.send_message(uid, twofa_text, reply_markup=MAIN)
             return
         me=await client.get_me()
         if not me: raise RuntimeError("Telegram не вернул профиль.")
@@ -348,6 +359,9 @@ async def qr_login(bot, uid, proxy_config=None, encrypted_proxy=None, ui_data=No
             await bot.send_message(uid, error_text, reply_markup=MAIN)
     finally:
         LOGIN_TASKS.pop(uid,None)
+        if qr_message_id is not None:
+            try: await bot.delete_message(uid, qr_message_id)
+            except Exception: pass
         try:
             await client.disconnect()
         finally:
