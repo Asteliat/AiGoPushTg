@@ -20,6 +20,7 @@ class Account(Base):
     display_name: Mapped[str] = mapped_column(String(160), default="")
     session_path: Mapped[str] = mapped_column(String(512))
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    reply_mode: Mapped[str] = mapped_column(String(20), default="automatic", server_default="automatic", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 class Persona(Base):
