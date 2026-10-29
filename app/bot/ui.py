@@ -298,7 +298,7 @@ async def agent_runtime_menu(c: CallbackQuery, aid: int):
     buttons += [[("⬅️ К агенту", f"agent:view:{aid}"), ("🏠 Главное меню", "nav:home")]]
     await edit(c, "\n".join(lines), kb(buttons))
 
-@router.callback_query(F.data.startswith("agent:rt:menu:"))
+@router.callback_query(F.data.startswith("agent:runtime:menu:"))
 async def agent_runtime_menu_cb(c: CallbackQuery):
     if not await check_cb(c): return
     await agent_runtime_menu(c, int(c.data.split(":")[3]))
