@@ -13,11 +13,10 @@ from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.functions.messages import CheckChatInviteRequest, ImportChatInviteRequest
 from telethon.tl.types import ChatInviteAlready
 from app.telegram_gateway.discovery import search_public_groups, search_web_groups, find_invite_links_in_dialogs
-from app.ai.provider import AIUnavailableError
-from app.services.drafts import create_draft, global_ai_enabled
+from app.services.drafts import global_ai_enabled
 from app.settings import get_settings
 from app.storage.db import SessionFactory
-from app.storage.models import Account, AIAgent, AppSetting, ChatBinding, Draft, DraftStatus, Example, Persona
+from app.storage.models import Account, AIAgent, AppSetting, ChatBinding, ChannelBinding, Example, Persona
 from app.telegram_gateway.proxy import ProxyConfigurationError, encrypt_proxy, telethon_proxy
 
 router = Router()
@@ -33,7 +32,7 @@ CHAT_PENDING_JOIN: dict[tuple[int, int], dict] = {}
 class Flow(StatesGroup):
     agent_name=State(); agent_url=State(); agent_key=State(); agent_model=State(); agent_timeout=State()
     agent_edit=State(); persona_name=State(); persona_style=State()
-    example_incoming=State(); example_reply=State(); draft_text=State()
+    example_incoming=State(); example_reply=State()
     proxy_host=State(); proxy_port=State(); proxy_username=State(); proxy_password=State()
     learning_prompt_edit=State(); persona_override=State()
     phone_number=State(); phone_code=State(); phone_password=State(); qr_password=State()
@@ -46,8 +45,8 @@ def kb(rows):
 MAIN = kb([
     [("👤 Аккаунты", "acc:list"), ("🤖 ИИ-агенты", "agent:menu")],
     [("🎭 Персоны", "persona:menu"), ("💡 Примеры", "example:menu")],
-    [("💬 Чаты", "chat:menu"), ("📝 Черновики", "drafts:menu")],
-    [("✨ Создать черновик", "draft:new"), ("⚙️ Настройки", "nav:settings")],
+    [("💬 Чаты", "chat:menu"), ("📡 Каналы", "channel:menu")],
+    [("⚙️ Настройки", "nav:settings")],
 ])
 CANCEL = kb([[("❌ Отмена", "nav:cancel")]])
 
@@ -56,7 +55,6 @@ async def home_text():
         accounts = list((await db.scalars(select(Account).order_by(Account.id))).all())
         agents = list((await db.scalars(select(AIAgent))).all())
         ai_on = await global_ai_enabled(db)
-        pending = len((await db.scalars(select(Draft).where(Draft.status == DraftStatus.PENDING))).all())
     training = sum(not a.manual_pause and a.learning_status in {"training", "stopping"} for a in accounts)
     paused = sum(a.manual_pause for a in accounts)
     return (
@@ -2156,72 +2154,167 @@ async def chat_toggle(c):
         await db.commit()
     await chat_account_refresh(c,aid)
 
-# Drafts
-@router.message(F.text=="📝 Черновики")
-async def drafts(m):
-    if not await check_msg(m): return
-    async with SessionFactory() as db: ds=list((await db.scalars(select(Draft).where(Draft.status==DraftStatus.PENDING).order_by(Draft.id.desc()).limit(10))).all())
-    if not ds: await m.answer("Ожидающих черновиков нет.",reply_markup=MAIN); return
-    for d in ds:
-        await m.answer(f"Черновик #{d.id} · {d.chat_label}\n\nВходящее:\n{d.incoming_text[:900]}\n\nОтвет ИИ:\n{d.proposed_text[:1600]}\n\nАвтоматической отправки этой кнопкой нет.",reply_markup=kb([[("✓ Отметить рассмотренным",f"draft:approve:{d.id}"),("Отклонить",f"draft:reject:{d.id}")]]))
-@router.callback_query(F.data=="drafts:menu")
-async def drafts_menu(c):
-    if not await check_cb(c): return
-    async with SessionFactory() as db:
-        drafts = list((await db.scalars(select(Draft).where(Draft.status == DraftStatus.PENDING).order_by(Draft.id.desc()).limit(20))).all())
-    buttons = [[(f"📝 #{d.id} · {d.chat_label[:28]}", f"draft:view:{d.id}")] for d in drafts]
-    buttons += [[("✨ Создать черновик", "draft:new")], [("🏠 Главное меню", "nav:home")]]
-    await edit(c, f"📝 Черновики на проверке · {len(drafts)}" if drafts else "📝 Ожидающих черновиков нет.", kb(buttons))
 
-@router.callback_query(F.data.startswith("draft:view:"))
-async def draft_view(c):
-    if not await check_cb(c): return
-    did = int(c.data.split(":")[2])
-    async with SessionFactory() as db: draft = await db.get(Draft, did)
-    if not draft: await c.answer("Черновик не найден", show_alert=True); return
-    await edit(c, f"📝 Черновик #{draft.id} · {draft.chat_label}\n\nВходящее:\n{draft.incoming_text[:1000]}\n\nПредложение ИИ:\n{draft.proposed_text[:1800]}\n\nСообщение в исходный чат автоматически не отправляется.", kb([
-        [("✓ Принять", f"draft:approve:{draft.id}"), ("✕ Отклонить", f"draft:reject:{draft.id}")],
-        [("⬅️ К черновикам", "drafts:menu"), ("🏠 Главное меню", "nav:home")],
-    ]))
+# Channels: independent per-account channel list and per-channel processing switch.
+@router.message(F.text == "📡 Каналы")
+async def channels_message(m):
+    if not await check_msg(m):
+        return
+    await channels_screen_message(m)
 
-@router.callback_query(F.data=="draft:new")
-async def draft_new(c, state: FSMContext):
-    if not await check_cb(c): return
+async def channels_screen_message(m):
     async with SessionFactory() as db:
-        if not await global_ai_enabled(db):
-            await c.answer("Сначала включите глобальный ИИ в разделе «ИИ-агенты».", show_alert=True); return
-        has = await db.scalar(select(AIAgent.id).where(AIAgent.enabled.is_(True)))
-    if not has:
-        await c.answer("Сначала создайте ИИ-агента.", show_alert=True); return
-    await state.clear()
-    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
-    await state.set_state(Flow.draft_text)
-    await edit(c, "✨ Отправьте текст входящего сообщения, для которого нужно подготовить черновик. Ответ не будет отправлен автоматически.", CANCEL)
+        accounts = list((await db.scalars(select(Account).order_by(Account.id))).all())
+        bindings = list((await db.scalars(select(ChannelBinding).order_by(ChannelBinding.account_id, ChannelBinding.id))).all())
+    rows = [[(f"Загрузить каналы · #{a.id} {a.display_name[:22]}", f"channel:account:{a.id}:0")] for a in accounts]
+    rows += [[(f"{'🟢' if b.enabled else '⚪'} #{b.account_id} · {b.title[:30]} · {b.comment_wait_seconds}s", f"channel:toggle:{b.id}")] for b in bindings[:30]]
+    rows += [[("⬅️ Главное меню", "nav:home")]]
+    await m.answer("📡 Каналы\nСписок каналов хранится отдельно от «Чатов». Выберите аккаунт, загрузите доступные ему каналы и включайте обработку только для нужных каналов.", reply_markup=kb(rows))
 
-@router.callback_query(F.data.startswith("draft:"))
-async def draft_review(c):
-    if not await check_cb(c): return
-    p=c.data.split(":")
+@router.callback_query(F.data == "channel:menu")
+async def channels_menu(c):
+    if not await check_cb(c):
+        return
     async with SessionFactory() as db:
-        d=await db.get(Draft,int(p[2])) if len(p)==3 and p[2].isdigit() else None
-        if not d or d.status!=DraftStatus.PENDING: await c.answer("Черновик не найден или уже обработан",show_alert=True); return
-        d.status=DraftStatus.APPROVED if p[1]=="approve" else DraftStatus.REJECTED; d.reviewed_at=datetime.now(timezone.utc); await db.commit()
-    await edit(c,"Статус сохранён. Сообщение в исходный чат не отправлялось.",kb([[("📝 К черновикам","drafts:menu")],[("🏠 Главное меню","nav:home")]]))
-@router.message(F.text=="✨ Создать черновик")
-async def draft_start(m,state):
-    if not await check_msg(m): return
+        accounts = list((await db.scalars(select(Account).order_by(Account.id))).all())
+        bindings = list((await db.scalars(select(ChannelBinding).order_by(ChannelBinding.account_id, ChannelBinding.id))).all())
+    rows = [[(f"Загрузить каналы · #{a.id} {a.display_name[:22]}", f"channel:account:{a.id}:0")] for a in accounts]
+    rows += [[(f"{'🟢' if b.enabled else '⚪'} #{b.account_id} · {b.title[:30]} · ожидание {b.comment_wait_seconds}s", f"channel:toggle:{b.id}")] for b in bindings[:30]]
+    rows += [[("⬅️ Главное меню", "nav:home")]]
+    await edit(c, "📡 Каналы · независимый список для каждого аккаунта. Нажмите канал, чтобы включить или выключить его обработку.", kb(rows))
+
+@router.callback_query(F.data.startswith("channel:account:"))
+async def channel_account(c):
+    if not await check_cb(c):
+        return
+    parts = c.data.split(":")
+    aid = int(parts[2])
+    page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
+    if not cfg.telegram_api_id or not cfg.telegram_api_hash:
+        await c.answer("Не заданы Telegram API credentials.", show_alert=True)
+        return
     async with SessionFactory() as db:
-        if not await global_ai_enabled(db): await m.answer("Сначала включите глобальный ИИ в разделе «🤖 ИИ-агенты».",reply_markup=MAIN); return
-        has=await db.scalar(select(AIAgent.id).where(AIAgent.enabled.is_(True)))
-    if not has: await m.answer("Сначала создайте ИИ-агента.",reply_markup=MAIN); return
-    await state.set_state(Flow.draft_text); await m.answer("Введите текст сообщения для подготовки черновика.",reply_markup=CANCEL)
-@router.message(Flow.draft_text)
-async def draft_create(m,state):
-    if not await check_msg(m): return
-    incoming=(m.text or "").strip()
-    if not incoming or len(incoming)>12000: await prompt_message(m,state,"Введите текст до 12000 символов."); return
+        account = await db.get(Account, aid)
+    if not account:
+        await c.answer("Аккаунт не найден.", show_alert=True)
+        return
+    client = TelegramClient(account.session_path, cfg.telegram_api_id, cfg.telegram_api_hash, proxy=telethon_proxy(account.proxy_config_encrypted))
+    dialogs = []
+    try:
+        await client.connect()
+        if not await client.is_user_authorized():
+            await c.answer("Сессия аккаунта не авторизована.", show_alert=True)
+            return
+        async for dialog in client.iter_dialogs():
+            entity = dialog.entity
+            # Broadcast channels only; groups and private chats belong to other sections.
+            if not getattr(entity, "broadcast", False) or getattr(entity, "megagroup", False):
+                continue
+            title = (dialog.name or str(dialog.id)).strip()
+            if title:
+                dialogs.append((int(dialog.id), title[:255]))
+    except Exception as exc:
+        await c.answer(f"Ошибка загрузки каналов: {type(exc).__name__}", show_alert=True)
+        return
+    finally:
+        await client.disconnect()
     async with SessionFactory() as db:
-        if not await global_ai_enabled(db): await finish_prompt(m,state,"Глобальный ИИ выключен."); return
-        try: d=await create_draft(db,incoming_text=incoming)
-        except (AIUnavailableError,RuntimeError) as exc: await finish_prompt(m,state,str(exc)); return
-    await finish_prompt(m,state,f"Черновик #{d.id} сохранён.\n\n{d.proposed_text[:3000]}\n\nСообщение не отправлено.",kb([[("📝 К черновикам","drafts:menu")],[("🏠 Главное меню","nav:home")]]))
+        existing = list((await db.scalars(select(ChannelBinding).where(ChannelBinding.account_id == aid))).all())
+        by_id = {row.channel_id: row for row in existing}
+        for channel_id, title in dialogs:
+            row = by_id.get(channel_id)
+            if row:
+                row.title = title
+            else:
+                db.add(ChannelBinding(account_id=aid, channel_id=channel_id, title=title, enabled=False, comment_wait_seconds=300))
+        await db.commit()
+        enabled = {row.channel_id for row in (await db.scalars(select(ChannelBinding).where(ChannelBinding.account_id == aid, ChannelBinding.enabled.is_(True)))).all()}
+    page_size = 20
+    max_page = max(0, (len(dialogs) - 1) // page_size)
+    page = max(0, min(page, max_page))
+    visible = dialogs[page * page_size:(page + 1) * page_size]
+    rows = [[(f"{'🟢' if cid in enabled else '▫️'} {title[:36]}", f"channel:select:{aid}:{cid}:{page}")] for cid, title in visible]
+    nav = []
+    if page > 0:
+        nav.append(("⬅️ Назад", f"channel:account:{aid}:{page-1}"))
+    if page < max_page:
+        nav.append(("➡️ Далее", f"channel:account:{aid}:{page+1}"))
+    if nav:
+        rows.append(nav)
+    rows += [[("📋 Настройки каналов", f"channel:list:{aid}"), ("⬅️ К каналам", "channel:menu")]]
+    await edit(c, f"Каналы аккаунта #{aid}\nСтраница {page+1} из {max_page+1} · Всего доступно: {len(dialogs)}\nНовые каналы добавляются выключенными.", kb(rows))
+
+@router.callback_query(F.data.startswith("channel:select:"))
+async def channel_select(c):
+    if not await check_cb(c):
+        return
+    _, _, aid_raw, channel_raw, page_raw = c.data.split(":")
+    aid, channel_id, page = int(aid_raw), int(channel_raw), int(page_raw)
+    async with SessionFactory() as db:
+        account = await db.get(Account, aid)
+    if not account:
+        await c.answer("Аккаунт не найден.", show_alert=True)
+        return
+    client = TelegramClient(account.session_path, cfg.telegram_api_id, cfg.telegram_api_hash, proxy=telethon_proxy(account.proxy_config_encrypted))
+    try:
+        await client.connect()
+        entity = await client.get_entity(channel_id)
+        if not getattr(entity, "broadcast", False) or getattr(entity, "megagroup", False):
+            await c.answer("Это не канал публикаций.", show_alert=True)
+            return
+        title = (getattr(entity, "title", None) or getattr(entity, "username", None) or str(channel_id))[:255]
+    except Exception as exc:
+        await c.answer(f"Не удалось открыть канал: {type(exc).__name__}", show_alert=True)
+        return
+    finally:
+        await client.disconnect()
+    async with SessionFactory() as db:
+        row = await db.scalar(select(ChannelBinding).where(ChannelBinding.account_id == aid, ChannelBinding.channel_id == channel_id))
+        if row:
+            row.enabled = not row.enabled
+            row.title = title
+        else:
+            db.add(ChannelBinding(account_id=aid, channel_id=channel_id, title=title, enabled=True))
+        await db.commit()
+    await channel_account_refresh(c, aid, page)
+
+@router.callback_query(F.data.startswith("channel:list:"))
+async def channel_list(c):
+    if not await check_cb(c):
+        return
+    await channel_account_refresh(c, int(c.data.split(":")[2]))
+
+async def channel_account_refresh(c, aid, page=0):
+    async with SessionFactory() as db:
+        rows = list((await db.scalars(select(ChannelBinding).where(ChannelBinding.account_id == aid).order_by(ChannelBinding.id))).all())
+    buttons = [[(f"{'🟢' if row.enabled else '⚪'} {row.title[:30]} · ожидание {row.comment_wait_seconds}s", f"channel:toggle:{row.id}")] for row in rows[:40]]
+    buttons += [[("⏱ Ожидание 1 мин", f"channel:wait:60:{aid}"), ("⏱ Ожидание 5 мин", f"channel:wait:300:{aid}")], [("⏱ Ожидание 15 мин", f"channel:wait:900:{aid}")], [("↻ Загрузить каналы", f"channel:account:{aid}:{page}")], [("⬅️ К каналам", "channel:menu"), ("🏠 Главное меню", "nav:home")]]
+    await edit(c, f"Каналы аккаунта #{aid}\n🟢 обработка включена · ⚪ выключена. Интервал ожидания комментариев применяется к каналам аккаунта.", kb(buttons))
+
+@router.callback_query(F.data.startswith("channel:toggle:"))
+async def channel_toggle(c):
+    if not await check_cb(c):
+        return
+    row_id = int(c.data.split(":")[2])
+    async with SessionFactory() as db:
+        row = await db.get(ChannelBinding, row_id)
+        if not row:
+            await c.answer("Канал не найден.", show_alert=True)
+            return
+        row.enabled = not row.enabled
+        aid = row.account_id
+        await db.commit()
+    await channel_account_refresh(c, aid)
+
+@router.callback_query(F.data.startswith("channel:wait:"))
+async def channel_wait(c):
+    if not await check_cb(c):
+        return
+    _, _, seconds_raw, aid_raw = c.data.split(":")
+    seconds, aid = int(seconds_raw), int(aid_raw)
+    async with SessionFactory() as db:
+        rows = list((await db.scalars(select(ChannelBinding).where(ChannelBinding.account_id == aid))).all())
+        for row in rows:
+            row.comment_wait_seconds = seconds
+        await db.commit()
+    await channel_account_refresh(c, aid)
