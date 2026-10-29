@@ -478,6 +478,11 @@ async def main():
                         else:
                             labels.clear()
                             labels.update({b.chat_id:b.title for b in by_account.get(aid,[])})
+                        # UI actions such as resuming an account set the DB status to
+                        # "connecting" immediately. If the Telethon client never disconnected,
+                        # connect_account() won't run again, so reconcile the status here.
+                        if clients[aid].is_connected() and account.connection_status != "connected":
+                            await set_connection_status(aid, "connected")
                     if account.learning_status in {"training", "stopping"} and aid in clients:
                         learning = learning_tasks.get(aid)
                         if learning is None or learning.done():
