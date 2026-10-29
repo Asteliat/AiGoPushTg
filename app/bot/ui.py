@@ -7,8 +7,12 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, BufferedInputFile
 from sqlalchemy import select
-from telethon import TelegramClient
+from telethon import TelegramClient, utils
 from telethon.errors import SessionPasswordNeededError
+from telethon.tl.functions.channels import JoinChannelRequest
+from telethon.tl.functions.messages import CheckChatInviteRequest, ImportChatInviteRequest
+from telethon.tl.types import ChatInviteAlready
+from app.telegram_gateway.discovery import search_public_groups, find_invite_links_in_dialogs
 from app.ai.provider import AIUnavailableError
 from app.services.drafts import create_draft, global_ai_enabled
 from app.settings import get_settings
@@ -21,6 +25,8 @@ cfg = get_settings()
 LOGIN_TASKS: dict[int, asyncio.Task] = {}
 PHONE_LOGIN_DATA: dict[int, dict] = {}
 QR_LOGIN_DATA: dict[int, dict] = {}
+CHAT_CANDIDATES: dict[tuple[int, int], list[dict]] = {}
+CHAT_PENDING_JOIN: dict[tuple[int, int], dict] = {}
 
 # All navigation uses inline keyboards.
 
@@ -31,6 +37,7 @@ class Flow(StatesGroup):
     proxy_host=State(); proxy_port=State(); proxy_username=State(); proxy_password=State()
     learning_prompt_edit=State(); persona_override=State()
     phone_number=State(); phone_code=State(); phone_password=State(); qr_password=State()
+    chat_search_query=State(); chat_join_link=State()
 
 def admin(uid): return uid is not None and uid in cfg.admin_id_set
 def kb(rows):
@@ -892,6 +899,7 @@ async def acc_view(c, account_id: int | None = None):
         [("✏️ Индивидуальные правила",f"acc:personaoverride:{aid}")],
         [("💡 Примеры аккаунта",f"example:account:{aid}")],
         [("💬 Чаты аккаунта",f"chat:account:{aid}")],
+        [("🔗 Вступить в чат по ссылке",f"chat:joinlink:{aid}")],
         [((("⏳ Завершается обучение" if a.learning_status == "stopping" else "⏹ Закончить обучение") if learning else "🧠 Автообучение"), (f"learn:stop:{aid}" if learning else f"acc:learn:{aid}"))],
         [("🧠 Контекст обучения",f"acc:learnprompt:{aid}")],
         [("⬅️ К аккаунтам","acc:list"),("🏠 Главное меню","nav:home")]]
@@ -1664,6 +1672,323 @@ async def example_delete(c):
     else:
         await example_menu(c)
 
+# Chat discovery and joining
+def _parse_chat_link(raw: str) -> tuple[str, str]:
+    value = (raw or "").strip().strip("<>[](){}.,;")
+    if value.startswith("@") and re.fullmatch(r"@[A-Za-z][A-Za-z0-9_]{4,31}", value):
+        return "public", value[1:]
+    match = re.search(r"(?i)(?:https?://)?(?:www\.)?(?:t\.me|telegram\.me)/(\+?[A-Za-z0-9_+-]+|joinchat/[A-Za-z0-9_-]+)", value)
+    if not match:
+        raise ValueError("Пришлите публичную ссылку t.me/username или пригласительную ссылку t.me/+…")
+    path = match.group(1).split("?")[0].rstrip("/")
+    if path.startswith("+"):
+        return "invite", path[1:]
+    if path.startswith("joinchat/"):
+        return "invite", path.split("/", 1)[1]
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{4,31}", path):
+        raise ValueError("Не удалось распознать ссылку. Нужна ссылка на группу Telegram.")
+    return "public", path
+
+
+def _group_entity(entity) -> bool:
+    if getattr(entity, "broadcast", False):
+        return False
+    return bool(getattr(entity, "megagroup", False) or getattr(entity, "gigagroup", False) or entity.__class__.__name__ == "Chat")
+
+
+def _candidate_keyboard(aid: int, candidates: list[dict]):
+    rows = []
+    for i, item in enumerate(candidates[:12]):
+        title = str(item.get("title") or "Группа")[:30]
+        members = int(item.get("members") or 0)
+        suffix = f" · {members:,}".replace(",", " ") if members else ""
+        rows.append([(f"🔎 {title}{suffix}"[:60], f"chat:candidate:{aid}:{i}")])
+    rows += [[("⬅️ К чатам", "chat:menu"), ("🏠 Главное меню", "nav:home")]]
+    return kb(rows)
+
+
+async def _load_account_client(aid: int):
+    if not cfg.telegram_api_id or not cfg.telegram_api_hash:
+        raise RuntimeError("Не заданы TELEGRAM_API_ID и TELEGRAM_API_HASH.")
+    async with SessionFactory() as db:
+        account = await db.get(Account, aid)
+    if not account or not account.enabled:
+        raise RuntimeError("Аккаунт не найден или отключён.")
+    client = TelegramClient(account.session_path, cfg.telegram_api_id, cfg.telegram_api_hash, proxy=telethon_proxy(account.proxy_config_encrypted))
+    await client.connect()
+    if not await client.is_user_authorized():
+        await client.disconnect()
+        raise RuntimeError("Сессия аккаунта не авторизована.")
+    return account, client
+
+
+@router.callback_query(F.data.startswith("chat:search:"))
+async def chat_search_start(c, state: FSMContext):
+    if not await check_cb(c): return
+    aid = int(c.data.split(":")[2])
+    await state.clear()
+    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, chat_search_account_id=aid)
+    await state.set_state(Flow.chat_search_query)
+    await edit(c, f"🔎 Поиск публичных Telegram-групп · аккаунт #{aid}\n\nВведите тему или несколько ключевых слов, например: «Python разработка», «настольные игры», «дизайн».\n\nПоиск использует публичный поиск Telegram и отбирает именно группы, а не каналы и ботов. Это не полный каталог всех чатов.", CANCEL)
+
+
+@router.message(Flow.chat_search_query)
+async def chat_search_query(m: Message, state: FSMContext):
+    if not await check_msg(m) or not await private(m): return
+    data = await state.get_data()
+    query = (m.text or "").strip()
+    await delete_msg(m)
+    if len(query) < 2:
+        await prompt_message(m, state, "Введите хотя бы два символа для поиска.")
+        return
+    if len(query) > 100:
+        query = query[:100]
+    aid = int(data.get("chat_search_account_id", 0))
+    anchor = {"ui_chat_id": data.get("ui_chat_id"), "ui_message_id": data.get("ui_message_id")}
+    await state.clear()
+    try:
+        account, client = await _load_account_client(aid)
+        try:
+            candidates = await search_public_groups(client, query, limit=60)
+        finally:
+            await client.disconnect()
+    except Exception as exc:
+        await edit_anchor(m.bot, anchor, f"Поиск не удался: {str(exc)[:180]}", kb([[("🔎 Повторить поиск", f"chat:search:{aid}")], [("⬅️ К чатам", "chat:menu")]]))
+        return
+    CHAT_CANDIDATES[(m.from_user.id, aid)] = candidates
+    if not candidates:
+        await edit_anchor(m.bot, anchor, f"По запросу «{query}» подходящих публичных групп не найдено.\n\nПопробуйте более короткие или альтернативные ключевые слова.", kb([[("🔎 Новый запрос", f"chat:search:{aid}")], [("🧭 Найти ссылки в чатах", f"chat:discover:{aid}")], [("⬅️ К чатам", "chat:menu")]]))
+        return
+    visible = candidates[:12]
+    text_lines = [f"🔎 Результаты по запросу «{query}» · аккаунт #{aid}", "", "Сначала показаны группы с лучшими публичными сигналами качества. Рейтинг — ориентир, не гарантия безопасности."]
+    for i, item in enumerate(visible, 1):
+        flags = " · ✓ проверена" if item.get("verified") else ""
+        members = f"{int(item.get('members') or 0):,}".replace(",", " ") + " участников" if item.get("members") else "размер неизвестен"
+        text_lines.append(f"{i}. {item['title']} · {members}{flags} · оценка {item['score']}/100")
+    text_lines.append("\nНажмите на результат, чтобы проверить группу и подтвердить вступление.")
+    await edit_anchor(m.bot, anchor, "\n".join(text_lines), _candidate_keyboard(aid, visible))
+
+
+@router.callback_query(F.data.startswith("chat:discover:"))
+async def chat_discover_links(c):
+    if not await check_cb(c): return
+    aid = int(c.data.split(":")[2])
+    await c.answer("Просматриваю последние сообщения в доступных группах…")
+    try:
+        account, client = await _load_account_client(aid)
+        try:
+            candidates = await find_invite_links_in_dialogs(client)
+        finally:
+            await client.disconnect()
+    except Exception as exc:
+        await edit_anchor(c.bot, {"ui_chat_id": c.message.chat.id, "ui_message_id": c.message.message_id}, f"Не удалось найти ссылки: {str(exc)[:180]}", kb([[("⬅️ К чатам", "chat:menu")]]))
+        return
+    CHAT_CANDIDATES[(c.from_user.id, aid)] = candidates
+    if not candidates:
+        await edit_anchor(c.bot, {"ui_chat_id": c.message.chat.id, "ui_message_id": c.message.message_id}, "🧭 Подходящих ссылок в последних сообщениях доступных групп не найдено.\n\nПоиск проверяет недавние сообщения в группах, к которым аккаунт уже имеет доступ; он не читает закрытые чаты, где аккаунт не состоит.", kb([[("🔎 Поиск публичных групп", f"chat:search:{aid}")], [("⬅️ К чатам", "chat:menu")]]))
+        return
+    lines = [f"🧭 Найдено ссылок: {len(candidates)} · аккаунт #{aid}", "", "Источник показывает чат, в котором была найдена ссылка. Каждая ссылка будет проверена перед вступлением."]
+    for i, item in enumerate(candidates[:12], 1):
+        lines.append(f"{i}. {item['link'][:75]}\n   найдено в: {item.get('source', 'сообщение')}")
+    await edit_anchor(c.bot, {"ui_chat_id": c.message.chat.id, "ui_message_id": c.message.message_id}, "\n".join(lines), _candidate_keyboard(aid, candidates[:12]))
+
+
+@router.callback_query(F.data.startswith("chat:candidate:"))
+async def chat_candidate_preview(c):
+    if not await check_cb(c): return
+    _, _, _, aid_raw, index_raw = c.data.split(":")
+    aid, index = int(aid_raw), int(index_raw)
+    candidates = CHAT_CANDIDATES.get((c.from_user.id, aid), [])
+    if index < 0 or index >= len(candidates):
+        await c.answer("Результаты устарели. Запустите поиск ещё раз.", show_alert=True); return
+    item = candidates[index]
+    link = item.get("link")
+    if not link:
+        await c.answer("У этой группы нет публичной ссылки.", show_alert=True); return
+    try:
+        kind, target = _parse_chat_link(link)
+        account, client = await _load_account_client(aid)
+        try:
+            already = False
+            if kind == "public":
+                entity = await client.get_entity(target)
+                if not _group_entity(entity):
+                    raise ValueError("Это канал или профиль, а не группа. Вступление отменено.")
+                title = getattr(entity, "title", None) or target
+                members = int(getattr(entity, "participants_count", 0) or 0)
+                entity_id = utils.get_peer_id(entity)
+            else:
+                invite = await client(CheckChatInviteRequest(hash=target))
+                if isinstance(invite, ChatInviteAlready):
+                    entity = invite.chat
+                    if not _group_entity(entity):
+                        raise ValueError("Ссылка ведёт не на группу. Вступление отменено.")
+                    title = getattr(entity, "title", None) or "Группа"
+                    members = int(getattr(entity, "participants_count", 0) or 0)
+                    entity_id = utils.get_peer_id(entity)
+                    already = True
+                else:
+                    if getattr(invite, "channel", False) and not getattr(invite, "megagroup", False):
+                        raise ValueError("Ссылка ведёт на канал, а не группу.")
+                    title = getattr(invite, "title", None) or "Закрытая группа"
+                    members = len(getattr(invite, "participants", []) or []) or int(getattr(invite, "participants_count", 0) or 0)
+                    entity_id = None
+        finally:
+            await client.disconnect()
+    except Exception as exc:
+        await edit(c, f"Не удалось проверить ссылку:\n{str(exc)[:220]}", kb([[("⬅️ К результатам", f"chat:results:{aid}")], [("⬅️ К чатам", "chat:menu")]]))
+        return
+    CHAT_PENDING_JOIN[(c.from_user.id, aid)] = {"link": link, "kind": kind, "target": target, "title": title, "members": members, "entity_id": entity_id, "already": already}
+    status = "Аккаунт уже состоит в группе." if already else "Вступление произойдёт только после вашего подтверждения."
+    await edit(c, f"👥 {title}\nУчастников: {members or 'неизвестно'}\nСсылка: {link}\n\n{status}\n\nПроверьте название и ссылку перед вступлением.", kb([[("✅ Подтвердить вступление", f"chat:joinconfirm:{aid}")], [("⬅️ К результатам", f"chat:results:{aid}")], [("⬅️ К чатам", "chat:menu")]]))
+
+
+@router.callback_query(F.data.startswith("chat:results:"))
+async def chat_results_back(c):
+    if not await check_cb(c): return
+    aid = int(c.data.split(":")[2])
+    candidates = CHAT_CANDIDATES.get((c.from_user.id, aid), [])
+    if not candidates:
+        await edit(c, "Результаты больше не сохранены. Запустите поиск ещё раз.", kb([[("🔎 Поиск групп", f"chat:search:{aid}")], [("⬅️ К чатам", "chat:menu")]]))
+        return
+    lines = [f"Найденные кандидаты · аккаунт #{aid}", "", "Выберите группу для проверки."]
+    for i, item in enumerate(candidates[:12], 1):
+        lines.append(f"{i}. {str(item.get('title') or item.get('link') or 'Группа')[:70]}")
+    await edit(c, "\n".join(lines), _candidate_keyboard(aid, candidates[:12]))
+
+
+@router.callback_query(F.data.startswith("chat:joinlink:"))
+async def chat_join_link_start(c, state: FSMContext):
+    if not await check_cb(c): return
+    aid = int(c.data.split(":")[2])
+    await state.clear()
+    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, chat_join_account_id=aid)
+    await state.set_state(Flow.chat_join_link)
+    await edit(c, f"🔗 Вступление в группу · аккаунт #{aid}\n\nОтправьте ссылку-приглашение t.me/+… / t.me/joinchat/… или публичную ссылку t.me/username.\n\nСначала бот проверит ссылку и покажет название группы. Само вступление будет только после отдельного подтверждения.", CANCEL)
+
+
+@router.message(Flow.chat_join_link)
+async def chat_join_link_input(m: Message, state: FSMContext):
+    if not await check_msg(m) or not await private(m): return
+    data = await state.get_data()
+    raw = (m.text or "").strip()
+    await delete_msg(m)
+    try:
+        kind, target = _parse_chat_link(raw)
+    except ValueError as exc:
+        await prompt_message(m, state, str(exc))
+        return
+    aid = int(data.get("chat_join_account_id", 0))
+    anchor = {"ui_chat_id": data.get("ui_chat_id"), "ui_message_id": data.get("ui_message_id")}
+    await state.clear()
+    CHAT_CANDIDATES[(m.from_user.id, aid)] = [{"title": raw[:80], "link": raw, "source": "Введено вручную"}]
+    # Reuse the same guarded preview flow as search results.
+    CHAT_PENDING_JOIN.pop((m.from_user.id, aid), None)
+    try:
+        account, client = await _load_account_client(aid)
+        try:
+            already = False
+            if kind == "public":
+                entity = await client.get_entity(target)
+                if not _group_entity(entity):
+                    raise ValueError("Ссылка ведёт на канал или профиль, а не группу.")
+                title = getattr(entity, "title", None) or target
+                members = int(getattr(entity, "participants_count", 0) or 0)
+                entity_id = utils.get_peer_id(entity)
+            else:
+                invite = await client(CheckChatInviteRequest(hash=target))
+                if isinstance(invite, ChatInviteAlready):
+                    entity = invite.chat
+                    if not _group_entity(entity):
+                        raise ValueError("Ссылка ведёт не на группу.")
+                    title = getattr(entity, "title", None) or "Группа"
+                    members = int(getattr(entity, "participants_count", 0) or 0)
+                    entity_id = utils.get_peer_id(entity)
+                    already = True
+                else:
+                    if getattr(invite, "channel", False) and not getattr(invite, "megagroup", False):
+                        raise ValueError("Ссылка ведёт на канал, а не группу.")
+                    title = getattr(invite, "title", None) or "Закрытая группа"
+                    members = len(getattr(invite, "participants", []) or []) or int(getattr(invite, "participants_count", 0) or 0)
+                    entity_id = None
+        finally:
+            await client.disconnect()
+    except Exception as exc:
+        await edit_anchor(m.bot, anchor, f"Не удалось проверить ссылку:\n{str(exc)[:220]}", kb([[("🔗 Ввести другую ссылку", f"chat:joinlink:{aid}")], [("⬅️ К аккаунту", f"acc:view:{aid}")]]))
+        return
+    CHAT_PENDING_JOIN[(m.from_user.id, aid)] = {"link": raw, "kind": kind, "target": target, "title": title, "members": members, "entity_id": entity_id, "already": already}
+    status = "Аккаунт уже состоит в группе." if already else "Вступление произойдёт только после подтверждения."
+    await edit_anchor(m.bot, anchor, f"👥 {title}\nУчастников: {members or 'неизвестно'}\nСсылка: {raw}\n\n{status}", kb([[("✅ Подтвердить вступление", f"chat:joinconfirm:{aid}")], [("🔗 Другая ссылка", f"chat:joinlink:{aid}")], [("⬅️ К аккаунту", f"acc:view:{aid}")]]))
+
+
+@router.callback_query(F.data.startswith("chat:joinconfirm:"))
+async def chat_join_confirm(c):
+    if not await check_cb(c): return
+    aid = int(c.data.split(":")[2])
+    pending = CHAT_PENDING_JOIN.get((c.from_user.id, aid))
+    if not pending:
+        await c.answer("Предпросмотр устарел. Проверьте ссылку ещё раз.", show_alert=True); return
+    try:
+        account, client = await _load_account_client(aid)
+        try:
+            entity = None
+            if pending.get("already") and pending.get("entity_id"):
+                entity = await client.get_entity(pending["entity_id"])
+            elif pending["kind"] == "public":
+                entity = await client.get_entity(pending["target"])
+                await client(JoinChannelRequest(entity))
+            else:
+                joined = await client(ImportChatInviteRequest(hash=pending["target"]))
+                entity = next((x for x in joined.chats if _group_entity(x)), None)
+                if entity is None:
+                    raise RuntimeError("Telegram не вернул вступившую группу.")
+            if entity is None:
+                entity = await client.get_entity(pending["target"])
+            if not _group_entity(entity):
+                raise ValueError("Ссылка не ведёт на группу.")
+            chat_id = int(utils.get_peer_id(entity))
+            title = (getattr(entity, "title", None) or pending["title"] or "Группа")[:255]
+        finally:
+            await client.disconnect()
+    except Exception as exc:
+        # Approval-only invite links are not equivalent to membership; explain that no binding was created.
+        if "InviteRequestSentError" in type(exc).__name__:
+            await edit(c, "Запрос на вступление отправлен администраторам группы. Аккаунт пока не добавлен в активные чаты — повторите после одобрения.", kb([[("🔗 Проверить другую ссылку", f"chat:joinlink:{aid}")], [("⬅️ К аккаунту", f"acc:view:{aid}")]]))
+            return
+        if "UserAlreadyParticipantError" in type(exc).__name__:
+            try:
+                account, client = await _load_account_client(aid)
+                try:
+                    kind, target = pending["kind"], pending["target"]
+                    if kind == "public":
+                        entity = await client.get_entity(target)
+                    else:
+                        invite = await client(CheckChatInviteRequest(hash=target))
+                        entity = invite.chat if isinstance(invite, ChatInviteAlready) else None
+                    if entity is None or not _group_entity(entity):
+                        raise RuntimeError("Не удалось определить уже доступную группу.")
+                    chat_id = int(utils.get_peer_id(entity))
+                    title = (getattr(entity, "title", None) or pending["title"] or "Группа")[:255]
+                finally:
+                    await client.disconnect()
+            except Exception as nested:
+                await edit(c, f"Аккаунт уже состоит в группе, но не удалось обновить её в списке: {type(nested).__name__}.", kb([[("⬅️ К аккаунту", f"acc:view:{aid}")]]))
+                return
+        else:
+            await edit(c, f"Не удалось вступить: {type(exc).__name__}. Проверьте срок действия ссылки, лимиты Telegram и доступность группы.", kb([[("🔗 Другая ссылка", f"chat:joinlink:{aid}")], [("⬅️ К аккаунту", f"acc:view:{aid}")]]))
+            return
+    async with SessionFactory() as db:
+        binding = await db.scalar(select(ChatBinding).where(ChatBinding.account_id == aid, ChatBinding.chat_id == chat_id))
+        if binding:
+            binding.title = title
+            binding.enabled = True
+        else:
+            db.add(ChatBinding(account_id=aid, chat_id=chat_id, title=title, enabled=True, auto_discovered=False))
+        await db.commit()
+    CHAT_PENDING_JOIN.pop((c.from_user.id, aid), None)
+    await edit(c, f"✅ Группа «{title}» добавлена в чаты аккаунта #{aid}.\n\nЧат включён для работы и обучения. Если нужно, его можно выключить в разделе «Чаты аккаунта».", kb([[("💬 Чаты аккаунта", f"chat:account:{aid}:0")], [("👤 К аккаунту", f"acc:view:{aid}")], [("🏠 Главное меню", "nav:home")]]))
+
+
 # Chats
 @router.message(F.text=="💬 Чаты")
 async def chats(m):
@@ -1674,6 +1999,7 @@ async def chats_screen(m):
         aa=list((await db.scalars(select(Account).order_by(Account.id))).all())
         bs=list((await db.scalars(select(ChatBinding).order_by(ChatBinding.account_id,ChatBinding.id))).all())
     buttons=[[(f"Загрузить чаты · #{a.id} {a.display_name[:22]}",f"chat:account:{a.id}")] for a in aa]
+    buttons += [[(f"🔎 Поиск групп · #{a.id}",f"chat:search:{a.id}"),(f"🧭 Найти ссылки · #{a.id}",f"chat:discover:{a.id}")] for a in aa]
     buttons += [[(f"{'🟢' if b.enabled else '⚪'} #{b.account_id} · {b.title[:30]}",f"chat:toggle:{b.id}")] for b in bs[:20]]
     buttons += [[("⬅️ Главное меню","nav:home")]]
     await m.answer("💬 Чаты\nВыберите аккаунт, чтобы показать его существующие чаты. Автоматического вступления в чаты нет." if aa else "Сначала подключите аккаунт в разделе «👤 Аккаунты».",reply_markup=kb(buttons))
@@ -1683,6 +2009,7 @@ async def chats_cb(c):
     async with SessionFactory() as db:
         aa=list((await db.scalars(select(Account).order_by(Account.id))).all()); bs=list((await db.scalars(select(ChatBinding).order_by(ChatBinding.account_id,ChatBinding.id))).all())
     buttons=[[(f"Загрузить чаты · #{a.id} {a.display_name[:22]}",f"chat:account:{a.id}")] for a in aa]
+    buttons += [[(f"🔎 Поиск групп · #{a.id}",f"chat:search:{a.id}"),(f"🧭 Найти ссылки · #{a.id}",f"chat:discover:{a.id}")] for a in aa]
     buttons += [[(f"{'🟢' if b.enabled else '⚪'} #{b.account_id} · {b.title[:30]}",f"chat:toggle:{b.id}")] for b in bs[:20]]
     buttons += [[("⬅️ Главное меню","nav:home")]]
     await edit(c,"💬 Чаты · выберите аккаунт или переключите выбранный чат.",kb(buttons))
