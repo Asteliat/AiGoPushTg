@@ -215,8 +215,17 @@ async def search_web_groups(query: str, limit: int = 150) -> list[dict]:
         ("Yahoo", "https://search.yahoo.com/search?p={q}&n=30"),
         ("DuckDuckGo", "https://html.duckduckgo.com/html/?q={q}"),
     )
-    terms = f'site:t.me ("members" OR "участников" OR "группа" OR "group" OR "чат") {query[:100]}'
-    batches = await asyncio.gather(*(asyncio.to_thread(_engine_search, name, url, terms) for name, url in engines))
+    clean_query = query[:100].strip()
+    terms_list = (
+        f'site:t.me ("members" OR "участников" OR "группа" OR "group" OR "чат") {clean_query}',
+        f'site:t.me "{clean_query}"',
+        f'site:telegram.me {clean_query}',
+    )
+    batches = await asyncio.gather(*(
+        asyncio.to_thread(_engine_search, name, url, terms)
+        for name, url in engines
+        for terms in terms_list
+    ))
     found = {}
     for batch in batches:
         for item in batch:
