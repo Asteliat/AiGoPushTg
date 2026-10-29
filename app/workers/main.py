@@ -170,7 +170,7 @@ async def main():
                 await send_log(f"⚠️ Ошибка генерации ИИ\nАккаунт: {current.display_name} (#{aid})\nЧат: {label}\nОшибка: {str(exc)[:900]}")
                 return
             except Exception as exc:
-                logging.exception("Could not create draft for account %s", aid)
+                logging.exception("Could not generate response for account %s", aid)
                 await send_log(f"⚠️ Не удалось создать ответ\nАккаунт: {current.display_name} (#{aid})\nЧат: {label}\nОшибка: {type(exc).__name__}: {str(exc)[:700]}")
                 return
             mode = current.reply_mode
