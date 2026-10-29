@@ -2427,6 +2427,8 @@ async def channel_settings_screen(c, scope, object_id):
     prefix = "g" if scope == "global" else "c"
     rows.append([("⏳ Ждать до появления комментариев" if action == "skip" else "⏭ Пропускать без ожидания", f"channel:action:{prefix}:{object_id}")])
     if scope == "channel":
+        learning_state = "идёт" if binding.learning_status == "training" else "завершено" if binding.learning_completed_at else "не запускалось"
+        lines.append(f"Автообучение: {learning_state}")
         rows.append([("🧠 Автообучение по последним 200 постам", f"channel:learn:{object_id}")])
         rows.append([("↩️ Сбросить настройки канала к глобальным", f"channel:inherit:{object_id}")])
         rows.append([("⬅️ К карточке канала", f"channel:open:{account.id}:{binding.channel_id}")])
@@ -2553,7 +2555,6 @@ async def channel_inherit(c):
         binding.reply_probability_override = None
         binding.reply_cooldown_seconds_override = None
         await db.commit()
-    await channel_settings_screen(c, "channel", binding_id)
 
 @router.callback_query(F.data.startswith("channel:learn:"))
 async def channel_learn(c):
@@ -2590,7 +2591,6 @@ async def channel_learn(c):
                 current.learning_status = "error"
                 await db.commit()
         await status.edit_text(f"⚠️ Не удалось выполнить автообучение: {type(exc).__name__}: {str(exc)[:500]}")
-    await channel_settings_screen(c, "channel", binding_id)
 
 @router.callback_query(F.data.startswith("channel:history:"))
 async def channel_history(c):
