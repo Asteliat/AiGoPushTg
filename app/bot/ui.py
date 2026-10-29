@@ -355,7 +355,8 @@ async def runtime_settings_apply(c: CallbackQuery):
         await db.commit()
     label, unit, _, _ = RUNTIME_KEYS[key]
     suffix = "Значение записано во все агенты." if scope == "all" else "Индивидуальные значения агентов сохранены; обновлено глобальное значение для наследующих агентов."
-    await edit(c, f"✅ {label}: {value}{unit}\n{suffix}", kb([
+    shown = format_duration(value) if unit == "сек." else f"{value}{unit}"
+    await edit(c, f"✅ {label}: {shown}\n{suffix}", kb([
         [("⚙️ К настройкам ответов", "runtime:menu")],
         [("🤖 К ИИ-агентам", "agent:menu"), ("🏠 Главное меню", "nav:home")],
     ]))
@@ -2267,9 +2268,9 @@ async def channels_screen_message(m):
         accounts = list((await db.scalars(select(Account).order_by(Account.id))).all())
         counts = {}
         for account in accounts:
-            counts[account.id] = int(await db.scalar(
-                select(ChannelBinding.id).where(ChannelBinding.account_id == account.id).count()
-            ) or 0)
+            counts[account.id] = len((await db.scalars(
+                select(ChannelBinding.id).where(ChannelBinding.account_id == account.id)
+            )).all())
     rows = [[(f"👤 #{a.id} · {a.display_name[:24]} · каналов: {counts[a.id]}", f"channel:account:{a.id}")] for a in accounts]
     rows += [[("⬅️ Главное меню", "nav:home")]]
     await m.answer("📡 Каналы\nСначала выберите Telegram-аккаунт. Внутри него находятся его каналы и общие настройки для них.", reply_markup=kb(rows))
@@ -2391,7 +2392,6 @@ async def channel_reply_toggle(c):
         binding.enabled = binding.reply_enabled
         aid, channel_id = binding.account_id, binding.channel_id
         await db.commit()
-    await channel_open(c, ) if False else None
     await edit(c, "Настройки канала обновлены.", kb([[("⬅️ Открыть канал", f"channel:open:{aid}:{channel_id}")], [("⬅️ К каналам аккаунта", f"channel:account:{aid}")]]))
 
 async def channel_settings_screen(c, scope, object_id):
