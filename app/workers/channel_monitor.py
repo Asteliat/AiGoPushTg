@@ -301,19 +301,38 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                     ))).all())
                 for binding in bindings:
                     try:
+                        async with SessionFactory() as db:
+                            known_states = list((await db.scalars(select(ChannelPostState).where(
+                                ChannelPostState.account_id == account_id,
+                                ChannelPostState.channel_id == binding.channel_id,
+                            ))).all())
+                        state_by_post = {item.post_id: item for item in known_states}
+                        now = _utcnow()
                         entity = await client.get_entity(binding.channel_id)
                         async for message in client.iter_messages(entity, limit=RECOVERY_SCAN_LIMIT):
                             body = (message.message or "").strip()
                             if not body:
                                 continue
-                            # Never backfill posts from before this channel was added.
-                            created_at = binding.created_at
-                            msg_date = message.date
-                            if created_at and msg_date:
-                                if created_at.tzinfo is None:
-                                    created_at = created_at.replace(tzinfo=timezone.utc)
-                                if msg_date < created_at:
+                            previous = state_by_post.get(int(message.id))
+                            if previous:
+                                if previous.status == "done":
                                     continue
+                                if previous.next_retry_at and previous.next_retry_at > now:
+                                    continue
+                                if (
+                                    previous.status == "processing"
+                                    and previous.updated_at > now - timedelta(minutes=PROCESSING_STALE_MINUTES)
+                                ):
+                                    continue
+                            else:
+                                # Never backfill posts from before this channel was added.
+                                created_at = binding.created_at
+                                msg_date = message.date
+                                if created_at and msg_date:
+                                    if created_at.tzinfo is None:
+                                        created_at = created_at.replace(tzinfo=timezone.utc)
+                                    if msg_date < created_at:
+                                        continue
                             spawn(process_post(
                                 entity, int(binding.channel_id), int(message.id), body,
                                 binding.title or getattr(entity, "title", "") or "Канал",
