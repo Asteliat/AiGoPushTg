@@ -1795,7 +1795,7 @@ async def chat_discover_links(c):
     try:
         account, client = await _load_account_client(aid)
         try:
-            candidates = await find_invite_links_in_dialogs(client)
+            candidates = await find_invite_links_in_dialogs(client, dialog_limit=None, messages_per_dialog=5000)
         finally:
             await client.disconnect()
     except Exception as exc:
