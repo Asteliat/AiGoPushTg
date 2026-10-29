@@ -194,7 +194,7 @@ async def main():
                     "text": draft.proposed_text[:700],
                     "date": datetime.now(timezone.utc).isoformat(),
                 }
-                await remember_message(aid, int(event.chat_id), sender_id, sent_item)
+                await remember_message(aid, int(event.chat_id), int(current.telegram_user_id or 0), sent_item)
                 async with SessionFactory() as db:
                     saved = await db.get(Draft, draft.id)
                     if saved and saved.status == DraftStatus.PENDING:
