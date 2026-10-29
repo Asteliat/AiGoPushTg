@@ -51,7 +51,6 @@ async def init_db() -> None:
             "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS channel_insufficient_action VARCHAR(10) NOT NULL DEFAULT 'wait'",
             "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS channel_reply_probability INTEGER NOT NULL DEFAULT 100",
             "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS channel_reply_cooldown_seconds INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS channel_learning_prompt TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE channel_bindings ADD COLUMN IF NOT EXISTS reply_enabled BOOLEAN NOT NULL DEFAULT FALSE",
             "ALTER TABLE channel_bindings ADD COLUMN IF NOT EXISTS post_instructions_override TEXT NULL",
             "ALTER TABLE channel_bindings ADD COLUMN IF NOT EXISTS comments_instructions_override TEXT NULL",
