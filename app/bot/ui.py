@@ -34,7 +34,12 @@ async def isolated_telegram_client(account):
     """Use a consistent temporary copy of the Telethon session SQLite database."""
     with tempfile.TemporaryDirectory(prefix=f"atciv-session-{account.id}-") as temp_dir:
         snapshot_path = os.path.join(temp_dir, "account.session")
-        source_db = sqlite3.connect(account.session_path, timeout=20)
+        # Telethon appends ".session" when Account.session_path is stored
+        # without the suffix. Open that exact live database, never a new empty file.
+        source_path = str(account.session_path)
+        if not source_path.endswith(".session"):
+            source_path += ".session"
+        source_db = sqlite3.connect(source_path, timeout=20)
         snapshot_db = sqlite3.connect(snapshot_path, timeout=20)
         try:
             # SQLite backup includes committed WAL content without opening the
@@ -2107,20 +2112,22 @@ async def chat_account(c):
     if not cfg.telegram_api_id or not cfg.telegram_api_hash: await c.answer("Не заданы Telegram API credentials.",show_alert=True); return
     async with SessionFactory() as db: a=await db.get(Account,aid)
     if not a: await c.answer("Аккаунт не найден",show_alert=True); return
-    client=TelegramClient(a.session_path,cfg.telegram_api_id,cfg.telegram_api_hash,proxy=telethon_proxy(a.proxy_config_encrypted))
     try:
-        await client.connect()
-        if not await client.is_user_authorized(): await c.answer("Сессия не авторизована",show_alert=True); return
-        dialogs=[]
-        async for d in client.iter_dialogs():
-            entity = d.entity
-            if getattr(entity, "deleted", False) or getattr(entity, "bot", False):
-                continue
-            title = (d.name or str(d.id)).strip()
-            if title:
-                dialogs.append((int(d.id), title[:255]))
-    except Exception as exc: await c.answer(f"Ошибка загрузки: {type(exc).__name__}",show_alert=True); return
-    finally: await client.disconnect()
+        async with isolated_telegram_client(a) as client:
+            if not await client.is_user_authorized():
+                await c.answer("Сессия не авторизована",show_alert=True)
+                return
+            dialogs=[]
+            async for d in client.iter_dialogs():
+                entity = d.entity
+                if getattr(entity, "deleted", False) or getattr(entity, "bot", False):
+                    continue
+                title = (d.name or str(d.id)).strip()
+                if title:
+                    dialogs.append((int(d.id), title[:255]))
+    except Exception as exc:
+        await c.answer(f"Ошибка загрузки: {type(exc).__name__}: {str(exc)[:180]}",show_alert=True)
+        return
     async with SessionFactory() as db:
         existing = list((await db.scalars(select(ChatBinding).where(ChatBinding.account_id == aid))).all())
         by_chat = {binding.chat_id: binding for binding in existing}
@@ -2149,12 +2156,16 @@ async def chat_select(c):
     if not await check_cb(c): return
     parts=c.data.split(":"); aid,cid=int(parts[3]),int(parts[4]); page=int(parts[5]) if len(parts)>5 and parts[5].isdigit() else 0
     async with SessionFactory() as db: a=await db.get(Account,aid)
-    client=TelegramClient(a.session_path,cfg.telegram_api_id,cfg.telegram_api_hash,proxy=telethon_proxy(a.proxy_config_encrypted))
+    if not a:
+        await c.answer("Аккаунт не найден",show_alert=True)
+        return
     try:
-        await client.connect(); entity=await client.get_entity(cid)
-        title=getattr(entity,"title",None) or getattr(entity,"username",None) or " ".join(x for x in [getattr(entity,"first_name",None),getattr(entity,"last_name",None)] if x) or str(cid)
-    except Exception as exc: await c.answer(f"Не удалось открыть чат: {type(exc).__name__}",show_alert=True); return
-    finally: await client.disconnect()
+        async with isolated_telegram_client(a) as client:
+            entity=await client.get_entity(cid)
+            title=getattr(entity,"title",None) or getattr(entity,"username",None) or " ".join(x for x in [getattr(entity,"first_name",None),getattr(entity,"last_name",None)] if x) or str(cid)
+    except Exception as exc:
+        await c.answer(f"Не удалось открыть чат: {type(exc).__name__}: {str(exc)[:180]}",show_alert=True)
+        return
     async with SessionFactory() as db:
         b=await db.scalar(select(ChatBinding).where(ChatBinding.account_id==aid,ChatBinding.chat_id==cid))
         if b:
