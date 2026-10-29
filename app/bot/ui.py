@@ -1785,7 +1785,7 @@ async def chat_search_query(m: Message, state: FSMContext):
         await edit_anchor(m.bot, anchor, f"По запросу «{query}» подходящих публичных групп не найдено.\n\nПопробуйте более короткие или альтернативные ключевые слова.", kb([[("🔎 Новый запрос", f"chat:search:{aid}")], [("🧭 Найти ссылки в чатах", f"chat:discover:{aid}")], [("⬅️ К чатам", "chat:menu")]]))
         return
     visible = candidates[:12]
-    text_lines = [f"🔎 Результаты по запросу «{query}» · аккаунт #{aid}", "", "Сначала показаны группы с лучшими публичными сигналами качества. Рейтинг — ориентир, не гарантия безопасности."]
+    text_lines = [f"🔎 Результаты по запросу «{query}» · найдено {len(candidates)}", "Страница 1 · показываю 1–{min(12, len(candidates))}", "", "Результаты собраны из Telegram и внешних поисковиков. Ссылки проверяются перед вступлением."]
     for i, item in enumerate(visible, 1):
         flags = " · ✓ проверена" if item.get("verified") else ""
         members = f"{int(item.get('members') or 0):,}".replace(",", " ") + " участников" if item.get("members") else "размер неизвестен"
