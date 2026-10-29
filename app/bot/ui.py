@@ -909,7 +909,6 @@ async def acc_ai_disclosure_toggle(c):
         account.ai_identity_disclosed = not account.ai_identity_disclosed
         disclosed = account.ai_identity_disclosed
         await db.commit()
-    await c.answer("Отметка сохранена." if disclosed else "Самостоятельное участие отключено.")
     await acc_view(c, aid)
 
 @router.callback_query(F.data.startswith("acc:proxysettings:"))
