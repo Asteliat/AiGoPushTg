@@ -2492,6 +2492,7 @@ async def channel_settings_screen(c, scope, object_id):
     if scope == "channel":
         learning_state = "идёт" if binding.learning_status == "training" else "ошибка — запустите повторно" if binding.learning_status == "error" else "завершено" if binding.learning_completed_at else "не запускалось"
         lines.append(f"Автообучение: {learning_state}")
+        lines.append("ИИ изучает до 200 последних текстовых постов и до 5 комментариев к каждому, чтобы понять тематику и стиль обсуждений.")
         rows.append([("🧠 Автообучение по последним 200 постам", f"channel:learn:{object_id}")])
         rows.append([("↩️ Сбросить настройки канала к глобальным", f"channel:inherit:{object_id}")])
         rows.append([("⬅️ К карточке канала", f"channel:open:{account.id}:{binding.channel_id}")])
@@ -2630,6 +2631,9 @@ async def channel_learn(c):
         account = await db.get(Account, binding.account_id) if binding else None
         if not binding or not account:
             await c.answer("Канал или аккаунт не найден.", show_alert=True)
+            return
+        if binding.learning_status == "training":
+            await c.answer("Автообучение этого канала уже выполняется.", show_alert=True)
             return
         binding.learning_status = "training"
         await db.commit()
