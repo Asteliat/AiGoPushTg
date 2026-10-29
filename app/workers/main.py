@@ -10,11 +10,11 @@ from collections import defaultdict
 from aiogram import Bot
 from telethon import TelegramClient, events
 from sqlalchemy import select
-from app.ai.provider import AIUnavailableError, summarize_chat_context
+from app.ai.provider import AIUnavailableError, NoReplyNeeded, summarize_chat_context
 from app.services.drafts import create_draft, global_ai_enabled
 from app.settings import get_settings
 from app.storage.db import SessionFactory, init_db
-from app.storage.models import Account, AIAgent, ChatBinding, Draft, DraftStatus
+from app.storage.models import Account, AIAgent, AppSetting, ChatBinding, Draft, DraftStatus
 from app.telegram_gateway.proxy import telethon_proxy
 
 async def heartbeat(redis):
@@ -113,25 +113,40 @@ async def main():
             }
             await remember_message(aid, int(event.chat_id), sender_id, item)
 
+            agent = await db.get(AIAgent, current.ai_agent_id)
+            if not agent or not agent.enabled:
+                return
+
+            proactive = False
             if event.is_group:
                 username = (current.username or "").strip().lstrip("@")
                 mentioned = bool(username and re.search(r"(?<!\w)@" + re.escape(username) + r"\b", incoming, re.IGNORECASE))
                 reply_to = await event.get_reply_message() if event.message.reply_to else None
-                if not (mentioned or (reply_to and reply_to.sender_id == current.telegram_user_id)):
+                addressed = mentioned or (reply_to and reply_to.sender_id == current.telegram_user_id)
+                if addressed:
+                    probability_key = "mention_reply_probability"
+                elif current.ai_identity_disclosed:
+                    probability_key = "proactive_reply_probability"
+                    proactive = True
+                else:
                     return
-                setting = await db.get(AppSetting, "mention_reply_probability")
-                probability = int(setting.value) if setting and setting.value.isdigit() else 100
             elif event.is_private:
-                setting = await db.get(AppSetting, "dm_reply_probability")
-                probability = int(setting.value) if setting and setting.value.isdigit() else 100
+                probability_key = "dm_reply_probability"
             else:
                 return
 
+            setting = await db.get(AppSetting, probability_key)
+            global_probability = int(setting.value) if setting and setting.value.isdigit() else (0 if probability_key == "proactive_reply_probability" else 100)
+            override = getattr(agent, probability_key + "_override")
+            probability = override if override is not None else global_probability
             if probability <= 0 or random.randint(1, 100) > min(probability, 100):
-                logging.info("Reply skipped by probability (%s%%) for account %s in chat %s", probability, aid, event.chat_id)
+                logging.info("Reply skipped by %s probability (%s%%) for account %s in chat %s", probability_key, probability, aid, event.chat_id)
                 return
+
             cooldown_setting = await db.get(AppSetting, "reply_cooldown_seconds")
-            cooldown_seconds = int(cooldown_setting.value) if cooldown_setting and cooldown_setting.value.isdigit() else 0
+            global_cooldown = int(cooldown_setting.value) if cooldown_setting and cooldown_setting.value.isdigit() else 0
+            cooldown_override = agent.reply_cooldown_seconds_override
+            cooldown_seconds = cooldown_override if cooldown_override is not None else global_cooldown
             if cooldown_seconds > 0:
                 allowed = await redis.set(
                     f"atcivperson:reply-cooldown:{aid}:{event.chat_id}", "1",
@@ -144,8 +159,11 @@ async def main():
                 draft = await create_draft(
                     db, incoming_text=incoming, account_id=aid,
                     chat_label=f"{current.display_name} · {label}",
-                    conversation_context=context,
+                    conversation_context=context, proactive=proactive,
                 )
+            except NoReplyNeeded:
+                logging.info("AI judged proactive message unnecessary for account %s in chat %s", aid, event.chat_id)
+                return
             except AIUnavailableError as exc:
                 logging.warning("AI generation failed for account %s: %s", aid, exc)
                 await send_log(f"⚠️ Ошибка генерации ИИ\nАккаунт: {current.display_name} (#{aid})\nЧат: {label}\nОшибка: {str(exc)[:900]}")
@@ -167,7 +185,7 @@ async def main():
         sent = False
         if mode == "automatic":
             try:
-                sent_message = await event.reply(draft.proposed_text)
+                sent_message = await (event.client.send_message(event.chat_id, draft.proposed_text) if proactive else event.reply(draft.proposed_text))
                 sent = True
                 sent_item = {
                     "message_id": int(getattr(sent_message, "id", 0)),
