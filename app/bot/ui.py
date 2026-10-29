@@ -1729,7 +1729,7 @@ async def chat_search_start(c, state: FSMContext):
     await state.clear()
     await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, chat_search_account_id=aid)
     await state.set_state(Flow.chat_search_query)
-    await edit(c, f"🔎 Поиск публичных Telegram-групп · аккаунт #{aid}\n\nВведите тему или несколько ключевых слов, например: «Python разработка», «настольные игры», «дизайн».\n\nПоиск использует публичный поиск Telegram и отбирает именно группы, а не каналы и ботов. Это не полный каталог всех чатов.", CANCEL)
+    await edit(c, f"🔎 Расширенный поиск Telegram-групп · аккаунт #{aid}\n\nВведите тему или несколько ключевых слов, например: «Python разработка», «настольные игры», «дизайн».\n\nПоиск объединяет результаты Telegram, Google, Яндекса, Bing, Yahoo и DuckDuckGo. Закрытые группы находятся, только если их пригласительные ссылки опубликованы в интернете; неопубликованные приватные группы поисковики не видят.", CANCEL)
 
 
 @router.message(Flow.chat_search_query)
@@ -1749,7 +1749,7 @@ async def chat_search_query(m: Message, state: FSMContext):
     try:
         account, client = await _load_account_client(aid)
         try:
-            candidates = await search_public_groups(client, query, limit=60)
+            native_results = await search_public_groups(client, query, limit=80)
         finally:
             await client.disconnect()
     except Exception as exc:
