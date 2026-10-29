@@ -114,6 +114,25 @@ class ChannelAnalysis(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class ChannelPostState(Base):
+    """Durable processing state for one channel post."""
+    __tablename__ = "channel_post_states"
+    __table_args__ = (UniqueConstraint("account_id", "channel_id", "post_id", name="uq_channel_post_state"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), index=True)
+    channel_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    post_id: Mapped[int] = mapped_column(BigInteger)
+    channel_title: Mapped[str] = mapped_column(String(255), default="")
+    post_text: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(20), default="queued", server_default="queued", nullable=False, index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    last_error: Mapped[str] = mapped_column(Text, default="", server_default="", nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
 class AIAgent(Base):
     __tablename__ = "ai_agents"
 
