@@ -1746,15 +1746,15 @@ async def chat_search_query(m: Message, state: FSMContext):
     aid = int(data.get("chat_search_account_id", 0))
     anchor = {"ui_chat_id": data.get("ui_chat_id"), "ui_message_id": data.get("ui_message_id")}
     await state.clear()
+    native_results = []
     try:
         account, client = await _load_account_client(aid)
         try:
             native_results = await search_public_groups(client, query, limit=80)
         finally:
             await client.disconnect()
-    except Exception as exc:
-        await edit_anchor(m.bot, anchor, f"Поиск не удался: {str(exc)[:180]}", kb([[("🔎 Повторить поиск", f"chat:search:{aid}")], [("⬅️ К чатам", "chat:menu")]]))
-        return
+    except Exception:
+        native_results = []
     try:
         web_results = await search_web_groups(query, limit=180)
     except Exception:
