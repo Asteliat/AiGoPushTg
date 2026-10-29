@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     ai_model: str = "gpt-4o-mini"
     ai_timeout_seconds: float = 45.0
     proxy_encryption_key: str = ""
+    log_chat_id: int = 0
 
     @property
     def admin_id_set(self) -> set[int]:
