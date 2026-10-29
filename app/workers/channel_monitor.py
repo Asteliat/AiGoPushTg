@@ -101,12 +101,12 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                     if state and state.status != "done":
                         label = "по теме" if existing_analysis.on_topic else "не по теме"
                         notification = (
-                            f"📡 Анализ канала: {existing_analysis.channel_title or channel_title}\\n"
-                            f"Аккаунт: #{account_id} · Публикация #{post_id}\\n"
-                            f"Комментариев проанализировано: {existing_analysis.comments_count}\\n"
-                            f"Обсуждение: {label}\\n\\n"
-                            f"Сводка ИИ:\\n{existing_analysis.comments_summary[:1200]}\\n\\n"
-                            f"Вариант текстового ответа (не опубликован):\\n"
+                            f"📡 Анализ канала: {existing_analysis.channel_title or channel_title}\n"
+                            f"Аккаунт: #{account_id} · Публикация #{post_id}\n"
+                            f"Комментариев проанализировано: {existing_analysis.comments_count}\n"
+                            f"Обсуждение: {label}\n\n"
+                            f"Сводка ИИ:\n{existing_analysis.comments_summary[:1200]}\n\n"
+                            f"Вариант текстового ответа (не опубликован):\n"
                             f"{existing_analysis.suggested_response[:1800]}"
                         )
                         # Analysis may have been committed just before a crash or a
@@ -197,9 +197,8 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
 
             comments = await fetch_comments(group_entity, int(root_message.id))
             if len(comments) < 2:
-                await asyncio.sleep(wait_seconds)
-                comments = await fetch_comments(group_entity, int(root_message.id))
-            if len(comments) < 2:
+                # Release this task instead of sleeping: the recovery loop will retry
+                # after the channel's configured interval without blocking other posts.
                 await update_state(
                     channel_id, post_id, status="waiting",
                     next_retry_at=_utcnow() + timedelta(seconds=wait_seconds),
@@ -258,19 +257,22 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                 last_error=f"{type(exc).__name__}: {str(exc)[:400]}",
             )
         finally:
-            if lock_acquired:
-                # Successful posts retain a long-lived done marker; retryable posts release
-                # the lock so the recovery scanner can retry them at next_retry_at.
-                state_status = None
-                async with SessionFactory() as db:
-                    state_status = await db.scalar(select(ChannelPostState.status).where(
-                        ChannelPostState.account_id == account_id,
-                        ChannelPostState.channel_id == channel_id,
-                        ChannelPostState.post_id == post_id,
-                    ))
-                if state_status != "done":
-                    await redis.delete(lock_key)
-            active_posts.discard(key)
+            try:
+                if lock_acquired:
+                    # Successful posts retain a long-lived done marker; retryable posts
+                    # release the lock so the recovery scanner can retry them later.
+                    async with SessionFactory() as db:
+                        state_status = await db.scalar(select(ChannelPostState.status).where(
+                            ChannelPostState.account_id == account_id,
+                            ChannelPostState.channel_id == channel_id,
+                            ChannelPostState.post_id == post_id,
+                        ))
+                    if state_status != "done":
+                        await redis.delete(lock_key)
+            except Exception:
+                logging.exception("Could not release channel post lock for account %s", account_id)
+            finally:
+                active_posts.discard(key)
 
     async def handle(event):
         message = event.message
