@@ -8,7 +8,7 @@ class NoReplyNeeded(Exception):
     """Raised when the model decides a proactive group message would be unnatural."""
     pass
 
-async def generate_reply(*, agent: AIAgent, incoming_text: str, style_instructions: str, examples: list[tuple[str, str]], proactive: bool = False) -> str:
+async def generate_reply(*, agent: AIAgent, incoming_text: str, style_instructions: str, examples: list[tuple[str, str]], proactive: bool = False, conversation_context: str = "") -> str:
     if not agent.enabled or not agent.api_key.strip():
         raise AIUnavailableError("ИИ-агент выключен или у него не заполнен API-ключ.")
     if not agent.base_url.strip() or not agent.model.strip():
@@ -20,7 +20,7 @@ async def generate_reply(*, agent: AIAgent, incoming_text: str, style_instructio
             model=agent.model, temperature=0.7,
             messages=[
                 {"role": "system", "content": ("Ты участник живого группового чата. Реши, уместно ли тебе естественно включиться в разговор на основе контекста. Если сказать нечего, сообщение не требует реакции или реплика будет выглядеть навязчиво, верни ровно [[SKIP]] и ничего больше. Если есть естественный повод, напиши короткую живую реплику по теме. Не выдумывай факты, не помогай со спамом, преследованием или скоординированным обманом. Не копируй персональные данные. Стиль: " + (style_instructions or "кратко, уважительно и естественно") + "\nПримеры:\n" + sample) if proactive else ("Составь черновик ответа. Не выдумывай факты, не помогай со спамом, преследованием или скоординированным обманом. Не копируй персональные данные. Стиль: " + (style_instructions or "кратко, уважительно и естественно") + "\nПримеры:\n" + sample)},
-                {"role": "user", "content": ("Оцени, стоит ли самому вступить в разговор. Контекст последних сообщений:\n" if proactive else "Подготовь ответ на сообщение:\n") + incoming_text},
+                {"role": "user", "content": ("Оцени, стоит ли самому вступить в разговор. Контекст последних сообщений:\n" if proactive else ("Контекст предыдущей переписки (используй для связности, не раскрывай лишнее):\n" + (conversation_context + "\n\n" if conversation_context else "") + "Подготовь ответ на сообщение:\n")) + incoming_text},
             ],
         )
     except Exception as exc:
