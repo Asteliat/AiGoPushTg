@@ -1388,6 +1388,7 @@ async def agent_view(c):
     txt=f"🤖 {a.name}\nСтатус: {'включён' if a.enabled else 'выключен'}\nПо умолчанию: {'да' if a.is_default else 'нет'}\nBase URL: {a.base_url}\nМодель: {a.model}\nAPI-ключ: {masked}\nТайм-аут: {a.timeout_seconds} сек.\nАккаунты: {', '.join('#'+str(x.id) for x in assigned) or 'нет'}"
     buttons=[[(("⏸ Выключить профиль" if a.enabled else "▶️ Включить профиль"),f"agent:toggle:{aid}")],
         [("⭐ По умолчанию",f"agent:default:{aid}")],
+        [("🎚 Вероятности и паузы",f"agent:runtime:menu:{aid}")],
         [("✏️ Base URL",f"agent:edit:url:{aid}"),("✏️ Модель",f"agent:edit:model:{aid}")],
         [("🔑 API-ключ",f"agent:edit:key:{aid}"),("⏱ Тайм-аут",f"agent:edit:timeout:{aid}")],
         [("🗑 Удалить профиль",f"agent:delete:{aid}")],[("⬅️ К ИИ-агентам","agent:menu")]]
