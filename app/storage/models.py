@@ -42,7 +42,6 @@ class Account(Base):
     channel_insufficient_action: Mapped[str] = mapped_column(String(10), default="wait", server_default="wait", nullable=False)
     channel_reply_probability: Mapped[int] = mapped_column(Integer, default=100, server_default="100", nullable=False)
     channel_reply_cooldown_seconds: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
-    channel_learning_prompt: Mapped[str] = mapped_column(Text, default="", server_default="", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
