@@ -881,7 +881,7 @@ async def acc_view(c, account_id: int | None = None):
         else:
             learning_text = "контекст сохранён вручную" if a.learning_prompt.strip() else "не запускалось"
     conn_label = {"connected": "подключён", "connecting": "подключается", "paused": "пауза", "disconnected": "отключён", "error": "ошибка подключения", "unauthorized": "сессия не авторизована"}.get(a.connection_status, a.connection_status)
-    txt=f"👤 {a.display_name} (@{a.username or 'нет username'})\nID: #{aid}\nАккаунт: {'включён' if a.enabled else 'выключен'}\nСоединение: {conn_label}\nРабота: {'⏸ на паузе' if a.manual_pause else ('активна' if a.enabled else 'отключена')}\nИИ для аккаунта: {'включён' if a.ai_enabled else 'выключен'}\nРежим ответов: {'автоматический' if a.reply_mode=='automatic' else 'ручной'}\nАгент: {agent.name if agent else 'не назначен'}\nПерсона: {persona.name if persona else 'не назначена'}\nАктивных чатов: {chats}\nОбучение: {learning_text}\nПрокси: {'настроен' if a.proxy_config_encrypted else 'нет'}\nИндивидуальные правила: {'заданы' if a.persona_style_override.strip() else 'нет'}"
+    txt=f"👤 {a.display_name} (@{a.username or 'нет username'})\nID: #{aid}\nАккаунт: {'включён' if a.enabled else 'выключен'}\nСоединение: {conn_label}\nРабота: {'⏸ на паузе' if a.manual_pause else ('активна' if a.enabled else 'отключена')}\nИИ для аккаунта: {'включён' if a.ai_enabled else 'выключен'}\nРежим ответов: {'автоматический' if a.reply_mode=='automatic' else 'ручной'}\nАгент: {agent.name if agent else 'не назначен'}\nПерсона: {persona.name if persona else 'не назначена'}\nАктивных чатов: {chats}\nОбучение: {learning_text}\nПрокси: {'настроен' if a.proxy_config_encrypted else 'нет'}\nИИ обозначен в профиле: {'да' if a.ai_identity_disclosed else 'нет'}\nИндивидуальные правила: {'заданы' if a.persona_style_override.strip() else 'нет'}"
     buttons=[
         [(("▶️ Возобновить работу" if a.manual_pause else "⏸ Пауза работы"),f"acc:pause:{aid}")],
         [(("⏸ Отключить аккаунт" if a.enabled else "▶️ Подключить аккаунт"),f"acc:toggle:{aid}")],
@@ -890,6 +890,7 @@ async def acc_view(c, account_id: int | None = None):
         [("🧠 Назначить ИИ-агента",f"acc:agents:{aid}")],
         [("🎭 Назначить персону",f"acc:personas:{aid}")],
         [("🌐 Настройки прокси",f"acc:proxysettings:{aid}")],
+        [(("🤖 Снять отметку об ИИ в профиле" if a.ai_identity_disclosed else "🤖 Подтвердить: ИИ указан в профиле"),f"acc:aidisclosure:{aid}")],
         [("✏️ Индивидуальные правила",f"acc:personaoverride:{aid}")],
         [("💡 Примеры аккаунта",f"example:account:{aid}")],
         [("💬 Чаты аккаунта",f"chat:account:{aid}")],
