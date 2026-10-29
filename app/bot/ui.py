@@ -1838,7 +1838,7 @@ async def chat_candidate_page(c):
     lines = [f"Найденные группы · аккаунт #{aid}", f"Показаны {offset + 1}–{min(offset + 12, len(candidates))} из {len(candidates)}", "", "Выберите результат для проверки."]
     for i, item in enumerate(page, start=offset + 1):
         lines.append(f"{i}. {str(item.get('title') or item.get('link') or 'Группа')[:70]}")
-    await edit(c, "\\n".join(lines), _candidate_keyboard(aid, candidates, offset))
+    await edit(c, "\n".join(lines), _candidate_keyboard(aid, candidates, offset))
 
 
 @router.callback_query(F.data.startswith("chat:candidate:"))
@@ -1902,7 +1902,7 @@ async def chat_results_back(c):
     lines = [f"Найденные кандидаты · аккаунт #{aid}", "", "Выберите группу для проверки."]
     for i, item in enumerate(candidates[:12], 1):
         lines.append(f"{i}. {str(item.get('title') or item.get('link') or 'Группа')[:70]}")
-    await edit(c, "\n".join(lines), _candidate_keyboard(aid, candidates[:12]))
+    await edit(c, "\n".join(lines), _candidate_keyboard(aid, candidates, 0))
 
 
 @router.callback_query(F.data.startswith("chat:joinlink:"))
