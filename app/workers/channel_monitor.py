@@ -99,7 +99,22 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                         ChannelPostState.post_id == post_id,
                     ))
                     if state and state.status != "done":
+                        label = "по теме" if existing_analysis.on_topic else "не по теме"
+                        notification = (
+                            f"📡 Анализ канала: {existing_analysis.channel_title or channel_title}\\n"
+                            f"Аккаунт: #{account_id} · Публикация #{post_id}\\n"
+                            f"Комментариев проанализировано: {existing_analysis.comments_count}\\n"
+                            f"Обсуждение: {label}\\n\\n"
+                            f"Сводка ИИ:\\n{existing_analysis.comments_summary[:1200]}\\n\\n"
+                            f"Вариант текстового ответа (не опубликован):\\n"
+                            f"{existing_analysis.suggested_response[:1800]}"
+                        )
+                        # Analysis may have been committed just before a crash or a
+                        # notification failure. Re-send the stored result, never re-run AI.
+                        await send_log(notification)
                         state.status = "done"
+                        state.next_retry_at = None
+                        state.last_error = ""
                         state.updated_at = _utcnow()
                         await db.commit()
                     return
@@ -269,6 +284,8 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
     async def recovery_loop():
         """Revisit recent channel history to recover missed events and due retries."""
         while True:
+            if not client.is_connected():
+                return
             try:
                 async with SessionFactory() as db:
                     bindings = list((await db.scalars(select(ChannelBinding).where(
