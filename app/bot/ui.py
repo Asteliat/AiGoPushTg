@@ -688,9 +688,9 @@ async def qr_password_received(m: Message, state: FSMContext):
         await prompt_message(m, state, f"Пароль 2FA не принят ({type(exc).__name__}). Попробуйте ещё раз или нажмите «Отмена».")
 
 @router.callback_query(F.data.startswith("acc:view:"))
-async def acc_view(c):
+async def acc_view(c, account_id: int | None = None):
     if not await check_cb(c): return
-    aid=int(c.data.split(":")[2])
+    aid = account_id if account_id is not None else int(c.data.split(":")[2])
     async with SessionFactory() as db:
         a=await db.get(Account,aid)
         if not a: await c.answer("Аккаунт не найден",show_alert=True); return
@@ -839,7 +839,7 @@ async def acc_set_agent(c):
         a=await db.get(Account,int(aid)); ag=await db.get(AIAgent,int(agent)) if int(agent) else None
         if not a: await c.answer("Аккаунт не найден",show_alert=True); return
         a.ai_agent_id=ag.id if ag else None; await db.commit()
-    await acc_view(c)
+    await acc_view(c, int(aid))
 @router.callback_query(F.data.startswith("acc:personas:"))
 async def acc_personas(c):
     if not await check_cb(c): return
@@ -856,7 +856,7 @@ async def acc_set_persona(c):
         a=await db.get(Account,int(aid))
         if not a: await c.answer("Аккаунт не найден",show_alert=True); return
         a.persona_id=int(pid) or None; await db.commit()
-    await acc_view(c)
+    await acc_view(c, int(aid))
 
 
 @router.callback_query(F.data.startswith("acc:learnprompt:"))
