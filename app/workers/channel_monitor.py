@@ -80,8 +80,12 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                 (chat for chat in getattr(discussion, "chats", []) if getattr(chat, "megagroup", False)),
                 None,
             )
+            discussion_messages = getattr(discussion, "messages", [])
             root_message = next(
-                (item for item in getattr(discussion, "messages", []) if getattr(item, "id", None)),
+                (
+                    item for item in discussion_messages
+                    if getattr(getattr(item, "peer_id", None), "channel_id", None) == getattr(group_entity, "id", None)
+                ),
                 None,
             )
             if not group_entity or not root_message:
