@@ -255,8 +255,14 @@ async def search_web_groups(query: str, limit: int = 150) -> list[dict]:
         f'site:t.me "{clean_query}"',
         f'site:telegram.me {clean_query}',
     )
+    semaphore = asyncio.Semaphore(5)
+
+    async def run_search(name, url, terms):
+        async with semaphore:
+            return await asyncio.to_thread(_engine_search, name, url, terms)
+
     batches = await asyncio.gather(*(
-        asyncio.to_thread(_engine_search, name, url, terms)
+        run_search(name, url, terms)
         for name, url in engines
         for terms in terms_list
     ))
