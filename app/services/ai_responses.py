@@ -13,7 +13,7 @@ async def global_ai_enabled(session: AsyncSession) -> bool:
     row = await session.get(AppSetting, "ai_global_enabled")
     return bool(row and row.value.lower() == "true")
 
-async def generate_response(session: AsyncSession, *, incoming_text: str, persona_id: int | None = None, account_id: int | None = None, chat_label: str = "Личный черновик", agent_id: int | None = None, proactive: bool = False, conversation_context: str = "") -> Draft:
+async def generate_response(session: AsyncSession, *, incoming_text: str, persona_id: int | None = None, account_id: int | None = None, chat_label: str = "Ответ ИИ", agent_id: int | None = None, proactive: bool = False, conversation_context: str = "") -> GeneratedResponse
     account = await session.get(Account, account_id) if account_id else None
     if account and persona_id is None:
         persona_id = account.persona_id
@@ -55,6 +55,6 @@ async def generate_response(session: AsyncSession, *, incoming_text: str, person
             or not account.ai_enabled
             or not await global_ai_enabled(session)
         ):
-            raise RuntimeError("Работа аккаунта была остановлена во время генерации; черновик не сохранён.")
+            raise RuntimeError("Работа аккаунта была остановлена во время генерации; ответ не сохранён.")
     # Generated response is transient and is never persisted.
     return GeneratedResponse(proposed_text=proposed, chat_label=chat_label[:160])
