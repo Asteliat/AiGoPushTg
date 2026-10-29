@@ -12,6 +12,7 @@ from telethon import TelegramClient, events
 from sqlalchemy import select
 from app.ai.provider import AIUnavailableError, NoReplyNeeded, summarize_chat_context
 from app.services.drafts import create_draft, global_ai_enabled
+from app.workers.channel_monitor import install_channel_monitor
 from app.settings import get_settings
 from app.storage.db import SessionFactory, init_db
 from app.storage.models import Account, AIAgent, AppSetting, ChatBinding, Draft, DraftStatus
@@ -500,6 +501,7 @@ async def main():
             await set_connection_status(account.id, "connected")
             watched[account.id]=labels
             client.add_event_handler(lambda event, aid=account.id, labels=labels: on_message(event,aid=aid,labels=labels),events.NewMessage(incoming=True))
+            install_channel_monitor(client, account.id, redis, send_log)
             clients[account.id]=client
             tasks[account.id]=asyncio.create_task(client.run_until_disconnected())
             account_snapshot[account.id]=account
