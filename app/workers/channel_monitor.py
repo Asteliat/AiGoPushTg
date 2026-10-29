@@ -301,9 +301,10 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
         channel_id = discussion_channels.get(int(event.chat_id))
         if not channel_id:
             return
+        post_id = int(getattr(message.reply_to, "reply_to_top_id", None) or message.reply_to.reply_to_msg_id)
         comment_id = int(message.id)
         lock_key = f"atcivperson:channel-comment:{account_id}:{channel_id}:{comment_id}"
-        locked = await redis.set(lock_key, "processing", nx=True, ex=15 * 60)
+        locked = await redis.set(lock_key, "processing", nx=True, ex=31536900)
         if not locked:
             return
         try:
@@ -338,46 +339,89 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                 if probability == 0 or random.randint(1, 100) > probability:
                     await redis.set(lock_key, "skipped", ex=30 * 24 * 3600)
                     return
-                cooldown = (
-                    binding.reply_cooldown_seconds_override
-                    if binding.reply_cooldown_seconds_override is not None
-                    else agent.channel_reply_cooldown_seconds_override
-                    if agent.channel_reply_cooldown_seconds_override is not None
-                    else account.channel_reply_cooldown_seconds
-                )
-                cooldown = max(0, int(cooldown or 0))
-                if cooldown:
-                    allowed = await redis.set(
-                        f"atcivperson:channel-reply-cooldown:{account_id}:{channel_id}",
-                        "1", nx=True, ex=cooldown,
-                    )
-                    if not allowed:
-                        await redis.set(lock_key, "skipped", ex=30 * 24 * 3600)
-                        return
-                post_id = int(getattr(message.reply_to, "reply_to_top_id", None) or message.reply_to.reply_to_msg_id)
-                try:
-                    discussion_context = await client.get_messages(event.chat_id, ids=post_id)
-                    post_text = (getattr(discussion_context, "message", None) or "").strip()
-                except Exception:
-                    post_text = ""
+                min_comments = max(1, min(10, int(
+                    binding.min_comments_override
+                    if binding.min_comments_override is not None
+                    else account.channel_min_comments or 2
+                )))
+                insufficient_action = binding.insufficient_action_override or account.channel_insufficient_action or "wait"
+                wait_value = binding.comment_wait_seconds_override if binding.comment_wait_seconds_override is not None else account.channel_wait_seconds
+                wait_seconds = max(0, int(wait_value if wait_value is not None else binding.comment_wait_seconds))
                 post_instructions = binding.post_instructions_override if binding.post_instructions_override is not None else account.channel_post_instructions
                 comments_instructions = binding.comments_instructions_override if binding.comments_instructions_override is not None else account.channel_comments_instructions
                 restrictions = binding.restrictions_instructions_override if binding.restrictions_instructions_override is not None else account.channel_restrictions_instructions
-                additional = "\n".join(x for x in [
-                    "Инструкции по публикациям: " + post_instructions if post_instructions.strip() else "",
-                    "Что учитывать в комментариях: " + comments_instructions if comments_instructions.strip() else "",
-                    "Ограничения: " + restrictions if restrictions.strip() else "",
-                    "Выводы автообучения: " + (binding.learning_prompt or account.channel_learning_prompt) if (binding.learning_prompt or account.channel_learning_prompt).strip() else "",
-                ] if x)
+                learned = binding.learning_prompt or account.channel_learning_prompt
                 title = binding.title or f"канал {channel_id}"
-                context = f"Канал: {title}\nПубликация, к которой относится обсуждение: {post_text[:2500]}\n"
                 mode = account.reply_mode
                 account_name = account.display_name
+
+            comments = await fetch_comments(event.chat, post_id)
+            if len(comments) < min_comments:
+                if insufficient_action == "skip":
+                    await redis.set(lock_key, "skipped", ex=30 * 24 * 3600)
+                    return
+                if wait_seconds:
+                    await asyncio.sleep(wait_seconds)
+                comments = await fetch_comments(event.chat, post_id)
+                if len(comments) < min_comments:
+                    # A later incoming comment will trigger a fresh attempt.
+                    await redis.delete(lock_key)
+                    return
+
+            cooldown = (
+                binding.reply_cooldown_seconds_override
+                if binding.reply_cooldown_seconds_override is not None
+                else agent.channel_reply_cooldown_seconds_override
+                if agent.channel_reply_cooldown_seconds_override is not None
+                else account.channel_reply_cooldown_seconds
+            )
+            cooldown = max(0, int(cooldown or 0))
+            if cooldown:
+                allowed = await redis.set(
+                    f"atcivperson:channel-reply-cooldown:{account_id}:{channel_id}",
+                    "1", nx=True, ex=cooldown,
+                )
+                if not allowed:
+                    await redis.set(lock_key, "skipped", ex=30 * 24 * 3600)
+                    return
+
+            try:
+                discussion_context = await client.get_messages(event.chat_id, ids=post_id)
+                post_text = (getattr(discussion_context, "message", None) or "").strip()
+            except Exception:
+                post_text = ""
+            additional = "\n".join(x for x in [
+                "Инструкции по публикациям: " + post_instructions if post_instructions.strip() else "",
+                "Что учитывать в комментариях: " + comments_instructions if comments_instructions.strip() else "",
+                "Ограничения: " + restrictions if restrictions.strip() else "",
+                "Выводы автообучения: " + learned if learned.strip() else "",
+            ] if x)
+            context = (
+                f"Канал: {title}\nПубликация: {post_text[:2500]}\n"
+                "Недавние комментарии в этом обсуждении:\n"
+                + "\n".join(f"- {item[:500]}" for item in comments[-10:])
+            )
+            async with SessionFactory() as db:
                 draft = await generate_response(
                     db, incoming_text=message.message.strip(), account_id=account_id,
-                    chat_label=f"{account.display_name} · комментарии {title}",
+                    chat_label=f"{account_name} · комментарии {title}",
                     conversation_context=context, additional_instructions=additional,
                 )
+                latest_account = await db.get(Account, account_id)
+                latest_binding = await db.scalar(select(ChannelBinding).where(
+                    ChannelBinding.account_id == account_id,
+                    ChannelBinding.channel_id == channel_id,
+                    ChannelBinding.enabled.is_(True),
+                    ChannelBinding.reply_enabled.is_(True),
+                ))
+                if (
+                    not latest_account or not latest_binding or latest_account.manual_pause
+                    or not latest_account.enabled or not latest_account.ai_enabled
+                ):
+                    await redis.delete(lock_key)
+                    return
+                mode = latest_account.reply_mode
+                account_name = latest_account.display_name
             if mode == "automatic":
                 await event.reply(draft.proposed_text)
                 await send_log(
@@ -392,6 +436,9 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                     "Ручной режим: ответ не опубликован."
                 )
             await redis.set(lock_key, "done", ex=30 * 24 * 3600)
+        except asyncio.CancelledError:
+            await redis.delete(lock_key)
+            raise
         except Exception as exc:
             await redis.delete(lock_key)
             logging.exception("Channel comment reply failed for account %s channel %s", account_id, channel_id)
