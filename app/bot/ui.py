@@ -222,6 +222,11 @@ RUNTIME_KEYS = {
     "reply_cooldown_seconds": ("⏱ Пауза между ответами", "сек.", 0, 31536000),
 }
 
+AGENT_CHANNEL_RUNTIME_KEYS = {
+    "channel_reply_probability": ("📡 Ответы в комментариях", "%", 0, 100, "channel_reply_probability_override"),
+    "channel_reply_cooldown_seconds": ("⏳ Пауза в комментариях", "сек.", 0, 31536000, "channel_reply_cooldown_seconds_override"),
+}
+
 def format_duration(seconds: int) -> str:
     value = max(0, int(seconds))
     hours, remainder = divmod(value, 3600)
@@ -291,28 +296,37 @@ async def runtime_value_save(m: Message, state: FSMContext):
     if not await check_msg(m) or not await private(m): return
     data = await state.get_data()
     key = data.get("runtime_key")
-    if key not in RUNTIME_KEYS:
-        await finish_prompt(m, state, "Настройка не найдена.")
-        return
+    runtime_scope = data.get("runtime_scope")
+    if runtime_scope == "agent_channel":
+        meta = AGENT_CHANNEL_RUNTIME_KEYS.get(key)
+        if not meta:
+            await finish_prompt(m, state, "Настройка не найдена.")
+            return
+        label, unit, minimum, maximum, attr = meta
+    else:
+        if key not in RUNTIME_KEYS:
+            await finish_prompt(m, state, "Настройка не найдена.")
+            return
+        label, unit, minimum, maximum = RUNTIME_KEYS[key]
+        attr = key + "_override"
     raw = (m.text or "").strip()
     if not raw.isdigit():
         await prompt_message(m, state, "Нужно ввести целое число.")
         return
     value = int(raw)
-    label, unit, minimum, maximum = RUNTIME_KEYS[key]
     if not minimum <= value <= maximum:
         await prompt_message(m, state, f"Допустимый диапазон для «{label}»: {minimum}–{maximum}.")
         return
     await delete_msg(m)
     shown = format_duration(value) if unit == "сек." else f"{value}{unit}"
-    if data.get("runtime_scope") == "agent":
+    if runtime_scope in {"agent", "agent_channel"}:
         aid = int(data["runtime_aid"])
         async with SessionFactory() as db:
             agent = await db.get(AIAgent, aid)
             if not agent:
                 await finish_prompt(m, state, "ИИ-агент не найден.")
                 return
-            setattr(agent, key + "_override", value)
+            setattr(agent, attr, value)
             await db.commit()
         await finish_prompt(m, state, f"✅ {label}: {shown}", kb([[("⬅️ К настройкам агента", f"agent:runtime:menu:{aid}")], [("🏠 Главное меню", "nav:home")]]))
         return
@@ -381,6 +395,13 @@ async def agent_runtime_menu(c: CallbackQuery, aid: int):
         buttons.append([(f"✏️ {label}: {shown}", f"agent:rt:input:{aid}:{key}")])
         if override is not None:
             buttons.append([("↩️ Наследовать глобальное значение", f"agent:rt:inherit:{aid}:{key}")])
+    for key, (label, unit, minimum, maximum, attr) in AGENT_CHANNEL_RUNTIME_KEYS.items():
+        override = getattr(agent, attr)
+        shown = (format_duration(override) if unit == "сек." else f"{override}{unit}") if override is not None else "Наследует настройки аккаунта"
+        lines.append(f"{label}: {shown}")
+        buttons.append([(f"✏️ {label}: {shown}", f"agent:channelrt:input:{aid}:{key}")])
+        if override is not None:
+            buttons.append([("↩️ Наследовать настройки аккаунта", f"agent:channelrt:inherit:{aid}:{key}")])
     buttons += [[("⬅️ К агенту", f"agent:view:{aid}"), ("🏠 Главное меню", "nav:home")]]
     await edit(c, "\n".join(lines), kb(buttons))
 
@@ -402,6 +423,39 @@ async def agent_runtime_input(c: CallbackQuery, state: FSMContext):
     await state.set_state(Flow.runtime_value)
     hint = "Введите число секунд. Например: 3600 = 01:00:00." if unit == "сек." else f"Введите процент от {minimum} до {maximum}."
     await edit(c, f"{label}\\n{hint}\\nДопустимый диапазон: {minimum}–{maximum}.", CANCEL)
+
+@router.callback_query(F.data.startswith("agent:channelrt:input:"))
+async def agent_channel_runtime_input(c: CallbackQuery, state: FSMContext):
+    if not await check_cb(c): return
+    parts = c.data.split(":")
+    aid, key = int(parts[3]), parts[4]
+    if key not in AGENT_CHANNEL_RUNTIME_KEYS:
+        await c.answer("Неизвестная настройка.", show_alert=True)
+        return
+    label, unit, minimum, maximum, _ = AGENT_CHANNEL_RUNTIME_KEYS[key]
+    await state.clear()
+    await state.update_data(runtime_key=key, runtime_scope="agent_channel", runtime_aid=aid, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
+    await state.set_state(Flow.runtime_value)
+    hint = "Введите целое число секунд. Например: 3600 = 01:00:00." if unit == "сек." else f"Введите процент от {minimum} до {maximum}."
+    await edit(c, f"{label}\\n{hint}\\nДопустимый диапазон: {minimum}–{maximum}.", CANCEL)
+
+@router.callback_query(F.data.startswith("agent:channelrt:inherit:"))
+async def agent_channel_runtime_inherit(c: CallbackQuery):
+    if not await check_cb(c): return
+    parts = c.data.split(":")
+    aid, key = int(parts[3]), parts[4]
+    if key not in AGENT_CHANNEL_RUNTIME_KEYS:
+        await c.answer("Неизвестная настройка.", show_alert=True)
+        return
+    attr = AGENT_CHANNEL_RUNTIME_KEYS[key][4]
+    async with SessionFactory() as db:
+        agent = await db.get(AIAgent, aid)
+        if not agent:
+            await c.answer("ИИ-агент не найден.", show_alert=True)
+            return
+        setattr(agent, attr, None)
+        await db.commit()
+    await agent_runtime_menu(c, aid)
 
 @router.callback_query(F.data.startswith("agent:rt:inherit:"))
 async def agent_runtime_inherit(c: CallbackQuery):
