@@ -1695,13 +1695,21 @@ def _group_entity(entity) -> bool:
     return bool(getattr(entity, "megagroup", False) or getattr(entity, "gigagroup", False) or entity.__class__.__name__ == "Chat")
 
 
-def _candidate_keyboard(aid: int, candidates: list[dict]):
+def _candidate_keyboard(aid: int, candidates: list[dict], offset: int = 0):
     rows = []
-    for i, item in enumerate(candidates[:12]):
+    page = candidates[offset:offset + 12]
+    for i, item in enumerate(page, start=offset):
         title = str(item.get("title") or "Группа")[:30]
         members = int(item.get("members") or 0)
         suffix = f" · {members:,}".replace(",", " ") if members else ""
         rows.append([(f"🔎 {title}{suffix}"[:60], f"chat:candidate:{aid}:{i}")])
+    navigation = []
+    if offset > 0:
+        navigation.append(("⬅️ Назад", f"chat:page:{aid}:{max(0, offset - 12)}"))
+    if offset + 12 < len(candidates):
+        navigation.append(("➡️ Ещё результаты", f"chat:page:{aid}:{offset + 12}"))
+    if navigation:
+        rows.append(navigation)
     rows += [[("⬅️ К чатам", "chat:menu"), ("🏠 Главное меню", "nav:home")]]
     return kb(rows)
 
@@ -1783,7 +1791,7 @@ async def chat_search_query(m: Message, state: FSMContext):
         members = f"{int(item.get('members') or 0):,}".replace(",", " ") + " участников" if item.get("members") else "размер неизвестен"
         text_lines.append(f"{i}. {item['title']} · {members}{flags} · {item.get('source', 'Telegram')}")
     text_lines.append("\nНажмите на результат, чтобы проверить группу и подтвердить вступление.")
-    await edit_anchor(m.bot, anchor, "\n".join(text_lines), _candidate_keyboard(aid, visible))
+    await edit_anchor(m.bot, anchor, "\n".join(text_lines), _candidate_keyboard(aid, candidates, 0))
 
 
 @router.callback_query(F.data.startswith("chat:discover:"))
@@ -1814,7 +1822,7 @@ async def chat_discover_links(c):
     lines = [f"🧭 Найдено ссылок: {len(candidates)} · аккаунт #{aid}\\nПросмотрено до 5 000 последних сообщений в каждой доступной группе.", "", "Источник показывает чат, в котором была найдена ссылка. Каждая ссылка будет проверена перед вступлением."]
     for i, item in enumerate(candidates[:12], 1):
         lines.append(f"{i}. {item['link'][:75]}\n   найдено в: {item.get('source', 'сообщение')}")
-    await edit_anchor(c.bot, {"ui_chat_id": c.message.chat.id, "ui_message_id": c.message.message_id}, "\n".join(lines), _candidate_keyboard(aid, candidates[:12]))
+    await edit_anchor(c.bot, {"ui_chat_id": c.message.chat.id, "ui_message_id": c.message.message_id}, "\n".join(lines), _candidate_keyboard(aid, candidates, 0))
 
 
 @router.callback_query(F.data.startswith("chat:candidate:"))
