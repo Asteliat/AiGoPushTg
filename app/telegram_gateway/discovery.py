@@ -95,16 +95,20 @@ async def search_public_groups(client, query: str, limit: int = 50) -> list[dict
     return sorted(found.values(), key=lambda x: (x["score"], x["members"]), reverse=True)
 
 
-async def find_invite_links_in_dialogs(client, dialog_limit: int | None = None, messages_per_dialog: int = 5000) -> list[dict]:
+async def find_invite_links_in_dialogs(client, dialog_limit: int | None = None, messages_per_dialog: int = 5000, progress_callback=None) -> list[dict]:
     """Collect distinct group-looking links shared in recent messages of joined groups."""
     found: dict[str, dict] = {}
+    scanned_groups = 0
+    scanned_messages = 0
     async for dialog in client.iter_dialogs(limit=dialog_limit):
         entity = dialog.entity
         if not _is_group(entity):
             continue
+        scanned_groups += 1
         source_title = (dialog.name or "чат")[:70]
         try:
             async for message in client.iter_messages(entity, limit=messages_per_dialog):
+                scanned_messages += 1
                 body = (getattr(message, "message", None) or "").strip()
                 if not body:
                     continue
@@ -126,7 +130,11 @@ async def find_invite_links_in_dialogs(client, dialog_limit: int | None = None, 
                         "members": 0,
                         "score": 0,
                     })
+                if progress_callback and scanned_messages % 500 == 0:
+                    await progress_callback(scanned_groups, scanned_messages, len(found))
         except Exception:
             # One inaccessible/slow dialog should not abort the whole scan.
             continue
+    if progress_callback:
+        await progress_callback(scanned_groups, scanned_messages, len(found))
     return list(found.values())
