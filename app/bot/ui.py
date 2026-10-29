@@ -1796,7 +1796,7 @@ async def chat_discover_links(c):
 @router.callback_query(F.data.startswith("chat:candidate:"))
 async def chat_candidate_preview(c):
     if not await check_cb(c): return
-    _, _, _, aid_raw, index_raw = c.data.split(":")
+    _, _, aid_raw, index_raw = c.data.split(":")
     aid, index = int(aid_raw), int(index_raw)
     candidates = CHAT_CANDIDATES.get((c.from_user.id, aid), [])
     if index < 0 or index >= len(candidates):
@@ -2002,7 +2002,7 @@ async def chats_screen(m):
     buttons += [[(f"🔎 Поиск групп · #{a.id}",f"chat:search:{a.id}"),(f"🧭 Найти ссылки · #{a.id}",f"chat:discover:{a.id}")] for a in aa]
     buttons += [[(f"{'🟢' if b.enabled else '⚪'} #{b.account_id} · {b.title[:30]}",f"chat:toggle:{b.id}")] for b in bs[:20]]
     buttons += [[("⬅️ Главное меню","nav:home")]]
-    await m.answer("💬 Чаты\nВыберите аккаунт, чтобы показать его существующие чаты. Автоматического вступления в чаты нет." if aa else "Сначала подключите аккаунт в разделе «👤 Аккаунты».",reply_markup=kb(buttons))
+    await m.answer("💬 Чаты\nВыберите аккаунт, чтобы загрузить его чаты, найти публичные группы или просканировать ссылки в сообщениях. Вступление всегда подтверждается вручную." if aa else "Сначала подключите аккаунт в разделе «👤 Аккаунты».",reply_markup=kb(buttons))
 @router.callback_query(F.data=="chat:menu")
 async def chats_cb(c):
     if not await check_cb(c): return
