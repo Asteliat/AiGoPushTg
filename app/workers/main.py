@@ -11,10 +11,11 @@ from aiogram import Bot
 from telethon import TelegramClient, events
 from sqlalchemy import select
 from app.ai.provider import AIUnavailableError, NoReplyNeeded, summarize_chat_context
-from app.services.drafts import create_draft, global_ai_enabled
+from app.services.ai_responses import generate_response, global_ai_enabled
+from app.workers.channel_monitor import install_channel_monitor
 from app.settings import get_settings
 from app.storage.db import SessionFactory, init_db
-from app.storage.models import Account, AIAgent, AppSetting, ChatBinding, Draft, DraftStatus
+from app.storage.models import Account, AIAgent, AppSetting, ChatBinding
 from app.telegram_gateway.proxy import telethon_proxy
 
 async def heartbeat(redis):
@@ -156,7 +157,7 @@ async def main():
                     logging.info("Reply skipped by cooldown for account %s in chat %s", aid, event.chat_id)
                     return
             try:
-                draft = await create_draft(
+                draft = await generate_response(
                     db, incoming_text=incoming, account_id=aid,
                     chat_label=f"{current.display_name} · {label}",
                     conversation_context=context, proactive=proactive,
@@ -169,7 +170,7 @@ async def main():
                 await send_log(f"⚠️ Ошибка генерации ИИ\nАккаунт: {current.display_name} (#{aid})\nЧат: {label}\nОшибка: {str(exc)[:900]}")
                 return
             except Exception as exc:
-                logging.exception("Could not create draft for account %s", aid)
+                logging.exception("Could not generate response for account %s", aid)
                 await send_log(f"⚠️ Не удалось создать ответ\nАккаунт: {current.display_name} (#{aid})\nЧат: {label}\nОшибка: {type(exc).__name__}: {str(exc)[:700]}")
                 return
             mode = current.reply_mode
@@ -195,22 +196,16 @@ async def main():
                     "date": datetime.now(timezone.utc).isoformat(),
                 }
                 await remember_message(aid, int(event.chat_id), int(current.telegram_user_id or 0), sent_item)
-                async with SessionFactory() as db:
-                    saved = await db.get(Draft, draft.id)
-                    if saved and saved.status == DraftStatus.PENDING:
-                        saved.status = DraftStatus.APPROVED
-                        saved.reviewed_at = datetime.now(timezone.utc)
-                        await db.commit()
             except Exception as exc:
                 logging.exception("Automatic reply failed for account %s in chat %s", aid, event.chat_id)
-                await send_log(f"⚠️ Не удалось отправить ответ\nАккаунт: {account_name} (#{aid})\nЧат: {label}\nЧерновик #{draft.id}\nОшибка: {type(exc).__name__}: {str(exc)[:700]}")
+                await send_log(f"⚠️ Не удалось отправить ответ\nАккаунт: {account_name} (#{aid})\nЧат: {label}\nОшибка: {type(exc).__name__}: {str(exc)[:700]}")
 
         if sent:
-            text = f"✅ Ответ отправлен\nАккаунт: {account_name} (#{aid})\nЧат: {label}\nЧерновик #{draft.id}\nОтвет: {draft.proposed_text[:1800]}"
+            text = f"✅ Ответ отправлен\nАккаунт: {account_name} (#{aid})\nЧат: {label}\nОтвет: {draft.proposed_text[:1800]}"
         elif mode == "automatic":
-            text = f"⚠️ Ответ не отправлен\nАккаунт: {account_name} (#{aid})\nЧат: {label}\nЧерновик #{draft.id} сохранён в базе."
+            text = f"⚠️ Ответ не отправлен\nАккаунт: {account_name} (#{aid})\nЧат: {label}\nТекст не сохранён; повторите обработку после проверки настроек."
         else:
-            text = f"📝 Создан черновик\nАккаунт: {account_name} (#{aid})\nЧат: {label}\nЧерновик #{draft.id}\nВходящее: {incoming[:900]}\nОтвет ИИ: {draft.proposed_text[:1400]}\nРучной режим: в чат ничего не отправлено."
+            text = f"💬 Ответ подготовлен\nАккаунт: {account_name} (#{aid})\nЧат: {label}\nВходящее: {incoming[:900]}\nОтвет ИИ: {draft.proposed_text[:1400]}\nРучной режим: в чат ничего не отправлено; текст не сохраняется."
         await send_log(text)
 
     async def finalize_learning_buffer(aid: int, key: str, sample_limit: int) -> None:
@@ -500,6 +495,7 @@ async def main():
             await set_connection_status(account.id, "connected")
             watched[account.id]=labels
             client.add_event_handler(lambda event, aid=account.id, labels=labels: on_message(event,aid=aid,labels=labels),events.NewMessage(incoming=True))
+            install_channel_monitor(client, account.id, redis, send_log)
             clients[account.id]=client
             tasks[account.id]=asyncio.create_task(client.run_until_disconnected())
             account_snapshot[account.id]=account

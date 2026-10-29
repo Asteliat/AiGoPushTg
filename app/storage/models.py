@@ -1,5 +1,4 @@
 from datetime import datetime, timezone
-from enum import StrEnum
 
 from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
@@ -9,12 +8,6 @@ from app.storage.db import Base
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
-
-
-class DraftStatus(StrEnum):
-    PENDING = "pending"
-    APPROVED = "approved"
-    REJECTED = "rejected"
 
 
 class Account(Base):
@@ -67,20 +60,6 @@ class Example(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
-class Draft(Base):
-    __tablename__ = "drafts"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id", ondelete="SET NULL"), nullable=True)
-    persona_id: Mapped[int | None] = mapped_column(ForeignKey("personas.id", ondelete="SET NULL"), nullable=True)
-    chat_label: Mapped[str] = mapped_column(String(160), default="Личный черновик")
-    incoming_text: Mapped[str] = mapped_column(Text)
-    proposed_text: Mapped[str] = mapped_column(Text, default="")
-    status: Mapped[str] = mapped_column(String(20), default=DraftStatus.PENDING.value, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-
 class AuditEvent(Base):
     __tablename__ = "audit_events"
 
@@ -102,6 +81,36 @@ class ChatBinding(Base):
     chat_id: Mapped[int] = mapped_column(BigInteger, index=True)
     title: Mapped[str] = mapped_column(String(255), default="")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ChannelBinding(Base):
+    __tablename__ = "channel_bindings"
+    __table_args__ = (UniqueConstraint("account_id", "channel_id", name="uq_account_channel_binding"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), index=True)
+    channel_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    title: Mapped[str] = mapped_column(String(255), default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
+    comment_wait_seconds: Mapped[int] = mapped_column(Integer, default=300, server_default="300", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ChannelAnalysis(Base):
+    __tablename__ = "channel_analyses"
+    __table_args__ = (UniqueConstraint("account_id", "channel_id", "post_id", name="uq_channel_post_analysis"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), index=True)
+    channel_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    channel_title: Mapped[str] = mapped_column(String(255), default="")
+    post_id: Mapped[int] = mapped_column(BigInteger)
+    post_text: Mapped[str] = mapped_column(Text)
+    comments_summary: Mapped[str] = mapped_column(Text, default="")
+    on_topic: Mapped[bool] = mapped_column(Boolean, default=False)
+    suggested_response: Mapped[str] = mapped_column(Text, default="")
+    comments_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

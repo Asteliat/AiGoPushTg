@@ -17,6 +17,8 @@ async def init_db() -> None:
     from app.storage import models  # noqa: F401
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
+        # Drafts were explicitly removed from the product; drop the legacy table if present.
+        await connection.exec_driver_sql("DROP TABLE IF EXISTS drafts")
         # Safe additive migration for installations created by earlier versions.
         statements = [
             "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS reply_mode VARCHAR(20) NOT NULL DEFAULT 'manual'",
@@ -40,6 +42,7 @@ async def init_db() -> None:
             "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS persona_style_override TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE examples ADD COLUMN IF NOT EXISTS account_id INTEGER NULL REFERENCES accounts(id) ON DELETE CASCADE",
             "ALTER TABLE chat_bindings ADD COLUMN IF NOT EXISTS auto_discovered BOOLEAN NOT NULL DEFAULT FALSE",
+            "ALTER TABLE channel_bindings ADD COLUMN IF NOT EXISTS comment_wait_seconds INTEGER NOT NULL DEFAULT 300",
         ]
         for statement in statements:
             await connection.exec_driver_sql(statement)

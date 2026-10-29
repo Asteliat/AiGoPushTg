@@ -1,13 +1,19 @@
+from dataclasses import dataclass
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.ai.provider import generate_reply
-from app.storage.models import Account, AIAgent, AppSetting, Draft, Example, Persona
+from app.storage.models import Account, AIAgent, AppSetting, Example, Persona
+
+@dataclass(slots=True)
+class GeneratedResponse:
+    proposed_text: str
+    chat_label: str = ""
 
 async def global_ai_enabled(session: AsyncSession) -> bool:
     row = await session.get(AppSetting, "ai_global_enabled")
     return bool(row and row.value.lower() == "true")
 
-async def create_draft(session: AsyncSession, *, incoming_text: str, persona_id: int | None = None, account_id: int | None = None, chat_label: str = "Личный черновик", agent_id: int | None = None, proactive: bool = False, conversation_context: str = "") -> Draft:
+async def generate_response(session: AsyncSession, *, incoming_text: str, persona_id: int | None = None, account_id: int | None = None, chat_label: str = "Ответ ИИ", agent_id: int | None = None, proactive: bool = False, conversation_context: str = "") -> GeneratedResponse:
     account = await session.get(Account, account_id) if account_id else None
     if account and persona_id is None:
         persona_id = account.persona_id
@@ -49,9 +55,6 @@ async def create_draft(session: AsyncSession, *, incoming_text: str, persona_id:
             or not account.ai_enabled
             or not await global_ai_enabled(session)
         ):
-            raise RuntimeError("Работа аккаунта была остановлена во время генерации; черновик не сохранён.")
-    draft = Draft(incoming_text=incoming_text, proposed_text=proposed, persona_id=persona_id, account_id=account_id, chat_label=chat_label[:160])
-    session.add(draft)
-    await session.commit()
-    await session.refresh(draft)
-    return draft
+            raise RuntimeError("Работа аккаунта была остановлена во время генерации; ответ не сохранён.")
+    # Generated response is transient and is never persisted.
+    return GeneratedResponse(proposed_text=proposed, chat_label=chat_label[:160])
