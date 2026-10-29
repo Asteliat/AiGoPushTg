@@ -1,5 +1,6 @@
 from __future__ import annotations
-import asyncio, io, os, re, secrets
+import asyncio, io, os, re, secrets, sqlite3, tempfile
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from aiogram import F, Router
 from aiogram.filters import CommandStart
@@ -26,6 +27,36 @@ PHONE_LOGIN_DATA: dict[int, dict] = {}
 QR_LOGIN_DATA: dict[int, dict] = {}
 CHAT_CANDIDATES: dict[tuple[int, int], list[dict]] = {}
 CHAT_PENDING_JOIN: dict[tuple[int, int], dict] = {}
+
+
+@asynccontextmanager
+async def isolated_telegram_client(account):
+    """Use a consistent temporary copy of the Telethon session SQLite database."""
+    with tempfile.TemporaryDirectory(prefix=f"atciv-session-{account.id}-") as temp_dir:
+        snapshot_path = os.path.join(temp_dir, "account.session")
+        source_db = sqlite3.connect(account.session_path, timeout=20)
+        snapshot_db = sqlite3.connect(snapshot_path, timeout=20)
+        try:
+            # SQLite backup includes committed WAL content without opening the
+            # worker's live session through another Telethon client.
+            source_db.backup(snapshot_db, pages=128, sleep=0.05)
+        finally:
+            snapshot_db.close()
+            source_db.close()
+
+        client = TelegramClient(
+            snapshot_path,
+            cfg.telegram_api_id,
+            cfg.telegram_api_hash,
+            proxy=telethon_proxy(account.proxy_config_encrypted),
+        )
+        try:
+            await client.connect()
+            yield client
+        finally:
+            if client.is_connected():
+                await client.disconnect()
+
 
 # All navigation uses inline keyboards.
 
@@ -2198,26 +2229,23 @@ async def channel_account(c):
     if not account:
         await c.answer("Аккаунт не найден.", show_alert=True)
         return
-    client = TelegramClient(account.session_path, cfg.telegram_api_id, cfg.telegram_api_hash, proxy=telethon_proxy(account.proxy_config_encrypted))
     dialogs = []
     try:
-        await client.connect()
-        if not await client.is_user_authorized():
-            await c.answer("Сессия аккаунта не авторизована.", show_alert=True)
-            return
-        async for dialog in client.iter_dialogs():
-            entity = dialog.entity
-            # Broadcast channels only; groups and private chats belong to other sections.
-            if not getattr(entity, "broadcast", False) or getattr(entity, "megagroup", False):
-                continue
-            title = (dialog.name or str(dialog.id)).strip()
-            if title:
-                dialogs.append((int(dialog.id), title[:255]))
+        async with isolated_telegram_client(account) as client:
+            if not await client.is_user_authorized():
+                await c.answer("Сессия аккаунта не авторизована.", show_alert=True)
+                return
+            async for dialog in client.iter_dialogs():
+                entity = dialog.entity
+                # Broadcast channels only; groups and private chats belong to other sections.
+                if not getattr(entity, "broadcast", False) or getattr(entity, "megagroup", False):
+                    continue
+                title = (dialog.name or str(dialog.id)).strip()
+                if title:
+                    dialogs.append((int(dialog.id), title[:255]))
     except Exception as exc:
-        await c.answer(f"Ошибка загрузки каналов: {type(exc).__name__}", show_alert=True)
+        await c.answer(f"Ошибка загрузки каналов: {type(exc).__name__}: {str(exc)[:180]}", show_alert=True)
         return
-    finally:
-        await client.disconnect()
     async with SessionFactory() as db:
         existing = list((await db.scalars(select(ChannelBinding).where(ChannelBinding.account_id == aid))).all())
         by_id = {row.channel_id: row for row in existing}
@@ -2255,19 +2283,16 @@ async def channel_select(c):
     if not account:
         await c.answer("Аккаунт не найден.", show_alert=True)
         return
-    client = TelegramClient(account.session_path, cfg.telegram_api_id, cfg.telegram_api_hash, proxy=telethon_proxy(account.proxy_config_encrypted))
     try:
-        await client.connect()
-        entity = await client.get_entity(channel_id)
-        if not getattr(entity, "broadcast", False) or getattr(entity, "megagroup", False):
-            await c.answer("Это не канал публикаций.", show_alert=True)
-            return
-        title = (getattr(entity, "title", None) or getattr(entity, "username", None) or str(channel_id))[:255]
+        async with isolated_telegram_client(account) as client:
+            entity = await client.get_entity(channel_id)
+            if not getattr(entity, "broadcast", False) or getattr(entity, "megagroup", False):
+                await c.answer("Это не канал публикаций.", show_alert=True)
+                return
+            title = (getattr(entity, "title", None) or getattr(entity, "username", None) or str(channel_id))[:255]
     except Exception as exc:
-        await c.answer(f"Не удалось открыть канал: {type(exc).__name__}", show_alert=True)
+        await c.answer(f"Не удалось открыть канал: {type(exc).__name__}: {str(exc)[:180]}", show_alert=True)
         return
-    finally:
-        await client.disconnect()
     async with SessionFactory() as db:
         row = await db.scalar(select(ChannelBinding).where(ChannelBinding.account_id == aid, ChannelBinding.channel_id == channel_id))
         if row:
