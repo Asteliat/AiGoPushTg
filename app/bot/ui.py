@@ -1677,7 +1677,7 @@ def _parse_chat_link(raw: str) -> tuple[str, str]:
     value = (raw or "").strip().strip("<>[](){}.,;")
     if value.startswith("@") and re.fullmatch(r"@[A-Za-z][A-Za-z0-9_]{4,31}", value):
         return "public", value[1:]
-    match = re.search(r"(?i)(?:https?://)?(?:www\.)?(?:t\.me|telegram\.me)/(\+?[A-Za-z0-9_+-]+|joinchat/[A-Za-z0-9_-]+)", value)
+    match = re.search(r"(?i)(?:https?://)?(?:www\.)?(?:t\.me|telegram\.me)/(joinchat/[A-Za-z0-9_-]+|\+?[A-Za-z0-9_+-]+)", value)
     if not match:
         raise ValueError("Пришлите публичную ссылку t.me/username или пригласительную ссылку t.me/+…")
     path = match.group(1).split("?")[0].rstrip("/")
