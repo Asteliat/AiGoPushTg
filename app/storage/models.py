@@ -105,6 +105,36 @@ class ChatBinding(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class ChannelBinding(Base):
+    __tablename__ = "channel_bindings"
+    __table_args__ = (UniqueConstraint("account_id", "channel_id", name="uq_account_channel_binding"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), index=True)
+    channel_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    title: Mapped[str] = mapped_column(String(255), default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
+    comment_wait_seconds: Mapped[int] = mapped_column(Integer, default=300, server_default="300", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ChannelAnalysis(Base):
+    __tablename__ = "channel_analyses"
+    __table_args__ = (UniqueConstraint("account_id", "channel_id", "post_id", name="uq_channel_post_analysis"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), index=True)
+    channel_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    channel_title: Mapped[str] = mapped_column(String(255), default="")
+    post_id: Mapped[int] = mapped_column(BigInteger)
+    post_text: Mapped[str] = mapped_column(Text)
+    comments_summary: Mapped[str] = mapped_column(Text, default="")
+    on_topic: Mapped[bool] = mapped_column(Boolean, default=False)
+    suggested_response: Mapped[str] = mapped_column(Text, default="")
+    comments_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class AIAgent(Base):
     __tablename__ = "ai_agents"
 
