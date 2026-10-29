@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     bot_token: str = ""
     api_secret_key: str = ""
     admin_ids: str = ""
+    log_chat_id: int = 0
     telegram_api_id: int = 0
     telegram_api_hash: str = ""
     app_env: str = "development"
