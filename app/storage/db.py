@@ -44,6 +44,8 @@ async def init_db() -> None:
             "UPDATE chat_bindings SET enabled = TRUE, auto_discovered = TRUE WHERE auto_discovered = FALSE"
         )
         await connection.exec_driver_sql(
-            "INSERT INTO app_settings (key, value) VALUES ('ai_global_enabled', 'false') ON CONFLICT (key) DO NOTHING",
+            "INSERT INTO app_settings (key, value) VALUES ('ai_global_enabled', 'false') ON CONFLICT (key) DO NOTHING"
+        )
+        await connection.exec_driver_sql(
             "INSERT INTO app_settings (key, value) VALUES ('mention_reply_probability', '100'), ('dm_reply_probability', '100') ON CONFLICT (key) DO NOTHING"
         )
