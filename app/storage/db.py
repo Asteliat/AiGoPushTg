@@ -17,6 +17,8 @@ async def init_db() -> None:
     from app.storage import models  # noqa: F401
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
+        # Drafts were explicitly removed from the product; drop the legacy table if present.
+        await connection.exec_driver_sql("DROP TABLE IF EXISTS drafts")
         # Safe additive migration for installations created by earlier versions.
         statements = [
             "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS reply_mode VARCHAR(20) NOT NULL DEFAULT 'manual'",
