@@ -4,6 +4,7 @@ import heapq
 import json
 import logging
 import re
+import random
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 from aiogram import Bot
@@ -35,69 +36,154 @@ async def main():
     learning_tasks: dict[int,asyncio.Task]={}
     last_discovery: dict[int,datetime] = {}
 
+    async def send_log(text: str) -> None:
+        if not bot or not cfg.log_chat_id:
+            return
+        try:
+            await bot.send_message(cfg.log_chat_id, text[:3900])
+        except Exception:
+            logging.exception("Could not send worker notification to LOG_CHAT_ID=%s", cfg.log_chat_id)
+
+    async def remember_message(aid: int, chat_id: int, sender_id: int, item: dict) -> None:
+        chat_key = f"atcivperson:memory:{aid}:{chat_id}:chat"
+        person_key = f"atcivperson:memory:{aid}:{chat_id}:person:{sender_id}"
+        raw = json.dumps(item, ensure_ascii=False)
+        for key, limit in ((chat_key, 30), (person_key, 16)):
+            await redis.lpush(key, raw)
+            await redis.ltrim(key, 0, limit - 1)
+            await redis.expire(key, 30 * 24 * 3600)
+
+    async def read_conversation_context(aid: int, chat_id: int, sender_id: int) -> str:
+        keys = [
+            f"atcivperson:memory:{aid}:{chat_id}:chat",
+            f"atcivperson:memory:{aid}:{chat_id}:person:{sender_id}",
+        ]
+        merged = {}
+        for key in keys:
+            for raw in reversed(await redis.lrange(key, 0, 11)):
+                try:
+                    item = json.loads(raw)
+                except (TypeError, ValueError):
+                    continue
+                merged[(item.get("message_id"), item.get("sender_id"), item.get("text"))] = item
+        items = sorted(merged.values(), key=lambda x: x.get("date", ""))[-18:]
+        return "\\n".join(
+            f"[{str(item.get('speaker', 'Участник'))[:60]}] {str(item.get('text', ''))[:500]}"
+            for item in items if str(item.get("text", "")).strip()
+        )[-7000:]
+
     async def on_message(event, *, aid, labels):
-        label=labels.get(event.chat_id)
+        label = labels.get(event.chat_id)
         if label is None or not event.message or not event.message.message:
             return
-        incoming=event.message.message.strip()
-        if not incoming:
+        incoming = event.message.message.strip()
+        if not incoming or event.message.out:
             return
+        sender_id = int(event.sender_id or 0)
+        try:
+            sender = await event.get_sender()
+            speaker = " ".join(filter(None, [
+                getattr(sender, "first_name", None),
+                getattr(sender, "last_name", None),
+            ])).strip() or getattr(sender, "title", None) or getattr(sender, "username", None) or f"Участник {sender_id}"
+        except Exception:
+            speaker = f"Участник {sender_id}"
+
         async with SessionFactory() as db:
-            current=await db.get(Account,aid)
-            if not current or not current.enabled or current.manual_pause or current.learning_status in {"training", "stopping"} or not current.ai_enabled or not await global_ai_enabled(db):
+            current = await db.get(Account, aid)
+            if (
+                not current or not current.enabled or current.manual_pause
+                or current.learning_status in {"training", "stopping"}
+                or not current.ai_enabled or not await global_ai_enabled(db)
+            ):
                 return
             if not current.ai_agent_id:
-                logging.info("Account %s has AI enabled but no agent assigned",aid)
+                logging.info("Account %s has AI enabled but no agent assigned", aid)
                 return
+
+            # Store a rolling chat history and a separate history for each participant.
+            # Redis expires conversation records after 30 days.
+            context = await read_conversation_context(aid, int(event.chat_id), sender_id)
+            item = {
+                "message_id": int(event.message.id),
+                "sender_id": sender_id,
+                "speaker": speaker[:80],
+                "text": incoming[:700],
+                "date": event.message.date.isoformat() if event.message.date else "",
+            }
+            await remember_message(aid, int(event.chat_id), sender_id, item)
+
             if event.is_group:
-                username=(current.username or "").strip()
-                mentioned=bool(username and re.search(r"(?<!\w)@"+re.escape(username)+r"\b",incoming,re.IGNORECASE))
-                reply_to=await event.get_reply_message() if event.message.reply_to else None
-                if not (mentioned or (reply_to and reply_to.sender_id==current.telegram_user_id)):
+                username = (current.username or "").strip().lstrip("@")
+                mentioned = bool(username and re.search(r"(?<!\\w)@" + re.escape(username) + r"\\b", incoming, re.IGNORECASE))
+                reply_to = await event.get_reply_message() if event.message.reply_to else None
+                if not (mentioned or (reply_to and reply_to.sender_id == current.telegram_user_id)):
                     return
+                setting = await db.get(AppSetting, "mention_reply_probability")
+                probability = int(setting.value) if setting and setting.value.isdigit() else 100
+            elif event.is_private:
+                setting = await db.get(AppSetting, "dm_reply_probability")
+                probability = int(setting.value) if setting and setting.value.isdigit() else 100
+            else:
+                return
+
+            if probability <= 0 or random.randint(1, 100) > min(probability, 100):
+                logging.info("Reply skipped by probability (%s%%) for account %s in chat %s", probability, aid, event.chat_id)
+                return
             try:
-                draft=await create_draft(db,incoming_text=incoming,account_id=aid,chat_label=f"{current.display_name} · {label}")
+                draft = await create_draft(
+                    db, incoming_text=incoming, account_id=aid,
+                    chat_label=f"{current.display_name} · {label}",
+                    conversation_context=context,
+                )
             except AIUnavailableError as exc:
-                logging.warning("AI generation failed for account %s: %s",aid,exc)
+                logging.warning("AI generation failed for account %s: %s", aid, exc)
+                await send_log(f"⚠️ Ошибка генерации ИИ\\nАккаунт: {current.display_name} (#{aid})\\nЧат: {label}\\nОшибка: {str(exc)[:900]}")
                 return
-            except Exception:
-                logging.exception("Could not create draft for account %s",aid)
+            except Exception as exc:
+                logging.exception("Could not create draft for account %s", aid)
+                await send_log(f"⚠️ Не удалось создать ответ\\nАккаунт: {current.display_name} (#{aid})\\nЧат: {label}\\nОшибка: {type(exc).__name__}: {str(exc)[:700]}")
                 return
-            mode=current.reply_mode
-            account_name=current.display_name
+            mode = current.reply_mode
+            account_name = current.display_name
+
         async with SessionFactory() as db:
             latest = await db.get(Account, aid)
             if not latest or not latest.enabled or latest.manual_pause:
                 return
             mode = latest.reply_mode
             account_name = latest.display_name
-        sent=False
-        if mode=="automatic":
+
+        sent = False
+        if mode == "automatic":
             try:
-                await event.reply(draft.proposed_text)
-                sent=True
+                sent_message = await event.reply(draft.proposed_text)
+                sent = True
+                sent_item = {
+                    "message_id": int(getattr(sent_message, "id", 0)),
+                    "sender_id": int(current.telegram_user_id or 0),
+                    "speaker": account_name[:80],
+                    "text": draft.proposed_text[:700],
+                    "date": datetime.now(timezone.utc).isoformat(),
+                }
+                await remember_message(aid, int(event.chat_id), sender_id, sent_item)
                 async with SessionFactory() as db:
-                    saved=await db.get(Draft,draft.id)
-                    if saved and saved.status==DraftStatus.PENDING:
-                        saved.status=DraftStatus.APPROVED
-                        saved.reviewed_at=datetime.now(timezone.utc)
+                    saved = await db.get(Draft, draft.id)
+                    if saved and saved.status == DraftStatus.PENDING:
+                        saved.status = DraftStatus.APPROVED
+                        saved.reviewed_at = datetime.now(timezone.utc)
                         await db.commit()
-            except Exception:
-                logging.exception("Automatic reply failed for account %s in chat %s",aid,event.chat_id)
-        if bot:
-            for admin_id in cfg.admin_id_set:
-                try:
-                    if sent:
-                        text=f"Автоматический ответ отправлен\\nАккаунт: {account_name}\\nЧат: {label}\\nЧерновик #{draft.id}\\n\\nВходящее:\\n{incoming[:1200]}\\n\\nОтвет:\\n{draft.proposed_text[:1600]}"
-                    elif mode=="automatic":
-                        text=f"Не удалось отправить ответ автоматически\\nАккаунт: {account_name}\\nЧат: {label}\\nЧерновик #{draft.id} сохранён для проверки.\\n\\nВходящее:\\n{incoming[:1200]}\\n\\nОтвет ИИ:\\n{draft.proposed_text[:1600]}"
-                    else:
-                        text=f"Новое сообщение\\nАккаунт: {account_name}\\nЧат: {label}\\n\\nВходящее:\\n{incoming[:1200]}\\n\\nЧерновик #{draft.id}:\\n{draft.proposed_text[:1600]}\\n\\nРучной режим: в чат ничего не отправлено."
-                    await bot.send_message(admin_id,text)
-                except Exception:
-                    logging.exception("Could not notify administrator %s",admin_id)
+            except Exception as exc:
+                logging.exception("Automatic reply failed for account %s in chat %s", aid, event.chat_id)
+                await send_log(f"⚠️ Не удалось отправить ответ\\nАккаунт: {account_name} (#{aid})\\nЧат: {label}\\nЧерновик #{draft.id}\\nОшибка: {type(exc).__name__}: {str(exc)[:700]}")
 
-
+        if sent:
+            text = f"✅ Ответ отправлен\\nАккаунт: {account_name} (#{aid})\\nЧат: {label}\\nЧерновик #{draft.id}\\nОтвет: {draft.proposed_text[:1800]}"
+        elif mode == "automatic":
+            text = f"⚠️ Ответ не отправлен\\nАккаунт: {account_name} (#{aid})\\nЧат: {label}\\nЧерновик #{draft.id} сохранён в базе."
+        else:
+            text = f"📝 Создан черновик\\nАккаунт: {account_name} (#{aid})\\nЧат: {label}\\nЧерновик #{draft.id}\\nВходящее: {incoming[:900]}\\nОтвет ИИ: {draft.proposed_text[:1400]}\\nРучной режим: в чат ничего не отправлено."
+        await send_log(text)
 
     async def finalize_learning_buffer(aid: int, key: str, sample_limit: int) -> None:
         raw_items = await redis.lrange(key, 0, -1)
