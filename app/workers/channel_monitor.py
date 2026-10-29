@@ -325,7 +325,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
         post_id = int(getattr(message.reply_to, "reply_to_top_id", None) or message.reply_to.reply_to_msg_id)
         comment_id = int(message.id)
         lock_key = f"atcivperson:channel-comment:{account_id}:{channel_id}:{comment_id}"
-        locked = await redis.set(lock_key, "processing", nx=True, ex=31536900)
+        locked = await redis.set(lock_key, "processing", nx=True, ex=2147483647)
         if not locked:
             return
         try:
