@@ -2,15 +2,12 @@ from contextlib import asynccontextmanager
 import hmac
 
 from fastapi import Depends, FastAPI, Header, HTTPException
-from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ai.provider import AIUnavailableError
-from app.services.drafts import create_draft, global_ai_enabled
 from app.settings import get_settings
 from app.storage.db import engine, get_session, init_db
-from app.storage.models import Account, AIAgent, Draft, Persona
+from app.storage.models import Account, AIAgent, Persona
 
 settings = get_settings()
 
@@ -33,13 +30,6 @@ async def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
         raise HTTPException(status_code=503, detail="API_SECRET_KEY не настроен.")
     if not x_api_key or not hmac.compare_digest(x_api_key, settings.api_secret_key):
         raise HTTPException(status_code=401, detail="Требуется корректный X-API-Key.")
-
-
-class DraftRequest(BaseModel):
-    incoming_text: str = Field(min_length=1, max_length=12000)
-    persona_id: int | None = None
-    account_id: int | None = None
-    chat_label: str = Field(default="Личный черновик", max_length=160)
 
 
 @app.get("/health")
@@ -97,39 +87,3 @@ async def list_personas(session: AsyncSession = Depends(get_session)) -> list[di
     ]
 
 
-@app.post("/v1/drafts", status_code=201, dependencies=[Depends(require_api_key)])
-async def make_draft(payload: DraftRequest, session: AsyncSession = Depends(get_session)) -> dict:
-    if not await global_ai_enabled(session):
-        raise HTTPException(status_code=503, detail="Глобальный ИИ выключен.")
-    try:
-        draft = await create_draft(
-            session,
-            incoming_text=payload.incoming_text,
-            persona_id=payload.persona_id,
-            account_id=payload.account_id,
-            chat_label=payload.chat_label,
-        )
-    except AIUnavailableError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(
-            status_code=400,
-            detail="Не удалось создать черновик; проверьте настройки агента и входные данные.",
-        ) from exc
-    return {"id": draft.id, "status": draft.status, "proposed_text": draft.proposed_text}
-
-
-@app.get("/v1/drafts", dependencies=[Depends(require_api_key)])
-async def list_drafts(session: AsyncSession = Depends(get_session)) -> list[dict]:
-    rows = (await session.scalars(select(Draft).order_by(Draft.id.desc()).limit(100))).all()
-    return [
-        {
-            "id": r.id,
-            "status": r.status,
-            "chat_label": r.chat_label,
-            "incoming_text": r.incoming_text,
-            "proposed_text": r.proposed_text,
-            "created_at": r.created_at.isoformat(),
-        }
-        for r in rows
-    ]
