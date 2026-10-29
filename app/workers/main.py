@@ -84,18 +84,17 @@ async def main():
                         await db.commit()
             except Exception:
                 logging.exception("Automatic reply failed for account %s in chat %s",aid,event.chat_id)
-        if bot:
-            for admin_id in cfg.admin_id_set:
-                try:
-                    if sent:
-                        text=f"Автоматический ответ отправлен\\nАккаунт: {account_name}\\nЧат: {label}\\nЧерновик #{draft.id}\\n\\nВходящее:\\n{incoming[:1200]}\\n\\nОтвет:\\n{draft.proposed_text[:1600]}"
-                    elif mode=="automatic":
-                        text=f"Не удалось отправить ответ автоматически\\nАккаунт: {account_name}\\nЧат: {label}\\nЧерновик #{draft.id} сохранён для проверки.\\n\\nВходящее:\\n{incoming[:1200]}\\n\\nОтвет ИИ:\\n{draft.proposed_text[:1600]}"
-                    else:
-                        text=f"Новое сообщение\\nАккаунт: {account_name}\\nЧат: {label}\\n\\nВходящее:\\n{incoming[:1200]}\\n\\nЧерновик #{draft.id}:\\n{draft.proposed_text[:1600]}\\n\\nРучной режим: в чат ничего не отправлено."
-                    await bot.send_message(admin_id,text)
-                except Exception:
-                    logging.exception("Could not notify administrator %s",admin_id)
+        if bot and cfg.log_chat_id:
+            try:
+                if sent:
+                    text=f"✅ Ответ отправлен\\nАккаунт: {account_name}\\nЧат: {label}\\nЧерновик #{draft.id}\\n\\nВходящее:\\n{incoming[:1200]}\\n\\nОтвет:\\n{draft.proposed_text[:1600]}"
+                elif mode=="automatic":
+                    text=f"⚠️ Не удалось отправить ответ\\nАккаунт: {account_name}\\nЧат: {label}\\nЧерновик #{draft.id} сохранён для проверки.\\n\\nВходящее:\\n{incoming[:1200]}\\n\\nОтвет ИИ:\\n{draft.proposed_text[:1600]}"
+                else:
+                    text=f"📝 Новый черновик\\nАккаунт: {account_name}\\nЧат: {label}\\n\\nВходящее:\\n{incoming[:1200]}\\n\\nЧерновик #{draft.id}:\\n{draft.proposed_text[:1600]}\\n\\nРучной режим: в чат ничего не отправлено."
+                await bot.send_message(cfg.log_chat_id,text)
+            except Exception:
+                logging.exception("Could not notify configured log chat %s",cfg.log_chat_id)
 
 
 
