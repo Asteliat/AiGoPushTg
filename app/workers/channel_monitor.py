@@ -1,22 +1,23 @@
 """Reliable per-post channel monitor with recovery after worker restarts.
 
 Only text-bearing channel posts are considered. Each post is tracked in the database,
-so Redis loss/restarts cannot cause completed analyses to be repeated. Replies are
-suggested to the operator and are never published automatically.
+so Redis loss/restarts cannot cause completed analyses to be repeated. Replies use the
+account reply mode: automatic mode publishes them, manual mode sends drafts to the operator.
 """
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
+import random
 
 from sqlalchemy import select
-from telethon import events
+from telethon import events, utils
 from telethon.tl.functions.messages import GetDiscussionMessageRequest
 
 from app.ai.provider import AIUnavailableError
 from app.services.channels import analyze_channel_post
-from app.services.ai_responses import global_ai_enabled
+from app.services.ai_responses import generate_response, global_ai_enabled
 from app.storage.db import SessionFactory
-from app.storage.models import Account, ChannelAnalysis, ChannelBinding, ChannelPostState
+from app.storage.models import Account, AIAgent, ChannelAnalysis, ChannelBinding, ChannelPostState
 
 
 SCAN_INTERVAL_SECONDS = 60
@@ -31,6 +32,7 @@ def _utcnow() -> datetime:
 def install_channel_monitor(client, account_id: int, redis, send_log):
     active_posts: set[tuple[int, int]] = set()
     background_tasks: set[asyncio.Task] = set()
+    discussion_channels: dict[int, int] = {}
 
     def spawn(coro):
         task = asyncio.create_task(coro)
@@ -51,13 +53,28 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                 state.updated_at = _utcnow()
                 await db.commit()
 
+    async def register_discussion_group(channel_id: int, group) -> None:
+        group_peer_id = int(utils.get_peer_id(group))
+        for old_group_id, mapped_channel_id in list(discussion_channels.items()):
+            if mapped_channel_id == channel_id and old_group_id != group_peer_id:
+                discussion_channels.pop(old_group_id, None)
+        discussion_channels[group_peer_id] = int(channel_id)
+        async with SessionFactory() as db:
+            binding = await db.scalar(select(ChannelBinding).where(
+                ChannelBinding.account_id == account_id,
+                ChannelBinding.channel_id == channel_id,
+            ))
+            if binding and binding.discussion_group_id != group_peer_id:
+                binding.discussion_group_id = group_peer_id
+                await db.commit()
+
     async def fetch_comments(group, root_id: int) -> list[str]:
         found = []
         async for item in client.iter_messages(group, reply_to=root_id, limit=30):
             text = (item.message or "").strip()
             if text and not item.out:
                 found.append(text[:1000])
-                if len(found) >= 5:
+                if len(found) >= 10:
                     break
         found.reverse()
         return found
@@ -85,7 +102,10 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                     or not account.ai_agent_id
                 ):
                     return
-                wait_seconds = max(60, min(int(binding.comment_wait_seconds or 300), 3600))
+                wait_value = binding.comment_wait_seconds_override if binding.comment_wait_seconds_override is not None else account.channel_wait_seconds
+                wait_seconds = max(0, int(wait_value if wait_value is not None else binding.comment_wait_seconds))
+                min_comments = max(1, min(10, int(binding.min_comments_override if binding.min_comments_override is not None else account.channel_min_comments or 2)))
+                insufficient_action = binding.insufficient_action_override or account.channel_insufficient_action or "wait"
 
                 # One distributed lock covers both the stored-analysis recovery path and
                 # the fresh-analysis path, preventing duplicate operator notifications.
@@ -201,15 +221,21 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                 )
                 return
 
+            await register_discussion_group(channel_id, group_entity)
             comments = await fetch_comments(group_entity, int(root_message.id))
-            if len(comments) < 2:
-                # Release this task instead of sleeping: the recovery loop will retry
-                # after the channel's configured interval without blocking other posts.
-                await update_state(
-                    channel_id, post_id, status="waiting",
-                    next_retry_at=_utcnow() + timedelta(seconds=wait_seconds),
-                    last_error="not enough comments yet",
-                )
+            if len(comments) < min_comments:
+                if insufficient_action == "skip":
+                    await update_state(
+                        channel_id, post_id, status="done", next_retry_at=None,
+                        last_error=f"skipped: {len(comments)} comments, minimum {min_comments}",
+                    )
+                    await redis.set(lock_key, "done", ex=365 * 24 * 3600)
+                else:
+                    await update_state(
+                        channel_id, post_id, status="waiting",
+                        next_retry_at=_utcnow() + timedelta(seconds=wait_seconds),
+                        last_error=f"waiting: {len(comments)} comments, minimum {min_comments}",
+                    )
                 return
 
             async with SessionFactory() as db:
@@ -228,7 +254,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                     return
                 result = await analyze_channel_post(
                     db, account=account, channel=binding, post_id=post_id,
-                    post_text=post_text, comments=comments[:5],
+                    post_text=post_text, comments=comments[:10],
                 )
                 # The unique constraint in channel_analyses is the final duplicate guard.
                 label = "по теме" if result.on_topic else "не по теме"
@@ -280,6 +306,168 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
             finally:
                 active_posts.discard(key)
 
+
+    async def handle_discussion_comment(event):
+        message = event.message
+        if not event.is_group or not message or message.out or not (message.message or "").strip():
+            return
+        if not getattr(message, "reply_to", None):
+            return
+        try:
+            sender = await event.get_sender()
+            if getattr(sender, "bot", False):
+                return
+        except Exception:
+            pass
+        channel_id = discussion_channels.get(int(event.chat_id))
+        if not channel_id:
+            return
+        post_id = int(getattr(message.reply_to, "reply_to_top_id", None) or message.reply_to.reply_to_msg_id)
+        comment_id = int(message.id)
+        lock_key = f"atcivperson:channel-comment:{account_id}:{channel_id}:{comment_id}"
+        locked = await redis.set(lock_key, "processing", nx=True, ex=2147483647)
+        if not locked:
+            return
+        try:
+            async with SessionFactory() as db:
+                account = await db.get(Account, account_id)
+                binding = await db.scalar(select(ChannelBinding).where(
+                    ChannelBinding.account_id == account_id,
+                    ChannelBinding.channel_id == channel_id,
+                    ChannelBinding.enabled.is_(True),
+                    ChannelBinding.reply_enabled.is_(True),
+                ))
+                if (
+                    not account or not binding or not account.enabled or account.manual_pause
+                    or not account.ai_enabled or not await global_ai_enabled(db)
+                    or not account.ai_agent_id
+                    or int(message.sender_id or 0) == int(account.telegram_user_id)
+                ):
+                    await redis.delete(lock_key)
+                    return
+                agent = await db.get(AIAgent, account.ai_agent_id)
+                if not agent or not agent.enabled:
+                    await redis.delete(lock_key)
+                    return
+                probability = (
+                    binding.reply_probability_override
+                    if binding.reply_probability_override is not None
+                    else agent.channel_reply_probability_override
+                    if agent.channel_reply_probability_override is not None
+                    else account.channel_reply_probability
+                )
+                probability = max(0, min(100, int(probability)))
+                if probability == 0 or random.randint(1, 100) > probability:
+                    await redis.set(lock_key, "skipped", ex=30 * 24 * 3600)
+                    return
+                min_comments = max(1, min(10, int(
+                    binding.min_comments_override
+                    if binding.min_comments_override is not None
+                    else account.channel_min_comments or 2
+                )))
+                insufficient_action = binding.insufficient_action_override or account.channel_insufficient_action or "wait"
+                wait_value = binding.comment_wait_seconds_override if binding.comment_wait_seconds_override is not None else account.channel_wait_seconds
+                wait_seconds = max(0, int(wait_value if wait_value is not None else binding.comment_wait_seconds))
+                post_instructions = binding.post_instructions_override if binding.post_instructions_override is not None else account.channel_post_instructions
+                comments_instructions = binding.comments_instructions_override if binding.comments_instructions_override is not None else account.channel_comments_instructions
+                restrictions = binding.restrictions_instructions_override if binding.restrictions_instructions_override is not None else account.channel_restrictions_instructions
+                learned = binding.learning_prompt
+                title = binding.title or f"канал {channel_id}"
+                mode = account.reply_mode
+                account_name = account.display_name
+
+            comments = await fetch_comments(event.chat, post_id)
+            if len(comments) < min_comments:
+                if insufficient_action == "skip":
+                    await redis.set(lock_key, "skipped", ex=30 * 24 * 3600)
+                    return
+                if wait_seconds:
+                    await asyncio.sleep(wait_seconds)
+                comments = await fetch_comments(event.chat, post_id)
+                if len(comments) < min_comments:
+                    # A later incoming comment will trigger a fresh attempt.
+                    await redis.delete(lock_key)
+                    return
+
+            cooldown = (
+                binding.reply_cooldown_seconds_override
+                if binding.reply_cooldown_seconds_override is not None
+                else agent.channel_reply_cooldown_seconds_override
+                if agent.channel_reply_cooldown_seconds_override is not None
+                else account.channel_reply_cooldown_seconds
+            )
+            cooldown = max(0, int(cooldown or 0))
+            if cooldown:
+                allowed = await redis.set(
+                    f"atcivperson:channel-reply-cooldown:{account_id}:{channel_id}",
+                    "1", nx=True, ex=cooldown,
+                )
+                if not allowed:
+                    await redis.set(lock_key, "skipped", ex=30 * 24 * 3600)
+                    return
+
+            try:
+                discussion_context = await client.get_messages(event.chat_id, ids=post_id)
+                post_text = (getattr(discussion_context, "message", None) or "").strip()
+            except Exception:
+                post_text = ""
+            additional = "\n".join(x for x in [
+                "Инструкции по публикациям: " + post_instructions if post_instructions.strip() else "",
+                "Что учитывать в комментариях: " + comments_instructions if comments_instructions.strip() else "",
+                "Ограничения: " + restrictions if restrictions.strip() else "",
+                "Выводы автообучения: " + learned if learned.strip() else "",
+            ] if x)
+            context = (
+                f"Канал: {title}\nПубликация: {post_text[:2500]}\n"
+                "Недавние комментарии в этом обсуждении:\n"
+                + "\n".join(f"- {item[:500]}" for item in comments[-10:])
+            )
+            async with SessionFactory() as db:
+                draft = await generate_response(
+                    db, incoming_text=message.message.strip(), account_id=account_id,
+                    chat_label=f"{account_name} · комментарии {title}",
+                    conversation_context=context, additional_instructions=additional,
+                )
+                latest_account = await db.get(Account, account_id)
+                latest_binding = await db.scalar(select(ChannelBinding).where(
+                    ChannelBinding.account_id == account_id,
+                    ChannelBinding.channel_id == channel_id,
+                    ChannelBinding.enabled.is_(True),
+                    ChannelBinding.reply_enabled.is_(True),
+                ))
+                if (
+                    not latest_account or not latest_binding or latest_account.manual_pause
+                    or not latest_account.enabled or not latest_account.ai_enabled
+                ):
+                    await redis.delete(lock_key)
+                    return
+                mode = latest_account.reply_mode
+                account_name = latest_account.display_name
+            if mode == "automatic":
+                await event.reply(draft.proposed_text)
+                await send_log(
+                    f"✅ Ответ в комментариях отправлен\nАккаунт: {account_name} (#{account_id})\n"
+                    f"Канал: {title}\nКомментарий: {message.message[:700]}\nОтвет: {draft.proposed_text[:1200]}"
+                )
+            else:
+                await send_log(
+                    f"💬 Подготовлен ответ в комментариях\nАккаунт: {account_name} (#{account_id})\n"
+                    f"Канал: {title}\nКомментарий: {message.message[:700]}\n"
+                    f"Ответ ИИ: {draft.proposed_text[:1400]}\n"
+                    "Ручной режим: ответ не опубликован."
+                )
+            await redis.set(lock_key, "done", ex=30 * 24 * 3600)
+        except asyncio.CancelledError:
+            await redis.delete(lock_key)
+            raise
+        except Exception as exc:
+            await redis.delete(lock_key)
+            logging.exception("Channel comment reply failed for account %s channel %s", account_id, channel_id)
+            await send_log(
+                f"⚠️ Не удалось ответить в комментариях\nАккаунт: #{account_id} · канал {channel_id}\n"
+                f"Ошибка: {type(exc).__name__}: {str(exc)[:500]}"
+            )
+
     async def handle(event):
         message = event.message
         if not message or not (message.message or "").strip():
@@ -296,6 +484,16 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                 return
             try:
                 async with SessionFactory() as db:
+                    saved_mappings = list((await db.execute(
+                        select(ChannelBinding.channel_id, ChannelBinding.discussion_group_id).where(
+                            ChannelBinding.account_id == account_id,
+                            ChannelBinding.enabled.is_(True),
+                            ChannelBinding.discussion_group_id.is_not(None),
+                        )
+                    )).all())
+                for saved_channel_id, saved_group_id in saved_mappings:
+                    discussion_channels[int(saved_group_id)] = int(saved_channel_id)
+                async with SessionFactory() as db:
                     bindings = list((await db.scalars(select(ChannelBinding).where(
                         ChannelBinding.account_id == account_id,
                         ChannelBinding.enabled.is_(True),
@@ -310,6 +508,18 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                         state_by_post = {item.post_id: item for item in known_states}
                         now = _utcnow()
                         entity = await client.get_entity(binding.channel_id)
+                        # Discover the linked discussion group even when every recent post
+                        # already has a completed analysis (and would otherwise be skipped).
+                        async for recent_post in client.iter_messages(entity, limit=RECOVERY_SCAN_LIMIT):
+                            if (recent_post.message or "").strip():
+                                try:
+                                    discussion = await client(GetDiscussionMessageRequest(peer=entity, msg_id=recent_post.id))
+                                    group = next((chat for chat in getattr(discussion, "chats", []) if getattr(chat, "megagroup", False)), None)
+                                    if group:
+                                        await register_discussion_group(int(binding.channel_id), group)
+                                except Exception:
+                                    pass
+                                break
                         async for message in client.iter_messages(entity, limit=RECOVERY_SCAN_LIMIT):
                             body = (message.message or "").strip()
                             if not body:
@@ -350,5 +560,6 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
             await asyncio.sleep(SCAN_INTERVAL_SECONDS)
 
     client.add_event_handler(handle, events.NewMessage(incoming=True))
+    client.add_event_handler(handle_discussion_comment, events.NewMessage(incoming=True))
     recovery_task = spawn(recovery_loop())
     return recovery_task

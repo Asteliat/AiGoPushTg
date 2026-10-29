@@ -1,4 +1,4 @@
-from app.storage.models import Account, ChannelAnalysis, ChannelBinding, ChatBinding, Example
+from app.storage.models import Account, AIAgent, ChannelAnalysis, ChannelBinding, ChatBinding, Example
 
 def test_account_has_learning_controls() -> None:
     assert {"learning_status", "learning_started_at", "learning_ends_at", "learning_completed_at", "learning_limit", "learning_prompt"} <= set(Account.__table__.columns.keys())
@@ -22,3 +22,28 @@ def test_channels_have_independent_per_account_bindings() -> None:
 
 def test_channel_analysis_is_stored_separately_from_chat_responses() -> None:
     assert {"account_id", "channel_id", "post_id", "comments_summary", "on_topic", "suggested_response"} <= set(ChannelAnalysis.__table__.columns.keys())
+
+def test_channels_have_reply_and_inherited_settings() -> None:
+    account_columns = set(Account.__table__.columns.keys())
+    channel_columns = set(ChannelBinding.__table__.columns.keys())
+    assert {
+        "channel_post_instructions", "channel_comments_instructions",
+        "channel_restrictions_instructions", "channel_wait_seconds",
+        "channel_min_comments", "channel_insufficient_action",
+        "channel_reply_probability", "channel_reply_cooldown_seconds",
+    } <= account_columns
+    assert {
+        "reply_enabled", "discussion_group_id", "post_instructions_override",
+        "comments_instructions_override", "restrictions_instructions_override",
+        "comment_wait_seconds_override", "min_comments_override",
+        "insufficient_action_override", "reply_probability_override",
+        "reply_cooldown_seconds_override", "learning_prompt",
+        "learning_status", "learning_completed_at",
+    } <= channel_columns
+
+
+def test_agents_have_channel_reply_overrides() -> None:
+    assert {
+        "channel_reply_probability_override",
+        "channel_reply_cooldown_seconds_override",
+    } <= set(AIAgent.__table__.columns.keys())
