@@ -67,7 +67,7 @@ async def main():
                     continue
                 merged[(item.get("message_id"), item.get("sender_id"), item.get("text"))] = item
         items = sorted(merged.values(), key=lambda x: x.get("date", ""))[-18:]
-        return "\\n".join(
+        return "\n".join(
             f"[{str(item.get('speaker', 'Участник'))[:60]}] {str(item.get('text', ''))[:500]}"
             for item in items if str(item.get("text", "")).strip()
         )[-7000:]
@@ -115,7 +115,7 @@ async def main():
 
             if event.is_group:
                 username = (current.username or "").strip().lstrip("@")
-                mentioned = bool(username and re.search(r"(?<!\\w)@" + re.escape(username) + r"\\b", incoming, re.IGNORECASE))
+                mentioned = bool(username and re.search(r"(?<!\w)@" + re.escape(username) + r"\b", incoming, re.IGNORECASE))
                 reply_to = await event.get_reply_message() if event.message.reply_to else None
                 if not (mentioned or (reply_to and reply_to.sender_id == current.telegram_user_id)):
                     return
@@ -138,11 +138,11 @@ async def main():
                 )
             except AIUnavailableError as exc:
                 logging.warning("AI generation failed for account %s: %s", aid, exc)
-                await send_log(f"⚠️ Ошибка генерации ИИ\\nАккаунт: {current.display_name} (#{aid})\\nЧат: {label}\\nОшибка: {str(exc)[:900]}")
+                await send_log(f"⚠️ Ошибка генерации ИИ\nАккаунт: {current.display_name} (#{aid})\nЧат: {label}\nОшибка: {str(exc)[:900]}")
                 return
             except Exception as exc:
                 logging.exception("Could not create draft for account %s", aid)
-                await send_log(f"⚠️ Не удалось создать ответ\\nАккаунт: {current.display_name} (#{aid})\\nЧат: {label}\\nОшибка: {type(exc).__name__}: {str(exc)[:700]}")
+                await send_log(f"⚠️ Не удалось создать ответ\nАккаунт: {current.display_name} (#{aid})\nЧат: {label}\nОшибка: {type(exc).__name__}: {str(exc)[:700]}")
                 return
             mode = current.reply_mode
             account_name = current.display_name
@@ -175,14 +175,14 @@ async def main():
                         await db.commit()
             except Exception as exc:
                 logging.exception("Automatic reply failed for account %s in chat %s", aid, event.chat_id)
-                await send_log(f"⚠️ Не удалось отправить ответ\\nАккаунт: {account_name} (#{aid})\\nЧат: {label}\\nЧерновик #{draft.id}\\nОшибка: {type(exc).__name__}: {str(exc)[:700]}")
+                await send_log(f"⚠️ Не удалось отправить ответ\nАккаунт: {account_name} (#{aid})\nЧат: {label}\nЧерновик #{draft.id}\nОшибка: {type(exc).__name__}: {str(exc)[:700]}")
 
         if sent:
-            text = f"✅ Ответ отправлен\\nАккаунт: {account_name} (#{aid})\\nЧат: {label}\\nЧерновик #{draft.id}\\nОтвет: {draft.proposed_text[:1800]}"
+            text = f"✅ Ответ отправлен\nАккаунт: {account_name} (#{aid})\nЧат: {label}\nЧерновик #{draft.id}\nОтвет: {draft.proposed_text[:1800]}"
         elif mode == "automatic":
-            text = f"⚠️ Ответ не отправлен\\nАккаунт: {account_name} (#{aid})\\nЧат: {label}\\nЧерновик #{draft.id} сохранён в базе."
+            text = f"⚠️ Ответ не отправлен\nАккаунт: {account_name} (#{aid})\nЧат: {label}\nЧерновик #{draft.id} сохранён в базе."
         else:
-            text = f"📝 Создан черновик\\nАккаунт: {account_name} (#{aid})\\nЧат: {label}\\nЧерновик #{draft.id}\\nВходящее: {incoming[:900]}\\nОтвет ИИ: {draft.proposed_text[:1400]}\\nРучной режим: в чат ничего не отправлено."
+            text = f"📝 Создан черновик\nАккаунт: {account_name} (#{aid})\nЧат: {label}\nЧерновик #{draft.id}\nВходящее: {incoming[:900]}\nОтвет ИИ: {draft.proposed_text[:1400]}\nРучной режим: в чат ничего не отправлено."
         await send_log(text)
 
     async def finalize_learning_buffer(aid: int, key: str, sample_limit: int) -> None:
