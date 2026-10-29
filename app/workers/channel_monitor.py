@@ -141,6 +141,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                 now = _utcnow()
                 if state:
                     if state.status == "done":
+                        await redis.set(lock_key, "done", ex=365 * 24 * 3600)
                         return
                     if state.next_retry_at and state.next_retry_at > now:
                         return
