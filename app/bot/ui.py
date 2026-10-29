@@ -1821,7 +1821,13 @@ async def chat_discover_links(c):
     if not candidates:
         await edit_anchor(c.bot, {"ui_chat_id": c.message.chat.id, "ui_message_id": c.message.message_id}, "🧭 Подходящих ссылок в последних сообщениях доступных групп не найдено.\n\nПоиск проверяет недавние сообщения в группах, к которым аккаунт уже имеет доступ; он не читает закрытые чаты, где аккаунт не состоит.", kb([[("🔎 Поиск публичных групп", f"chat:search:{aid}")], [("⬅️ К чатам", "chat:menu")]]))
         return
-    lines = [f"🧭 Найдено ссылок: {len(candidates)} · аккаунт #{aid}\\nПросмотрено до 5 000 последних сообщений в каждой доступной группе.", "", "Источник показывает чат, в котором была найдена ссылка. Каждая ссылка будет проверена перед вступлением."]
+    lines = [
+        f"🧭 Найдено ссылок: {len(candidates)} · аккаунт #{aid}",
+        f"Групп обработано: {scan_stats['groups']} · сообщений просмотрено: {scan_stats['messages']:,}".replace(",", " "),
+        "Просмотрено до 5 000 последних сообщений в каждой доступной группе.",
+        "",
+        "Источник показывает чат, в котором была найдена ссылка. Каждая ссылка будет проверена перед вступлением.",
+    ]
     for i, item in enumerate(candidates[:12], 1):
         lines.append(f"{i}. {item['link'][:75]}\n   найдено в: {item.get('source', 'сообщение')}")
     await edit_anchor(c.bot, {"ui_chat_id": c.message.chat.id, "ui_message_id": c.message.message_id}, "\n".join(lines), _candidate_keyboard(aid, candidates, 0))
