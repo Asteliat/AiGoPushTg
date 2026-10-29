@@ -33,7 +33,7 @@ def test_channels_have_reply_and_inherited_settings() -> None:
         "channel_reply_probability", "channel_reply_cooldown_seconds",
     } <= account_columns
     assert {
-        "reply_enabled", "post_instructions_override",
+        "reply_enabled", "discussion_group_id", "post_instructions_override",
         "comments_instructions_override", "restrictions_instructions_override",
         "comment_wait_seconds_override", "min_comments_override",
         "insufficient_action_override", "reply_probability_override",
