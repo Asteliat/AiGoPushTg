@@ -16,7 +16,7 @@ from app.telegram_gateway.discovery import search_public_groups, search_web_grou
 from app.services.drafts import global_ai_enabled
 from app.settings import get_settings
 from app.storage.db import SessionFactory
-from app.storage.models import Account, AIAgent, AppSetting, ChatBinding, ChannelBinding, Example, Persona
+from app.storage.models import Account, AIAgent, AppSetting, ChatBinding, ChannelBinding, ChannelAnalysis, Example, Persona
 from app.telegram_gateway.proxy import ProxyConfigurationError, encrypt_proxy, telethon_proxy
 
 router = Router()
@@ -2288,7 +2288,7 @@ async def channel_account_refresh(c, aid, page=0):
     async with SessionFactory() as db:
         rows = list((await db.scalars(select(ChannelBinding).where(ChannelBinding.account_id == aid).order_by(ChannelBinding.id))).all())
     buttons = [[(f"{'🟢' if row.enabled else '⚪'} {row.title[:30]} · ожидание {row.comment_wait_seconds}s", f"channel:toggle:{row.id}")] for row in rows[:40]]
-    buttons += [[("⏱ Ожидание 1 мин", f"channel:wait:60:{aid}"), ("⏱ Ожидание 5 мин", f"channel:wait:300:{aid}")], [("⏱ Ожидание 15 мин", f"channel:wait:900:{aid}")], [("↻ Загрузить каналы", f"channel:account:{aid}:{page}")], [("⬅️ К каналам", "channel:menu"), ("🏠 Главное меню", "nav:home")]]
+    buttons += [[("⏱ Ожидание 1 мин", f"channel:wait:60:{aid}"), ("⏱ Ожидание 5 мин", f"channel:wait:300:{aid}")], [("⏱ Ожидание 15 мин", f"channel:wait:900:{aid}")], [("🧾 История анализа", f"channel:history:{aid}")], [("↻ Загрузить каналы", f"channel:account:{aid}:{page}")], [("⬅️ К каналам", "channel:menu"), ("🏠 Главное меню", "nav:home")]]
     await edit(c, f"Каналы аккаунта #{aid}\n🟢 обработка включена · ⚪ выключена. Интервал ожидания комментариев применяется к каналам аккаунта.", kb(buttons))
 
 @router.callback_query(F.data.startswith("channel:toggle:"))
@@ -2318,3 +2318,49 @@ async def channel_wait(c):
             row.comment_wait_seconds = seconds
         await db.commit()
     await channel_account_refresh(c, aid)
+
+
+@router.callback_query(F.data.startswith("channel:history:"))
+async def channel_history(c):
+    if not await check_cb(c):
+        return
+    aid = int(c.data.split(":")[2])
+    async with SessionFactory() as db:
+        rows = list((await db.scalars(
+            select(ChannelAnalysis).where(ChannelAnalysis.account_id == aid)
+            .order_by(ChannelAnalysis.created_at.desc()).limit(10)
+        )).all())
+    if not rows:
+        await edit(c, f"🧾 История анализа каналов аккаунта #{aid} пока пуста.", kb([
+            [("⬅️ К каналам аккаунта", f"channel:list:{aid}")],
+            [("🏠 Главное меню", "nav:home")],
+        ]))
+        return
+    buttons = [[(
+        f"{'🟢' if row.on_topic else '🟠'} {row.channel_title[:25]} · пост #{row.post_id}",
+        f"channel:analysis:{row.id}",
+    )] for row in rows]
+    buttons += [[("⬅️ К каналам аккаунта", f"channel:list:{aid}"), ("🏠 Главное меню", "nav:home")]]
+    await edit(c, f"🧾 Последние анализы аккаунта #{aid}. Нажмите запись, чтобы открыть сводку и подготовленный вариант ответа.", kb(buttons))
+
+@router.callback_query(F.data.startswith("channel:analysis:"))
+async def channel_analysis_view(c):
+    if not await check_cb(c):
+        return
+    analysis_id = int(c.data.split(":")[2])
+    async with SessionFactory() as db:
+        row = await db.get(ChannelAnalysis, analysis_id)
+    if not row:
+        await c.answer("Результат анализа не найден.", show_alert=True)
+        return
+    topic = "по теме" if row.on_topic else "не по теме"
+    text = (
+        f"📡 {row.channel_title} · пост #{row.post_id}\\n"
+        f"Комментариев: {row.comments_count} · обсуждение: {topic}\\n\\n"
+        f"Сводка ИИ:\\n{row.comments_summary[:1800]}\\n\\n"
+        f"Вариант ответа (не опубликован):\\n{row.suggested_response[:1800]}"
+    )
+    await edit(c, text, kb([
+        [("⬅️ История анализа", f"channel:history:{row.account_id}")],
+        [("🏠 Главное меню", "nav:home")],
+    ]))
