@@ -87,6 +87,12 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                     return
                 wait_seconds = max(60, min(int(binding.comment_wait_seconds or 300), 3600))
 
+                # One distributed lock covers both the stored-analysis recovery path and
+                # the fresh-analysis path, preventing duplicate operator notifications.
+                lock_acquired = bool(await redis.set(lock_key, "processing", nx=True, ex=30 * 60))
+                if not lock_acquired:
+                    return
+
                 existing_analysis = await db.scalar(select(ChannelAnalysis).where(
                     ChannelAnalysis.account_id == account_id,
                     ChannelAnalysis.channel_id == channel_id,
@@ -117,6 +123,14 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                         state.last_error = ""
                         state.updated_at = _utcnow()
                         await db.commit()
+                    elif state is None:
+                        db.add(ChannelPostState(
+                            account_id=account_id, channel_id=channel_id, post_id=post_id,
+                            channel_title=channel_title[:255], post_text=post_text[:12000],
+                            status="done", attempts=0, updated_at=_utcnow(),
+                        ))
+                        await db.commit()
+                    await redis.set(lock_key, "done", ex=365 * 24 * 3600)
                     return
 
                 state = await db.scalar(select(ChannelPostState).where(
@@ -152,15 +166,6 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                     )
                     db.add(state)
                 await db.commit()
-
-            lock_acquired = bool(await redis.set(lock_key, "processing", nx=True, ex=30 * 60))
-            if not lock_acquired:
-                # A concurrent handler owns this post. Leave the durable state recoverable.
-                await update_state(
-                    channel_id, post_id, status="retry",
-                    next_retry_at=_utcnow() + timedelta(minutes=2),
-                )
-                return
 
             try:
                 discussion = await client(GetDiscussionMessageRequest(peer=channel_entity, msg_id=post_id))
