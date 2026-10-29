@@ -34,6 +34,15 @@ class Account(Base):
     learning_limit: Mapped[int] = mapped_column(Integer, default=500, server_default="500", nullable=False)
     learning_prompt: Mapped[str] = mapped_column(Text, default="", server_default="", nullable=False)
     ai_identity_disclosed: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
+    channel_post_instructions: Mapped[str] = mapped_column(Text, default="", server_default="", nullable=False)
+    channel_comments_instructions: Mapped[str] = mapped_column(Text, default="", server_default="", nullable=False)
+    channel_restrictions_instructions: Mapped[str] = mapped_column(Text, default="", server_default="", nullable=False)
+    channel_wait_seconds: Mapped[int] = mapped_column(Integer, default=300, server_default="300", nullable=False)
+    channel_min_comments: Mapped[int] = mapped_column(Integer, default=2, server_default="2", nullable=False)
+    channel_insufficient_action: Mapped[str] = mapped_column(String(10), default="wait", server_default="wait", nullable=False)
+    channel_reply_probability: Mapped[int] = mapped_column(Integer, default=100, server_default="100", nullable=False)
+    channel_reply_cooldown_seconds: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    channel_learning_prompt: Mapped[str] = mapped_column(Text, default="", server_default="", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -94,6 +103,18 @@ class ChannelBinding(Base):
     title: Mapped[str] = mapped_column(String(255), default="")
     enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
     comment_wait_seconds: Mapped[int] = mapped_column(Integer, default=300, server_default="300", nullable=False)
+    reply_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
+    post_instructions_override: Mapped[str | None] = mapped_column(Text, nullable=True)
+    comments_instructions_override: Mapped[str | None] = mapped_column(Text, nullable=True)
+    restrictions_instructions_override: Mapped[str | None] = mapped_column(Text, nullable=True)
+    comment_wait_seconds_override: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    min_comments_override: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    insufficient_action_override: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    reply_probability_override: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reply_cooldown_seconds_override: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    learning_prompt: Mapped[str] = mapped_column(Text, default="", server_default="", nullable=False)
+    learning_status: Mapped[str] = mapped_column(String(20), default="idle", server_default="idle", nullable=False)
+    learning_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -148,6 +169,8 @@ class AIAgent(Base):
     dm_reply_probability_override: Mapped[int | None] = mapped_column(Integer, nullable=True)
     proactive_reply_probability_override: Mapped[int | None] = mapped_column(Integer, nullable=True)
     reply_cooldown_seconds_override: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    channel_reply_probability_override: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    channel_reply_cooldown_seconds_override: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
