@@ -130,6 +130,16 @@ async def main():
             if probability <= 0 or random.randint(1, 100) > min(probability, 100):
                 logging.info("Reply skipped by probability (%s%%) for account %s in chat %s", probability, aid, event.chat_id)
                 return
+            cooldown_setting = await db.get(AppSetting, "reply_cooldown_seconds")
+            cooldown_seconds = int(cooldown_setting.value) if cooldown_setting and cooldown_setting.value.isdigit() else 0
+            if cooldown_seconds > 0:
+                allowed = await redis.set(
+                    f"atcivperson:reply-cooldown:{aid}:{event.chat_id}", "1",
+                    ex=cooldown_seconds, nx=True,
+                )
+                if not allowed:
+                    logging.info("Reply skipped by cooldown for account %s in chat %s", aid, event.chat_id)
+                    return
             try:
                 draft = await create_draft(
                     db, incoming_text=incoming, account_id=aid,
