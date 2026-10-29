@@ -6,6 +6,11 @@ public-name search with invite links shared in dialogs the account can already r
 from __future__ import annotations
 
 import re
+import asyncio
+import html
+from html.parser import HTMLParser
+from urllib.parse import quote_plus, urlparse, parse_qs, unquote
+from urllib.request import Request, urlopen
 from telethon.tl.functions.contacts import SearchRequest as ContactsSearchRequest
 
 # Deliberately conservative: obvious spam terms are excluded; other weak candidates
@@ -138,3 +143,87 @@ async def find_invite_links_in_dialogs(client, dialog_limit: int | None = None, 
     if progress_callback:
         await progress_callback(scanned_groups, scanned_messages, len(found))
     return list(found.values())
+
+
+class _SearchAnchors(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.links = []
+        self.href = None
+        self.parts = []
+    def handle_starttag(self, tag, attrs):
+        if tag.lower() == "a":
+            self.href = dict(attrs).get("href")
+            self.parts = []
+    def handle_data(self, data):
+        if self.href is not None:
+            self.parts.append(data)
+    def handle_endtag(self, tag):
+        if tag.lower() == "a" and self.href is not None:
+            self.links.append((self.href, " ".join(" ".join(self.parts).split())))
+            self.href, self.parts = None, []
+
+def _engine_search(engine, template, query):
+    request = Request(template.format(q=quote_plus(query)), headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "ru,en;q=0.8"})
+    try:
+        with urlopen(request, timeout=10) as response:
+            body = response.read(1500000).decode("utf-8", "replace")
+    except Exception:
+        return []
+    parser = _SearchAnchors()
+    try:
+        parser.feed(body)
+    except Exception:
+        return []
+    results = []
+    for href, title in parser.links:
+        href = html.unescape(href)
+        parsed = urlparse(href)
+        params = parse_qs(parsed.query)
+        for key in ("uddg", "url", "u"):
+            target = params.get(key, [None])[0]
+            if target and target.startswith("http"):
+                href = unquote(target)
+                break
+        if href.startswith("//"):
+            href = "https:" + href
+        parsed = urlparse(href if "://" in href else "https://" + href)
+        if (parsed.hostname or "").lower() not in {"t.me", "www.t.me", "telegram.me", "www.telegram.me", "telegram.dog"}:
+            continue
+        path = unquote(parsed.path).strip("/")
+        private = path.startswith("+") or path.startswith("joinchat/")
+        if private:
+            slug = path[1:] if path.startswith("+") else path.split("/", 1)[-1]
+            if not re.fullmatch(r"[A-Za-z0-9_-]{10,}", slug):
+                continue
+        elif not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{4,31}", path):
+            continue
+        if path.startswith(("s/", "share/", "proxy/", "login/", "addstickers/", "addemoji/")):
+            continue
+        link = "https://t.me/" + path
+        results.append({"id": None, "title": (title or path)[:120], "username": None if private else path,
+                        "link": link, "members": 0, "verified": False, "score": 25 if private else 30,
+                        "source": engine, "private_invite": private})
+    return results
+
+async def search_web_groups(query: str, limit: int = 150) -> list[dict]:
+    """Find public Telegram links indexed by common search engines."""
+    engines = (
+        ("Google", "https://www.google.com/search?q={q}&num=30"),
+        ("Yandex", "https://yandex.com/search/?text={q}"),
+        ("Bing", "https://www.bing.com/search?q={q}&count=30"),
+        ("Yahoo", "https://search.yahoo.com/search?p={q}&n=30"),
+        ("DuckDuckGo", "https://html.duckduckgo.com/html/?q={q}"),
+    )
+    terms = f'site:t.me ("members" OR "участников" OR "группа" OR "group" OR "чат") {query[:100]}'
+    batches = await asyncio.gather(*(asyncio.to_thread(_engine_search, name, url, terms) for name, url in engines))
+    found = {}
+    for batch in batches:
+        for item in batch:
+            key = item["link"].casefold()
+            if key in found:
+                if item["source"] not in found[key]["source"]:
+                    found[key]["source"] += ", " + item["source"]
+            else:
+                found[key] = item
+    return sorted(found.values(), key=lambda item: (item["score"], item["title"].casefold()), reverse=True)[:max(1, min(limit, 300))]
