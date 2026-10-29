@@ -167,7 +167,68 @@ async def settings_cb(c: CallbackQuery):
         "В карточке аккаунта: «Пауза» временно останавливает работу; «ИИ» включает генерацию; «Режим» выбирает ручную или автоматическую отправку; «Агент» и «Персона» задают модель и стиль; «Прокси» меняет сетевое подключение; «Автообучение» обновляет контекст.\n\n"
         "API ID/hash, токен бота и ключ шифрования задаются в .env на сервере. Сообщения с кодом и паролем входа удаляются ботом по возможности; не используйте бота, которому не доверяете."
     )
-    await edit(c, text, back_home())
+    await edit(c, text, kb([
+        [("🎚 Вероятность ответов", "runtime:menu")],
+        [("⬅️ Главное меню", "nav:home")],
+    ]))
+
+async def runtime_settings_text():
+    async with SessionFactory() as db:
+        mention = await db.get(AppSetting, "mention_reply_probability")
+        dm = await db.get(AppSetting, "dm_reply_probability")
+    mention_value = int(mention.value) if mention and mention.value.isdigit() else 100
+    dm_value = int(dm.value) if dm and dm.value.isdigit() else 100
+    return (
+        "🎚 Вероятность ответов\\n\\n"
+        f"📣 Ответ на упоминание / ответ на сообщение аккаунта: {mention_value}%\\n"
+        f"💬 Ответ в личных сообщениях: {dm_value}%\\n\\n"
+        "Вероятность применяется перед вызовом ИИ. Если случайная проверка не пройдена, сообщение игнорируется. "
+        "В группах аккаунт не начинает разговор сам по себе: ответ только на прямое упоминание или ответ на его сообщение."
+    )
+
+@router.callback_query(F.data == "runtime:menu")
+async def runtime_settings_menu(c: CallbackQuery):
+    if not await check_cb(c): return
+    async with SessionFactory() as db:
+        mention = await db.get(AppSetting, "mention_reply_probability")
+        dm = await db.get(AppSetting, "dm_reply_probability")
+    mv = int(mention.value) if mention and mention.value.isdigit() else 100
+    dv = int(dm.value) if dm and dm.value.isdigit() else 100
+    buttons = [
+        [(f"📣 Упоминания: {mv}%", "runtime:noop")],
+        [(f"{v}%", f"runtime:set:mention_reply_probability:{v}") for v in (0, 10, 25, 50, 75, 100)],
+        [(f"💬 Личные сообщения: {dv}%", "runtime:noop")],
+        [(f"{v}%", f"runtime:set:dm_reply_probability:{v}") for v in (0, 10, 25, 50, 75, 100)],
+        [("⬅️ Настройки", "nav:settings"), ("🏠 Главное меню", "nav:home")],
+    ]
+    await edit(c, await runtime_settings_text(), kb(buttons))
+
+@router.callback_query(F.data == "runtime:noop")
+async def runtime_settings_noop(c: CallbackQuery):
+    if not await check_cb(c): return
+    await c.answer("Выберите процент в кнопках ниже.")
+
+@router.callback_query(F.data.startswith("runtime:set:"))
+async def runtime_settings_set(c: CallbackQuery):
+    if not await check_cb(c): return
+    parts = c.data.split(":")
+    if len(parts) != 4 or parts[2] not in {"mention_reply_probability", "dm_reply_probability"}:
+        await c.answer("Неизвестная настройка.", show_alert=True); return
+    try:
+        value = int(parts[3])
+    except ValueError:
+        await c.answer("Некорректное значение.", show_alert=True); return
+    if value not in {0, 10, 25, 50, 75, 100}:
+        await c.answer("Выберите значение из кнопок.", show_alert=True); return
+    async with SessionFactory() as db:
+        setting = await db.get(AppSetting, parts[2])
+        if setting:
+            setting.value = str(value)
+        else:
+            db.add(AppSetting(key=parts[2], value=str(value)))
+        await db.commit()
+    await c.answer(f"Установлено: {value}%")
+    await runtime_settings_menu(c)
 
 # Account menu and QR login
 @router.message(F.text=="👤 Аккаунты")
