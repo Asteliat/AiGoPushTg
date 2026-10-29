@@ -87,7 +87,8 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                     or not account.ai_agent_id
                 ):
                     return
-                wait_seconds = max(0, int(binding.comment_wait_seconds_override if binding.comment_wait_seconds_override is not None else account.channel_wait_seconds or binding.comment_wait_seconds))
+                wait_value = binding.comment_wait_seconds_override if binding.comment_wait_seconds_override is not None else account.channel_wait_seconds
+                wait_seconds = max(0, int(wait_value if wait_value is not None else binding.comment_wait_seconds))
                 min_comments = max(1, min(10, int(binding.min_comments_override if binding.min_comments_override is not None else account.channel_min_comments or 2)))
                 insufficient_action = binding.insufficient_action_override or account.channel_insufficient_action or "wait"
 
@@ -353,7 +354,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                     if not allowed:
                         await redis.set(lock_key, "skipped", ex=30 * 24 * 3600)
                         return
-                post_id = int(message.reply_to.reply_to_msg_id)
+                post_id = int(getattr(message.reply_to, "reply_to_top_id", None) or message.reply_to.reply_to_msg_id)
                 try:
                     discussion_context = await client.get_messages(event.chat_id, ids=post_id)
                     post_text = (getattr(discussion_context, "message", None) or "").strip()
