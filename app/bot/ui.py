@@ -235,7 +235,7 @@ def format_duration(seconds: int) -> str:
 
 async def read_global_runtime(db):
     values = {}
-    for key, (_, _, minimum, maximum) in RUNTIME_KEYS.items():
+    for key, (_, _, _, _) in RUNTIME_KEYS.items():
         row = await db.get(AppSetting, key)
         fallback = 0 if key in {"proactive_reply_probability", "reply_cooldown_seconds"} else 100
         try:
@@ -388,14 +388,14 @@ async def agent_runtime_menu(c: CallbackQuery, aid: int):
         await c.answer("ИИ-агент не найден.", show_alert=True); return
     buttons = []
     lines = [f"🎚 Индивидуальные настройки · {agent.name}", "", "«Наследует» означает, что используется глобальное значение."]
-    for key, (label, unit, minimum, maximum) in RUNTIME_KEYS.items():
+    for key, (label, unit, _minimum, _maximum) in RUNTIME_KEYS.items():
         override = getattr(agent, key + "_override")
         shown = (format_duration(override) if key.endswith("_seconds") else f"{override}{unit}") if override is not None else (f"Наследует ({format_duration(global_values[key])})" if key.endswith("_seconds") else f"Наследует ({global_values[key]}{unit})")
         lines.append(f"{label}: {shown}")
         buttons.append([(f"✏️ {label}: {shown}", f"agent:rt:input:{aid}:{key}")])
         if override is not None:
             buttons.append([("↩️ Наследовать глобальное значение", f"agent:rt:inherit:{aid}:{key}")])
-    for key, (label, unit, minimum, maximum, attr) in AGENT_CHANNEL_RUNTIME_KEYS.items():
+    for key, (label, unit, _minimum, _maximum, attr) in AGENT_CHANNEL_RUNTIME_KEYS.items():
         override = getattr(agent, attr)
         shown = (format_duration(override) if unit == "сек." else f"{override}{unit}") if override is not None else "Наследует настройки аккаунта"
         lines.append(f"{label}: {shown}")
@@ -2444,7 +2444,6 @@ async def channel_reply_toggle(c):
             return
         binding.reply_enabled = not binding.reply_enabled
         binding.enabled = binding.reply_enabled
-        aid, channel_id = binding.account_id, binding.channel_id
         await db.commit()
     await channel_open(c)
 
