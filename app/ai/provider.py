@@ -4,7 +4,11 @@ from app.storage.models import AIAgent
 class AIUnavailableError(RuntimeError):
     pass
 
-async def generate_reply(*, agent: AIAgent, incoming_text: str, style_instructions: str, examples: list[tuple[str, str]]) -> str:
+class NoReplyNeeded(Exception):
+    """Raised when the model decides a proactive group message would be unnatural."""
+    pass
+
+async def generate_reply(*, agent: AIAgent, incoming_text: str, style_instructions: str, examples: list[tuple[str, str]], proactive: bool = False) -> str:
     if not agent.enabled or not agent.api_key.strip():
         raise AIUnavailableError("ИИ-агент выключен или у него не заполнен API-ключ.")
     if not agent.base_url.strip() or not agent.model.strip():
@@ -15,13 +19,15 @@ async def generate_reply(*, agent: AIAgent, incoming_text: str, style_instructio
         response = await client.chat.completions.create(
             model=agent.model, temperature=0.7,
             messages=[
-                {"role": "system", "content": "Составь черновик ответа. Не выдумывай факты, не помогай со спамом, преследованием или скоординированным обманом. Не копируй персональные данные. Стиль: " + (style_instructions or "кратко, уважительно и естественно") + "\nПримеры:\n" + sample},
-                {"role": "user", "content": "Подготовь ответ на сообщение:\n" + incoming_text},
+                {"role": "system", "content": ("Ты участник живого группового чата. Реши, уместно ли тебе естественно включиться в разговор на основе контекста. Если сказать нечего, сообщение не требует реакции или реплика будет выглядеть навязчиво, верни ровно [[SKIP]] и ничего больше. Если есть естественный повод, напиши короткую живую реплику по теме. Не выдумывай факты, не помогай со спамом, преследованием или скоординированным обманом. Не копируй персональные данные. Стиль: " + (style_instructions or "кратко, уважительно и естественно") + "\nПримеры:\n" + sample) if proactive else ("Составь черновик ответа. Не выдумывай факты, не помогай со спамом, преследованием или скоординированным обманом. Не копируй персональные данные. Стиль: " + (style_instructions or "кратко, уважительно и естественно") + "\nПримеры:\n" + sample)},
+                {"role": "user", "content": ("Оцени, стоит ли самому вступить в разговор. Контекст последних сообщений:\n" if proactive else "Подготовь ответ на сообщение:\n") + incoming_text},
             ],
         )
     except Exception as exc:
         raise AIUnavailableError(f"Ошибка провайдера ИИ: {type(exc).__name__}: {str(exc)[:300]}") from exc
     result = response.choices[0].message.content
+    if proactive and (not result or not result.strip() or result.strip() == "[[SKIP]]"):
+        raise NoReplyNeeded()
     if not result or not result.strip():
         raise AIUnavailableError("Провайдер ИИ вернул пустой ответ.")
     return result.strip()
