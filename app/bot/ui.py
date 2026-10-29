@@ -13,7 +13,7 @@ from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.functions.messages import CheckChatInviteRequest, ImportChatInviteRequest
 from telethon.tl.types import ChatInviteAlready
 from app.telegram_gateway.discovery import search_public_groups, search_web_groups, find_invite_links_in_dialogs
-from app.services.drafts import global_ai_enabled
+from app.services.ai_responses import global_ai_enabled
 from app.settings import get_settings
 from app.storage.db import SessionFactory
 from app.storage.models import Account, AIAgent, AppSetting, ChatBinding, ChannelBinding, ChannelAnalysis, Example, Persona
