@@ -79,6 +79,8 @@ async def search_public_groups(client, query: str, limit: int = 50) -> list[dict
             continue
         score, members = quality
         username = getattr(entity, "username", None)
+        if not username:
+            continue
         item = {
             "id": int(entity.id),
             "title": (getattr(entity, "title", None) or username or str(entity.id))[:120],
