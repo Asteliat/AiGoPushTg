@@ -99,6 +99,7 @@ class ChannelBinding(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), index=True)
     channel_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    discussion_group_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     title: Mapped[str] = mapped_column(String(255), default="")
     enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
     comment_wait_seconds: Mapped[int] = mapped_column(Integer, default=300, server_default="300", nullable=False)
