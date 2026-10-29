@@ -1,5 +1,4 @@
 from datetime import datetime, timezone
-from enum import StrEnum
 
 from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
@@ -9,12 +8,6 @@ from app.storage.db import Base
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
-
-
-class DraftStatus(StrEnum):
-    PENDING = "pending"
-    APPROVED = "approved"
-    REJECTED = "rejected"
 
 
 class Account(Base):
@@ -65,20 +58,6 @@ class Example(Base):
     preferred_reply: Mapped[str] = mapped_column(Text)
     consent_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-
-
-class Draft(Base):
-    __tablename__ = "drafts"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id", ondelete="SET NULL"), nullable=True)
-    persona_id: Mapped[int | None] = mapped_column(ForeignKey("personas.id", ondelete="SET NULL"), nullable=True)
-    chat_label: Mapped[str] = mapped_column(String(160), default="Личный черновик")
-    incoming_text: Mapped[str] = mapped_column(Text)
-    proposed_text: Mapped[str] = mapped_column(Text, default="")
-    status: Mapped[str] = mapped_column(String(20), default=DraftStatus.PENDING.value, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class AuditEvent(Base):
