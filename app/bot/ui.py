@@ -1825,6 +1825,22 @@ async def chat_discover_links(c):
     await edit_anchor(c.bot, {"ui_chat_id": c.message.chat.id, "ui_message_id": c.message.message_id}, "\n".join(lines), _candidate_keyboard(aid, candidates, 0))
 
 
+@router.callback_query(F.data.startswith("chat:page:"))
+async def chat_candidate_page(c):
+    if not await check_cb(c): return
+    _, _, aid_raw, offset_raw = c.data.split(":")
+    aid, offset = int(aid_raw), max(0, int(offset_raw))
+    candidates = CHAT_CANDIDATES.get((c.from_user.id, aid), [])
+    if not candidates:
+        await edit(c, "Результаты больше не сохранены. Запустите поиск ещё раз.", kb([[("🔎 Поиск групп", f"chat:search:{aid}")], [("⬅️ К чатам", "chat:menu")]]))
+        return
+    page = candidates[offset:offset + 12]
+    lines = [f"Найденные группы · аккаунт #{aid}", f"Показаны {offset + 1}–{min(offset + 12, len(candidates))} из {len(candidates)}", "", "Выберите результат для проверки."]
+    for i, item in enumerate(page, start=offset + 1):
+        lines.append(f"{i}. {str(item.get('title') or item.get('link') or 'Группа')[:70]}")
+    await edit(c, "\\n".join(lines), _candidate_keyboard(aid, candidates, offset))
+
+
 @router.callback_query(F.data.startswith("chat:candidate:"))
 async def chat_candidate_preview(c):
     if not await check_cb(c): return
