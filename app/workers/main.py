@@ -233,16 +233,10 @@ async def main():
                     await db.commit()
         finally:
             await redis.delete(key)
-        if bot:
-            for admin_id in cfg.admin_id_set:
-                try:
-                    await bot.send_message(
-                        admin_id,
-                        f"Обучение аккаунта #{aid} завершено. "
-                        f"{'Краткий контекст сохранён для черновиков.' if summary_saved else 'Сводка не сохранена: нет подходящих сообщений или доступного ИИ-агента.'}",
-                    )
-                except Exception:
-                    logging.exception("Could not notify administrator about learning completion")
+        await send_log(
+            f"🧠 Обучение аккаунта #{aid} завершено. "
+            f"{'Краткий контекст сохранён для черновиков.' if summary_saved else 'Сводка не сохранена: нет подходящих сообщений или доступного ИИ-агента.'}"
+        )
 
     async def run_learning(aid: int, client: TelegramClient) -> None:
         handler = None
@@ -391,16 +385,10 @@ async def main():
                 account.learning_ends_at = None
                 await db.commit()
             await redis.delete(key)
-            if bot:
-                for admin_id in cfg.admin_id_set:
-                    try:
-                        await bot.send_message(
-                            admin_id,
-                            f"Обучение аккаунта #{aid} завершено. "
-                            f"{'Краткий контекст сохранён для черновиков.' if summary_saved else 'Сводка не сохранена: нет подходящих сообщений или доступного ИИ-агента.'}",
-                        )
-                    except Exception:
-                        logging.exception("Could not notify administrator about learning completion")
+            await send_log(
+                f"🧠 Обучение аккаунта #{aid} завершено. "
+                f"{'Краткий контекст сохранён для черновиков.' if summary_saved else 'Сводка не сохранена: нет подходящих сообщений или доступного ИИ-агента.'}"
+            )
         except asyncio.CancelledError:
             if handler:
                 client.remove_event_handler(handler)
