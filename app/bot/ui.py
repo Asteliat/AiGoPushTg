@@ -898,6 +898,20 @@ async def acc_view(c, account_id: int | None = None):
         [("🧠 Контекст обучения",f"acc:learnprompt:{aid}")],
         [("⬅️ К аккаунтам","acc:list"),("🏠 Главное меню","nav:home")]]
     await edit(c,txt,kb(buttons))
+@router.callback_query(F.data.startswith("acc:aidisclosure:"))
+async def acc_ai_disclosure_toggle(c):
+    if not await check_cb(c): return
+    aid = int(c.data.split(":")[2])
+    async with SessionFactory() as db:
+        account = await db.get(Account, aid)
+        if not account:
+            await c.answer("Аккаунт не найден.", show_alert=True); return
+        account.ai_identity_disclosed = not account.ai_identity_disclosed
+        disclosed = account.ai_identity_disclosed
+        await db.commit()
+    await c.answer("Отметка сохранена." if disclosed else "Самостоятельное участие отключено.")
+    await acc_view(c, aid)
+
 @router.callback_query(F.data.startswith("acc:proxysettings:"))
 async def acc_proxy_settings(c):
     if not await check_cb(c): return
