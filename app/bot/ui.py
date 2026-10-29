@@ -1399,11 +1399,14 @@ async def agent_view(c):
     masked=("•"*min(12,len(a.api_key))) if a.api_key else "не задан"
     txt=f"🤖 {a.name}\nСтатус: {'включён' if a.enabled else 'выключен'}\nПо умолчанию: {'да' if a.is_default else 'нет'}\nBase URL: {a.base_url}\nМодель: {a.model}\nAPI-ключ: {masked}\nТайм-аут: {a.timeout_seconds} сек.\nАккаунты: {', '.join('#'+str(x.id) for x in assigned) or 'нет'}"
     buttons=[[(("⏸ Выключить профиль" if a.enabled else "▶️ Включить профиль"),f"agent:toggle:{aid}")],
-        [("⭐ По умолчанию",f"agent:default:{aid}")],
+        [("⭐ По умолчанию",f"agent:default:{aid}")]]
+    if a.is_default:
+        buttons.append([("✖️ Убрать статус по умолчанию",f"agent:unsetdefault:{aid}")])
+    buttons.extend([
         [("🎚 Вероятности и паузы",f"agent:runtime:menu:{aid}")],
         [("✏️ Base URL",f"agent:edit:url:{aid}"),("✏️ Модель",f"agent:edit:model:{aid}")],
         [("🔑 API-ключ",f"agent:edit:key:{aid}"),("⏱ Тайм-аут",f"agent:edit:timeout:{aid}")],
-        [("🗑 Удалить профиль",f"agent:delete:{aid}")],[("⬅️ К ИИ-агентам","agent:menu")]]
+        [("🗑 Удалить профиль",f"agent:delete:{aid}")],[("⬅️ К ИИ-агентам","agent:menu")]])
     await edit(c,txt,kb(buttons))
 @router.callback_query(F.data.startswith("agent:toggle:"))
 async def agent_toggle(c):
@@ -1424,6 +1427,21 @@ async def agent_default(c):
         for x in (await db.scalars(select(AIAgent))).all(): x.is_default=x.id==aid
         await db.commit()
     await agent_view(c)
+@router.callback_query(F.data.startswith("agent:unsetdefault:"))
+async def agent_unset_default(c):
+    if not await check_cb(c): return
+    aid=int(c.data.split(":")[2])
+    async with SessionFactory() as db:
+        a=await db.get(AIAgent,aid)
+        if not a: await c.answer("Агент не найден",show_alert=True); return
+        if not a.is_default:
+            await c.answer("Этот агент уже не является агентом по умолчанию",show_alert=True)
+            await agent_view(c)
+            return
+        a.is_default=False
+        await db.commit()
+    await agent_view(c)
+
 @router.callback_query(F.data.startswith("agent:edit:"))
 async def agent_edit_start(c,state):
     if not await check_cb(c): return
