@@ -1,8 +1,8 @@
 """Reliable per-post channel monitor with recovery after worker restarts.
 
 Only text-bearing channel posts are considered. Each post is tracked in the database,
-so Redis loss/restarts cannot cause completed analyses to be repeated. Replies are
-suggested to the operator and are never published automatically.
+so Redis loss/restarts cannot cause completed analyses to be repeated. Replies use the
+account reply mode: automatic mode publishes them, manual mode sends drafts to the operator.
 """
 import asyncio
 import logging
@@ -367,7 +367,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                     "Инструкции по публикациям: " + post_instructions if post_instructions.strip() else "",
                     "Что учитывать в комментариях: " + comments_instructions if comments_instructions.strip() else "",
                     "Ограничения: " + restrictions if restrictions.strip() else "",
-                    "Выводы автообучения: " + binding.learning_prompt if binding.learning_prompt.strip() else "",
+                    "Выводы автообучения: " + (binding.learning_prompt or account.channel_learning_prompt) if (binding.learning_prompt or account.channel_learning_prompt).strip() else "",
                 ] if x)
                 title = binding.title or f"канал {channel_id}"
                 context = f"Канал: {title}\nПубликация, к которой относится обсуждение: {post_text[:2500]}\n"
@@ -430,6 +430,18 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                         state_by_post = {item.post_id: item for item in known_states}
                         now = _utcnow()
                         entity = await client.get_entity(binding.channel_id)
+                        # Discover the linked discussion group even when every recent post
+                        # already has a completed analysis (and would otherwise be skipped).
+                        async for recent_post in client.iter_messages(entity, limit=20):
+                            if (recent_post.message or "").strip():
+                                try:
+                                    discussion = await client(GetDiscussionMessageRequest(peer=entity, msg_id=recent_post.id))
+                                    group = next((chat for chat in getattr(discussion, "chats", []) if getattr(chat, "megagroup", False)), None)
+                                    if group:
+                                        discussion_channels[int(group.id)] = int(binding.channel_id)
+                                except Exception:
+                                    pass
+                                break
                         async for message in client.iter_messages(entity, limit=RECOVERY_SCAN_LIMIT):
                             body = (message.message or "").strip()
                             if not body:
