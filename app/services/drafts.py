@@ -50,8 +50,5 @@ async def create_draft(session: AsyncSession, *, incoming_text: str, persona_id:
             or not await global_ai_enabled(session)
         ):
             raise RuntimeError("Работа аккаунта была остановлена во время генерации; черновик не сохранён.")
-    draft = Draft(incoming_text=incoming_text, proposed_text=proposed, persona_id=persona_id, account_id=account_id, chat_label=chat_label[:160])
-    session.add(draft)
-    await session.commit()
-    await session.refresh(draft)
-    return draft
+    # Legacy function name for compatibility; generated text is transient and is never saved.
+    return Draft(incoming_text=incoming_text, proposed_text=proposed, persona_id=persona_id, account_id=account_id, chat_label=chat_label[:160])
