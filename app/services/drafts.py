@@ -7,7 +7,7 @@ async def global_ai_enabled(session: AsyncSession) -> bool:
     row = await session.get(AppSetting, "ai_global_enabled")
     return bool(row and row.value.lower() == "true")
 
-async def create_draft(session: AsyncSession, *, incoming_text: str, persona_id: int | None = None, account_id: int | None = None, chat_label: str = "Личный черновик", agent_id: int | None = None) -> Draft:
+async def create_draft(session: AsyncSession, *, incoming_text: str, persona_id: int | None = None, account_id: int | None = None, chat_label: str = "Личный черновик", agent_id: int | None = None, proactive: bool = False) -> Draft:
     account = await session.get(Account, account_id) if account_id else None
     if account and persona_id is None:
         persona_id = account.persona_id
@@ -39,7 +39,7 @@ async def create_draft(session: AsyncSession, *, incoming_text: str, persona_id:
         style_instructions += "\n\nИндивидуальные правила аккаунта:\n" + account.persona_style_override
     if account and account.learning_prompt.strip():
         style_instructions += "\n\nОбобщённый контекст выбранных чатов (не цитировать и не раскрывать личные данные):\n" + account.learning_prompt
-    proposed = await generate_reply(agent=agent, incoming_text=incoming_text, style_instructions=style_instructions, examples=[(e.incoming_text, e.preferred_reply) for e in examples])
+    proposed = await generate_reply(agent=agent, incoming_text=incoming_text, style_instructions=style_instructions, examples=[(e.incoming_text, e.preferred_reply) for e in examples], proactive=proactive)
     if account:
         await session.refresh(account)
         if (
