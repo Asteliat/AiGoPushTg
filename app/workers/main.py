@@ -11,7 +11,7 @@ from aiogram import Bot
 from telethon import TelegramClient, events
 from sqlalchemy import select
 from app.ai.provider import AIUnavailableError, NoReplyNeeded, summarize_chat_context
-from app.services.drafts import create_draft, global_ai_enabled
+from app.services.ai_responses import generate_response, global_ai_enabled
 from app.workers.channel_monitor import install_channel_monitor
 from app.settings import get_settings
 from app.storage.db import SessionFactory, init_db
@@ -157,7 +157,7 @@ async def main():
                     logging.info("Reply skipped by cooldown for account %s in chat %s", aid, event.chat_id)
                     return
             try:
-                draft = await create_draft(
+                draft = await generate_response(
                     db, incoming_text=incoming, account_id=aid,
                     chat_label=f"{current.display_name} · {label}",
                     conversation_context=context, proactive=proactive,
