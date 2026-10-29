@@ -298,6 +298,12 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
             return
         if not getattr(message, "reply_to", None):
             return
+        try:
+            sender = await event.get_sender()
+            if getattr(sender, "bot", False):
+                return
+        except Exception:
+            pass
         channel_id = discussion_channels.get(int(event.chat_id))
         if not channel_id:
             return
@@ -479,7 +485,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                         entity = await client.get_entity(binding.channel_id)
                         # Discover the linked discussion group even when every recent post
                         # already has a completed analysis (and would otherwise be skipped).
-                        async for recent_post in client.iter_messages(entity, limit=20):
+                        async for recent_post in client.iter_messages(entity, limit=RECOVERY_SCAN_LIMIT):
                             if (recent_post.message or "").strip():
                                 try:
                                     discussion = await client(GetDiscussionMessageRequest(peer=entity, msg_id=recent_post.id))
