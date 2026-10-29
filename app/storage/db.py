@@ -29,6 +29,11 @@ async def init_db() -> None:
             "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS learning_completed_at TIMESTAMPTZ NULL",
             "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS learning_limit INTEGER NOT NULL DEFAULT 500",
             "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS learning_prompt TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS ai_identity_disclosed BOOLEAN NOT NULL DEFAULT FALSE",
+            "ALTER TABLE ai_agents ADD COLUMN IF NOT EXISTS mention_reply_probability_override INTEGER NULL",
+            "ALTER TABLE ai_agents ADD COLUMN IF NOT EXISTS dm_reply_probability_override INTEGER NULL",
+            "ALTER TABLE ai_agents ADD COLUMN IF NOT EXISTS proactive_reply_probability_override INTEGER NULL",
+            "ALTER TABLE ai_agents ADD COLUMN IF NOT EXISTS reply_cooldown_seconds_override INTEGER NULL",
             "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS proxy_config_encrypted TEXT NULL",
             "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS manual_pause BOOLEAN NOT NULL DEFAULT FALSE",
             "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS connection_status VARCHAR(20) NOT NULL DEFAULT 'disconnected'",
@@ -47,5 +52,5 @@ async def init_db() -> None:
             "INSERT INTO app_settings (key, value) VALUES ('ai_global_enabled', 'false') ON CONFLICT (key) DO NOTHING"
         )
         await connection.exec_driver_sql(
-            "INSERT INTO app_settings (key, value) VALUES ('mention_reply_probability', '100'), ('dm_reply_probability', '100'), ('reply_cooldown_seconds', '0') ON CONFLICT (key) DO NOTHING"
+            "INSERT INTO app_settings (key, value) VALUES ('mention_reply_probability', '100'), ('dm_reply_probability', '100'), ('proactive_reply_probability', '0'), ('reply_cooldown_seconds', '0') ON CONFLICT (key) DO NOTHING"
         )
