@@ -15,6 +15,7 @@ from telethon.tl.functions.messages import CheckChatInviteRequest, ImportChatInv
 from telethon.tl.types import ChatInviteAlready
 from app.telegram_gateway.discovery import search_public_groups, search_web_groups, find_invite_links_in_dialogs
 from app.services.ai_responses import global_ai_enabled
+from app.services.channels import learn_channel_style
 from app.settings import get_settings
 from app.storage.db import SessionFactory
 from app.storage.models import Account, AIAgent, AppSetting, ChatBinding, ChannelBinding, ChannelAnalysis, Example, Persona
@@ -352,7 +353,7 @@ async def runtime_settings_apply(c: CallbackQuery):
             for agent in (await db.scalars(select(AIAgent))).all():
                 setattr(agent, attr, value)
         await db.commit()
-    label, unit, _ = RUNTIME_KEYS[key]
+    label, unit, _, _ = RUNTIME_KEYS[key]
     suffix = "Значение записано во все агенты." if scope == "all" else "Индивидуальные значения агентов сохранены; обновлено глобальное значение для наследующих агентов."
     await edit(c, f"✅ {label}: {value}{unit}\n{suffix}", kb([
         [("⚙️ К настройкам ответов", "runtime:menu")],
@@ -2232,41 +2233,92 @@ async def chat_toggle(c):
     await chat_account_refresh(c,aid)
 
 
-# Channels: independent per-account channel list and per-channel processing switch.
-@router.message(F.text == "📡 Каналы")
-async def channels_message(m):
-    if not await check_msg(m):
-        return
-    await channels_screen_message(m)
+# Channels: account -> channel -> channel card -> inherited/overridden settings.
+CHANNEL_SETTING_FIELDS = {
+    "post_instructions": ("⚙️ Постов", "channel_post_instructions", "post_instructions_override", "text"),
+    "comments_instructions": ("⚙️ Комментариев", "channel_comments_instructions", "comments_instructions_override", "text"),
+    "restrictions_instructions": ("⚙️ Ограничений", "channel_restrictions_instructions", "restrictions_instructions_override", "text"),
+    "wait_seconds": ("⏱ Ожидание", "channel_wait_seconds", "comment_wait_seconds_override", "seconds"),
+    "min_comments": ("💬 Минимум комментариев", "channel_min_comments", "min_comments_override", "min_comments"),
+    "reply_probability": ("🎯 Вероятность ответа", "channel_reply_probability", "reply_probability_override", "percent"),
+    "reply_cooldown_seconds": ("⏳ Пауза между ответами", "channel_reply_cooldown_seconds", "reply_cooldown_seconds_override", "seconds"),
+}
+
+def channel_setting_value(account, binding, field):
+    _, account_attr, channel_attr, _ = CHANNEL_SETTING_FIELDS[field]
+    if binding is not None:
+        override = getattr(binding, channel_attr)
+        if override is not None:
+            return override
+    return getattr(account, account_attr)
+
+def channel_setting_text(field, value):
+    label, _, _, kind = CHANNEL_SETTING_FIELDS[field]
+    if kind == "seconds":
+        return f"{label}: {format_duration(value)} ({value} сек.)"
+    if kind == "percent":
+        return f"{label}: {value}%"
+    if kind == "min_comments":
+        return f"{label}: {value}"
+    return label
 
 async def channels_screen_message(m):
     async with SessionFactory() as db:
         accounts = list((await db.scalars(select(Account).order_by(Account.id))).all())
-        bindings = list((await db.scalars(select(ChannelBinding).order_by(ChannelBinding.account_id, ChannelBinding.id))).all())
-    rows = [[(f"Загрузить каналы · #{a.id} {a.display_name[:22]}", f"channel:account:{a.id}:0")] for a in accounts]
-    rows += [[(f"{'🟢' if b.enabled else '⚪'} #{b.account_id} · {b.title[:30]} · {b.comment_wait_seconds}s", f"channel:toggle:{b.id}")] for b in bindings[:30]]
+        counts = {}
+        for account in accounts:
+            counts[account.id] = int(await db.scalar(
+                select(ChannelBinding.id).where(ChannelBinding.account_id == account.id).count()
+            ) or 0)
+    rows = [[(f"👤 #{a.id} · {a.display_name[:24]} · каналов: {counts[a.id]}", f"channel:account:{a.id}")] for a in accounts]
     rows += [[("⬅️ Главное меню", "nav:home")]]
-    await m.answer("📡 Каналы\nСписок каналов хранится отдельно от «Чатов». Выберите аккаунт, загрузите доступные ему каналы и включайте обработку только для нужных каналов.", reply_markup=kb(rows))
+    await m.answer("📡 Каналы\nСначала выберите Telegram-аккаунт. Внутри него находятся его каналы и общие настройки для них.", reply_markup=kb(rows))
+
+@router.message(F.text == "📡 Каналы")
+async def channels_message(m):
+    if not await check_msg(m): return
+    await channels_screen_message(m)
 
 @router.callback_query(F.data == "channel:menu")
 async def channels_menu(c):
-    if not await check_cb(c):
-        return
+    if not await check_cb(c): return
     async with SessionFactory() as db:
         accounts = list((await db.scalars(select(Account).order_by(Account.id))).all())
-        bindings = list((await db.scalars(select(ChannelBinding).order_by(ChannelBinding.account_id, ChannelBinding.id))).all())
-    rows = [[(f"Загрузить каналы · #{a.id} {a.display_name[:22]}", f"channel:account:{a.id}:0")] for a in accounts]
-    rows += [[(f"{'🟢' if b.enabled else '⚪'} #{b.account_id} · {b.title[:30]} · ожидание {b.comment_wait_seconds}s", f"channel:toggle:{b.id}")] for b in bindings[:30]]
+        counts = {}
+        for account in accounts:
+            counts[account.id] = len((await db.scalars(select(ChannelBinding.id).where(ChannelBinding.account_id == account.id))).all())
+    rows = [[(f"👤 #{a.id} · {a.display_name[:24]} · каналов: {counts[a.id]}", f"channel:account:{a.id}")] for a in accounts]
     rows += [[("⬅️ Главное меню", "nav:home")]]
-    await edit(c, "📡 Каналы · независимый список для каждого аккаунта. Нажмите канал, чтобы включить или выключить его обработку.", kb(rows))
+    await edit(c, "📡 Каналы\nВыберите аккаунт, чтобы открыть список его каналов и настройки.", kb(rows))
+
+async def channel_account_screen(c, aid):
+    async with SessionFactory() as db:
+        account = await db.get(Account, aid)
+        bindings = list((await db.scalars(select(ChannelBinding).where(
+            ChannelBinding.account_id == aid
+        ).order_by(ChannelBinding.title, ChannelBinding.id))).all())
+    if not account:
+        await c.answer("Аккаунт не найден.", show_alert=True)
+        return
+    rows = [[(f"{'🟢' if b.reply_enabled else '🔴'} {b.title[:42]}", f"channel:open:{aid}:{b.channel_id}")] for b in bindings[:70]]
+    rows += [
+        [("↻ Загрузить / обновить каналы", f"channel:sync:{aid}")],
+        [("⚙️ Глобальные настройки каналов", f"channel:gsettings:{aid}")],
+        [("🧾 История анализа", f"channel:history:{aid}")],
+        [("⬅️ К аккаунтам", "channel:menu"), ("🏠 Главное меню", "nav:home")],
+    ]
+    summary = "Каналов пока нет. Нажмите «Загрузить / обновить каналы»." if not bindings else "🟢 — ответы в комментариях включены · 🔴 — выключены.\nНажмите на канал, чтобы открыть его карточку. Нажатие не меняет его состояние."
+    await edit(c, f"📡 Каналы · аккаунт #{aid} · {account.display_name}\n\n{summary}", kb(rows))
 
 @router.callback_query(F.data.startswith("channel:account:"))
 async def channel_account(c):
-    if not await check_cb(c):
-        return
-    parts = c.data.split(":")
-    aid = int(parts[2])
-    page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
+    if not await check_cb(c): return
+    await channel_account_screen(c, int(c.data.split(":")[2]))
+
+@router.callback_query(F.data.startswith("channel:sync:"))
+async def channel_sync(c):
+    if not await check_cb(c): return
+    aid = int(c.data.split(":")[2])
     if not cfg.telegram_api_id or not cfg.telegram_api_hash:
         await c.answer("Не заданы Telegram API credentials.", show_alert=True)
         return
@@ -2283,7 +2335,6 @@ async def channel_account(c):
                 return
             async for dialog in client.iter_dialogs():
                 entity = dialog.entity
-                # Broadcast channels only; groups and private chats belong to other sections.
                 if not getattr(entity, "broadcast", False) or getattr(entity, "megagroup", False):
                     continue
                 title = (dialog.name or str(dialog.id)).strip()
@@ -2295,106 +2346,255 @@ async def channel_account(c):
     async with SessionFactory() as db:
         existing = list((await db.scalars(select(ChannelBinding).where(ChannelBinding.account_id == aid))).all())
         by_id = {row.channel_id: row for row in existing}
+        added = 0
         for channel_id, title in dialogs:
             row = by_id.get(channel_id)
             if row:
                 row.title = title
             else:
-                db.add(ChannelBinding(account_id=aid, channel_id=channel_id, title=title, enabled=False, comment_wait_seconds=300))
+                db.add(ChannelBinding(account_id=aid, channel_id=channel_id, title=title, enabled=False, reply_enabled=False))
+                added += 1
         await db.commit()
-        enabled = {row.channel_id for row in (await db.scalars(select(ChannelBinding).where(ChannelBinding.account_id == aid, ChannelBinding.enabled.is_(True)))).all()}
-    page_size = 20
-    max_page = max(0, (len(dialogs) - 1) // page_size)
-    page = max(0, min(page, max_page))
-    visible = dialogs[page * page_size:(page + 1) * page_size]
-    rows = [[(f"{'🟢' if cid in enabled else '▫️'} {title[:36]}", f"channel:select:{aid}:{cid}:{page}")] for cid, title in visible]
-    nav = []
-    if page > 0:
-        nav.append(("⬅️ Назад", f"channel:account:{aid}:{page-1}"))
-    if page < max_page:
-        nav.append(("➡️ Далее", f"channel:account:{aid}:{page+1}"))
-    if nav:
-        rows.append(nav)
-    rows += [[("📋 Настройки каналов", f"channel:list:{aid}"), ("⬅️ К каналам", "channel:menu")]]
-    await edit(c, f"Каналы аккаунта #{aid}\nСтраница {page+1} из {max_page+1} · Всего доступно: {len(dialogs)}\nНовые каналы добавляются выключенными.", kb(rows))
+    await channel_account_screen(c, aid)
+    await c.message.answer(f"✅ Загружено каналов: {len(dialogs)} · новых добавлено: {added}")
 
-@router.callback_query(F.data.startswith("channel:select:"))
-async def channel_select(c):
-    if not await check_cb(c):
-        return
-    _, _, aid_raw, channel_raw, page_raw = c.data.split(":")
-    aid, channel_id, page = int(aid_raw), int(channel_raw), int(page_raw)
+@router.callback_query(F.data.startswith("channel:open:"))
+async def channel_open(c):
+    if not await check_cb(c): return
+    _, _, aid, channel_id = c.data.split(":")
+    aid, channel_id = int(aid), int(channel_id)
     async with SessionFactory() as db:
-        account = await db.get(Account, aid)
-    if not account:
-        await c.answer("Аккаунт не найден.", show_alert=True)
+        binding = await db.scalar(select(ChannelBinding).where(
+            ChannelBinding.account_id == aid, ChannelBinding.channel_id == channel_id
+        ))
+    if not binding:
+        await c.answer("Канал не найден. Обновите список каналов.", show_alert=True)
         return
-    try:
-        async with isolated_telegram_client(account) as client:
-            entity = await client.get_entity(channel_id)
-            if not getattr(entity, "broadcast", False) or getattr(entity, "megagroup", False):
-                await c.answer("Это не канал публикаций.", show_alert=True)
-                return
-            title = (getattr(entity, "title", None) or getattr(entity, "username", None) or str(channel_id))[:255]
-    except Exception as exc:
-        await c.answer(f"Не удалось открыть канал: {type(exc).__name__}: {str(exc)[:180]}", show_alert=True)
-        return
-    async with SessionFactory() as db:
-        row = await db.scalar(select(ChannelBinding).where(ChannelBinding.account_id == aid, ChannelBinding.channel_id == channel_id))
-        if row:
-            row.enabled = not row.enabled
-            row.title = title
-        else:
-            db.add(ChannelBinding(account_id=aid, channel_id=channel_id, title=title, enabled=True))
-        await db.commit()
-    await channel_account_refresh(c, aid, page)
+    state = "🟢 Отвечать в комментариях включено" if binding.reply_enabled else "🔴 Отвечать в комментариях выключено"
+    await edit(c, f"📡 {binding.title}\nАккаунт: #{aid}\n\n{state}\n\nЗдесь можно включить ответы и отдельно настроить поведение ИИ для этого канала.", kb([
+        [("🔴 Выключить ответы" if binding.reply_enabled else "🟢 Включить ответы", f"channel:reply:{binding.id}")],
+        [("⚙️ Настроить", f"channel:csettings:{binding.id}")],
+        [("🧾 История анализа", f"channel:history:{aid}")],
+        [("⬅️ К каналам аккаунта", f"channel:account:{aid}"), ("🏠 Главное меню", "nav:home")],
+    ]))
 
-@router.callback_query(F.data.startswith("channel:list:"))
-async def channel_list(c):
-    if not await check_cb(c):
-        return
-    await channel_account_refresh(c, int(c.data.split(":")[2]))
-
-async def channel_account_refresh(c, aid, page=0):
+@router.callback_query(F.data.startswith("channel:reply:"))
+async def channel_reply_toggle(c):
+    if not await check_cb(c): return
+    binding_id = int(c.data.split(":")[2])
     async with SessionFactory() as db:
-        rows = list((await db.scalars(select(ChannelBinding).where(ChannelBinding.account_id == aid).order_by(ChannelBinding.id))).all())
-    buttons = [[(f"{'🟢' if row.enabled else '⚪'} {row.title[:30]} · ожидание {row.comment_wait_seconds}s", f"channel:toggle:{row.id}")] for row in rows[:40]]
-    buttons += [[("⏱ Ожидание 1 мин", f"channel:wait:60:{aid}"), ("⏱ Ожидание 5 мин", f"channel:wait:300:{aid}")], [("⏱ Ожидание 15 мин", f"channel:wait:900:{aid}")], [("🧾 История анализа", f"channel:history:{aid}")], [("↻ Загрузить каналы", f"channel:account:{aid}:{page}")], [("⬅️ К каналам", "channel:menu"), ("🏠 Главное меню", "nav:home")]]
-    await edit(c, f"Каналы аккаунта #{aid}\n🟢 обработка включена · ⚪ выключена. Интервал ожидания комментариев применяется к каналам аккаунта.", kb(buttons))
-
-@router.callback_query(F.data.startswith("channel:toggle:"))
-async def channel_toggle(c):
-    if not await check_cb(c):
-        return
-    row_id = int(c.data.split(":")[2])
-    async with SessionFactory() as db:
-        row = await db.get(ChannelBinding, row_id)
-        if not row:
+        binding = await db.get(ChannelBinding, binding_id)
+        if not binding:
             await c.answer("Канал не найден.", show_alert=True)
             return
-        row.enabled = not row.enabled
-        aid = row.account_id
+        binding.reply_enabled = not binding.reply_enabled
+        binding.enabled = binding.reply_enabled
+        aid, channel_id = binding.account_id, binding.channel_id
         await db.commit()
-    await channel_account_refresh(c, aid)
+    await channel_open(c, ) if False else None
+    await edit(c, "Настройки канала обновлены.", kb([[("⬅️ Открыть канал", f"channel:open:{aid}:{channel_id}")], [("⬅️ К каналам аккаунта", f"channel:account:{aid}")]]))
 
-@router.callback_query(F.data.startswith("channel:wait:"))
-async def channel_wait(c):
-    if not await check_cb(c):
-        return
-    _, _, seconds_raw, aid_raw = c.data.split(":")
-    seconds, aid = int(seconds_raw), int(aid_raw)
+async def channel_settings_screen(c, scope, object_id):
     async with SessionFactory() as db:
-        rows = list((await db.scalars(select(ChannelBinding).where(ChannelBinding.account_id == aid))).all())
-        for row in rows:
-            row.comment_wait_seconds = seconds
-        await db.commit()
-    await channel_account_refresh(c, aid)
+        if scope == "global":
+            account = await db.get(Account, object_id)
+            binding = None
+        else:
+            binding = await db.get(ChannelBinding, object_id)
+            account = await db.get(Account, binding.account_id) if binding else None
+    if not account or (scope == "channel" and not binding):
+        await c.answer("Настройки не найдены.", show_alert=True)
+        return
+    title = "Глобальные настройки" if scope == "global" else f"Настройки канала · {binding.title}"
+    lines = [f"⚙️ {title}", "Значения канала наследуются от глобальных настроек, пока не заданы отдельно.", ""]
+    rows = []
+    for field in ("post_instructions", "comments_instructions", "restrictions_instructions", "wait_seconds", "min_comments", "reply_probability", "reply_cooldown_seconds"):
+        label, _, _, kind = CHANNEL_SETTING_FIELDS[field]
+        value = channel_setting_value(account, binding, field)
+        if kind == "text":
+            shown = "заданы" if str(value).strip() else "не заданы"
+        elif kind == "seconds":
+            shown = f"{format_duration(value)} · {value} сек."
+        elif kind == "percent":
+            shown = f"{value}%"
+        else:
+            shown = str(value)
+        lines.append(f"{label}: {shown}")
+        prefix = "g" if scope == "global" else "c"
+        rows.append([(f"✏️ {label}", f"channel:edit:{prefix}:{object_id}:{field}")])
+    action = account.channel_insufficient_action if binding is None else (binding.insufficient_action_override or account.channel_insufficient_action)
+    lines.append(f"Если комментариев меньше минимума: {'ждать' if action == 'wait' else 'пропустить'}")
+    prefix = "g" if scope == "global" else "c"
+    rows.append([("⏳ Ждать до появления комментариев" if action == "skip" else "⏭ Пропускать без ожидания", f"channel:action:{prefix}:{object_id}")])
+    if scope == "channel":
+        rows.append([("🧠 Автообучение по последним 200 постам", f"channel:learn:{object_id}")])
+        rows.append([("↩️ Сбросить настройки канала к глобальным", f"channel:inherit:{object_id}")])
+        rows.append([("⬅️ К карточке канала", f"channel:open:{account.id}:{binding.channel_id}")])
+    else:
+        rows.append([("⬅️ К каналам аккаунта", f"channel:account:{account.id}")])
+    rows.append([("🏠 Главное меню", "nav:home")])
+    await edit(c, "\n".join(lines), kb(rows))
 
+@router.callback_query(F.data.startswith("channel:gsettings:"))
+async def channel_global_settings(c):
+    if not await check_cb(c): return
+    await channel_settings_screen(c, "global", int(c.data.split(":")[2]))
+
+@router.callback_query(F.data.startswith("channel:csettings:"))
+async def channel_custom_settings(c):
+    if not await check_cb(c): return
+    await channel_settings_screen(c, "channel", int(c.data.split(":")[2]))
+
+@router.callback_query(F.data.startswith("channel:edit:"))
+async def channel_setting_edit(c, state: FSMContext):
+    if not await check_cb(c): return
+    _, _, scope, object_raw, field = c.data.split(":")
+    if scope not in {"g", "c"} or field not in CHANNEL_SETTING_FIELDS:
+        await c.answer("Неизвестная настройка.", show_alert=True)
+        return
+    label, _, _, kind = CHANNEL_SETTING_FIELDS[field]
+    minimum, maximum = (1, 10) if kind == "min_comments" else (0, 100) if kind == "percent" else (0, 31536000) if kind == "seconds" else (0, 4000)
+    await state.clear()
+    await state.update_data(channel_scope=scope, channel_object_id=int(object_raw), channel_field=field, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
+    await state.set_state(Flow.channel_setting_value)
+    if kind == "text":
+        hint = "Отправьте текст инструкции. Можно несколько абзацев. Чтобы очистить, отправьте точку: ."
+    elif kind == "seconds":
+        hint = "Введите целое число секунд. Например: 3600 секунд = 01:00:00 (60 минут)."
+    elif kind == "percent":
+        hint = "Введите процент от 0 до 100."
+    else:
+        hint = "Введите число от 1 до 10."
+    await edit(c, f"{label}\n{hint}\nДопустимый диапазон: {minimum}–{maximum}.", CANCEL)
+
+@router.message(Flow.channel_setting_value)
+async def channel_setting_save(m: Message, state: FSMContext):
+    if not await check_msg(m) or not await private(m): return
+    data = await state.get_data()
+    field, scope, object_id = data.get("channel_field"), data.get("channel_scope"), int(data.get("channel_object_id", 0))
+    if field not in CHANNEL_SETTING_FIELDS or scope not in {"g", "c"}:
+        await finish_prompt(m, state, "Настройка не найдена.")
+        return
+    label, account_attr, channel_attr, kind = CHANNEL_SETTING_FIELDS[field]
+    raw = (m.text or "").strip()
+    if kind == "text":
+        value = "" if raw == "." else raw
+        if len(value) > 4000:
+            await prompt_message(m, state, "Максимальная длина инструкции — 4000 символов.")
+            return
+    else:
+        if not raw.isdigit():
+            await prompt_message(m, state, "Введите целое число.")
+            return
+        value = int(raw)
+        minimum, maximum = (1, 10) if kind == "min_comments" else (0, 100) if kind == "percent" else (0, 31536000)
+        if not minimum <= value <= maximum:
+            await prompt_message(m, state, f"Допустимый диапазон: {minimum}–{maximum}.")
+            return
+    await delete_msg(m)
+    async with SessionFactory() as db:
+        if scope == "g":
+            account = await db.get(Account, object_id)
+            if not account:
+                await finish_prompt(m, state, "Аккаунт не найден.")
+                return
+            setattr(account, account_attr, value)
+        else:
+            binding = await db.get(ChannelBinding, object_id)
+            if not binding:
+                await finish_prompt(m, state, "Канал не найден.")
+                return
+            setattr(binding, channel_attr, value)
+            if field == "wait_seconds":
+                binding.comment_wait_seconds = value
+        await db.commit()
+    destination = f"channel:gsettings:{object_id}" if scope == "g" else f"channel:csettings:{object_id}"
+    shown = format_duration(value) if kind == "seconds" else f"{value}%" if kind == "percent" else str(value)
+    await finish_prompt(m, state, f"✅ {label}: {shown}", kb([[("⬅️ К настройкам", destination)], [("🏠 Главное меню", "nav:home")]]))
+
+@router.callback_query(F.data.startswith("channel:action:"))
+async def channel_action_toggle(c):
+    if not await check_cb(c): return
+    _, _, scope, object_raw = c.data.split(":")
+    object_id = int(object_raw)
+    async with SessionFactory() as db:
+        if scope == "g":
+            account = await db.get(Account, object_id)
+            if not account:
+                await c.answer("Аккаунт не найден.", show_alert=True)
+                return
+            account.channel_insufficient_action = "skip" if account.channel_insufficient_action == "wait" else "wait"
+        else:
+            binding = await db.get(ChannelBinding, object_id)
+            if not binding:
+                await c.answer("Канал не найден.", show_alert=True)
+                return
+            account = await db.get(Account, binding.account_id)
+            current = binding.insufficient_action_override or account.channel_insufficient_action
+            binding.insufficient_action_override = "skip" if current == "wait" else "wait"
+        await db.commit()
+    await channel_settings_screen(c, "global" if scope == "g" else "channel", object_id)
+
+@router.callback_query(F.data.startswith("channel:inherit:"))
+async def channel_inherit(c):
+    if not await check_cb(c): return
+    binding_id = int(c.data.split(":")[2])
+    async with SessionFactory() as db:
+        binding = await db.get(ChannelBinding, binding_id)
+        if not binding:
+            await c.answer("Канал не найден.", show_alert=True)
+            return
+        binding.post_instructions_override = None
+        binding.comments_instructions_override = None
+        binding.restrictions_instructions_override = None
+        binding.comment_wait_seconds_override = None
+        binding.min_comments_override = None
+        binding.insufficient_action_override = None
+        binding.reply_probability_override = None
+        binding.reply_cooldown_seconds_override = None
+        await db.commit()
+    await channel_settings_screen(c, "channel", binding_id)
+
+@router.callback_query(F.data.startswith("channel:learn:"))
+async def channel_learn(c):
+    if not await check_cb(c): return
+    binding_id = int(c.data.split(":")[2])
+    async with SessionFactory() as db:
+        binding = await db.get(ChannelBinding, binding_id)
+        account = await db.get(Account, binding.account_id) if binding else None
+        if not binding or not account:
+            await c.answer("Канал или аккаунт не найден.", show_alert=True)
+            return
+        binding.learning_status = "training"
+        await db.commit()
+        account_snapshot = account
+    await c.answer("Автообучение запущено.")
+    status = await c.message.answer("🧠 Изучаю до 200 последних текстовых публикаций и доступные комментарии. Это может занять несколько минут…")
+    try:
+        async with isolated_telegram_client(account_snapshot) as client:
+            if not await client.is_user_authorized():
+                raise RuntimeError("Сессия аккаунта не авторизована.")
+            prompt = await learn_channel_style(client, account=account_snapshot, channel=binding)
+        async with SessionFactory() as db:
+            current = await db.get(ChannelBinding, binding_id)
+            if current:
+                current.learning_prompt = prompt
+                current.learning_status = "idle"
+                current.learning_completed_at = datetime.now(timezone.utc)
+                await db.commit()
+        await status.edit_text("✅ Автообучение завершено. Выводы сохранены и будут учитываться при ответах в этом канале.")
+    except Exception as exc:
+        async with SessionFactory() as db:
+            current = await db.get(ChannelBinding, binding_id)
+            if current:
+                current.learning_status = "error"
+                await db.commit()
+        await status.edit_text(f"⚠️ Не удалось выполнить автообучение: {type(exc).__name__}: {str(exc)[:500]}")
+    await channel_settings_screen(c, "channel", binding_id)
 
 @router.callback_query(F.data.startswith("channel:history:"))
 async def channel_history(c):
-    if not await check_cb(c):
-        return
+    if not await check_cb(c): return
     aid = int(c.data.split(":")[2])
     async with SessionFactory() as db:
         rows = list((await db.scalars(
@@ -2403,21 +2603,16 @@ async def channel_history(c):
         )).all())
     if not rows:
         await edit(c, f"🧾 История анализа каналов аккаунта #{aid} пока пуста.", kb([
-            [("⬅️ К каналам аккаунта", f"channel:list:{aid}")],
-            [("🏠 Главное меню", "nav:home")],
+            [("⬅️ К каналам аккаунта", f"channel:account:{aid}")], [("🏠 Главное меню", "nav:home")],
         ]))
         return
-    buttons = [[(
-        f"{'🟢' if row.on_topic else '🟠'} {row.channel_title[:25]} · пост #{row.post_id}",
-        f"channel:analysis:{row.id}",
-    )] for row in rows]
-    buttons += [[("⬅️ К каналам аккаунта", f"channel:list:{aid}"), ("🏠 Главное меню", "nav:home")]]
-    await edit(c, f"🧾 Последние анализы аккаунта #{aid}. Нажмите запись, чтобы открыть сводку и подготовленный вариант ответа.", kb(buttons))
+    buttons = [[(f"{'🟢' if row.on_topic else '🟠'} {row.channel_title[:25]} · пост #{row.post_id}", f"channel:analysis:{row.id}")] for row in rows]
+    buttons += [[("⬅️ К каналам аккаунта", f"channel:account:{aid}"), ("🏠 Главное меню", "nav:home")]]
+    await edit(c, f"🧾 Последние анализы аккаунта #{aid}.", kb(buttons))
 
 @router.callback_query(F.data.startswith("channel:analysis:"))
 async def channel_analysis_view(c):
-    if not await check_cb(c):
-        return
+    if not await check_cb(c): return
     analysis_id = int(c.data.split(":")[2])
     async with SessionFactory() as db:
         row = await db.get(ChannelAnalysis, analysis_id)
@@ -2426,10 +2621,10 @@ async def channel_analysis_view(c):
         return
     topic = "по теме" if row.on_topic else "не по теме"
     text = (
-        f"📡 {row.channel_title} · пост #{row.post_id}\\n"
-        f"Комментариев: {row.comments_count} · обсуждение: {topic}\\n\\n"
-        f"Сводка ИИ:\\n{row.comments_summary[:1800]}\\n\\n"
-        f"Вариант ответа (не опубликован):\\n{row.suggested_response[:1800]}"
+        f"📡 {row.channel_title} · пост #{row.post_id}\n"
+        f"Комментариев: {row.comments_count} · обсуждение: {topic}\n\n"
+        f"Сводка ИИ:\n{row.comments_summary[:1800]}\n\n"
+        f"Вариант ответа:\n{row.suggested_response[:1800]}"
     )
     await edit(c, text, kb([
         [("⬅️ История анализа", f"channel:history:{row.account_id}")],
