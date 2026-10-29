@@ -288,8 +288,8 @@ async def runtime_settings_input(c: CallbackQuery, state: FSMContext):
     await state.clear()
     await state.update_data(runtime_key=key, runtime_scope="global", ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
     await state.set_state(Flow.runtime_value)
-    hint = "Введите число секунд. Например: 3600 секунд = 01:00:00 (60 минут)." if unit == "сек." else f"Введите процент от {minimum} до {maximum}."
-    await edit(c, f"{label}\n{hint}\nДопустимый диапазон: {minimum}–{maximum}.", CANCEL)
+    hint = f"Введите число секунд. Например: 3600 = 01:00:00 (60 минут). Максимум: {maximum} сек. ({format_duration(maximum)})." if unit == "сек." else f"Введите процент от {minimum}% до {maximum}%."
+    await edit(c, f"{label}\n{hint}", CANCEL)
 
 @router.message(Flow.runtime_value)
 async def runtime_value_save(m: Message, state: FSMContext):
@@ -421,8 +421,8 @@ async def agent_runtime_input(c: CallbackQuery, state: FSMContext):
     await state.clear()
     await state.update_data(runtime_key=key, runtime_scope="agent", runtime_aid=aid, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
     await state.set_state(Flow.runtime_value)
-    hint = "Введите число секунд. Например: 3600 = 01:00:00." if unit == "сек." else f"Введите процент от {minimum} до {maximum}."
-    await edit(c, f"{label}\n{hint}\nДопустимый диапазон: {minimum}–{maximum}.", CANCEL)
+    hint = f"Введите число секунд. Например: 3600 = 01:00:00. Максимум: {maximum} сек. ({format_duration(maximum)})." if unit == "сек." else f"Введите процент от {minimum}% до {maximum}%."
+    await edit(c, f"{label}\n{hint}", CANCEL)
 
 @router.callback_query(F.data.startswith("agent:channelrt:input:"))
 async def agent_channel_runtime_input(c: CallbackQuery, state: FSMContext):
@@ -436,8 +436,8 @@ async def agent_channel_runtime_input(c: CallbackQuery, state: FSMContext):
     await state.clear()
     await state.update_data(runtime_key=key, runtime_scope="agent_channel", runtime_aid=aid, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
     await state.set_state(Flow.runtime_value)
-    hint = "Введите целое число секунд. Например: 3600 = 01:00:00." if unit == "сек." else f"Введите процент от {minimum} до {maximum}."
-    await edit(c, f"{label}\n{hint}\nДопустимый диапазон: {minimum}–{maximum}.", CANCEL)
+    hint = f"Введите целое число секунд. Например: 3600 = 01:00:00. Максимум: {maximum} сек. ({format_duration(maximum)})." if unit == "сек." else f"Введите процент от {minimum}% до {maximum}%."
+    await edit(c, f"{label}\n{hint}", CANCEL)
 
 @router.callback_query(F.data.startswith("agent:channelrt:inherit:"))
 async def agent_channel_runtime_inherit(c: CallbackQuery):
@@ -2530,7 +2530,8 @@ async def channel_setting_edit(c, state: FSMContext):
         hint = "Введите процент от 0 до 100."
     else:
         hint = "Введите число от 1 до 10."
-    await edit(c, f"{label}\n{hint}\nДопустимый диапазон: {minimum}–{maximum}.", CANCEL)
+    range_hint = f"Максимум: {maximum} сек. ({format_duration(maximum)})." if kind == "seconds" else f"Допустимый диапазон: {minimum}–{maximum}."
+    await edit(c, f"{label}\n{hint}\n{range_hint}", CANCEL)
 
 @router.message(Flow.channel_setting_value)
 async def channel_setting_save(m: Message, state: FSMContext):
