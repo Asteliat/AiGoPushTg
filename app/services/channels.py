@@ -111,14 +111,14 @@ async def learn_channel_style(client, *, account: Account, channel: ChannelBindi
     from openai import AsyncOpenAI
     from telethon.tl.functions.messages import GetDiscussionMessageRequest
 
-    agent = None
-    # Resolve the assigned agent in the caller's DB session and pass it explicitly
-    # in a future API revision; this helper loads it through a short-lived session.
+    # Resolve the assigned agent through a short-lived database session.
     from app.storage.db import SessionFactory
     async with SessionFactory() as db:
         agent = await db.get(AIAgent, account.ai_agent_id) if account.ai_agent_id else None
         if not agent or not agent.enabled or not agent.api_key.strip():
             raise AIUnavailableError("Назначенный ИИ-агент выключен или не настроен.")
+        if not agent.base_url.strip() or not agent.model.strip():
+            raise AIUnavailableError("У ИИ-агента не заполнены Base URL или модель.")
         agent_values = {
             "api_key": agent.api_key, "base_url": agent.base_url,
             "model": agent.model, "timeout_seconds": agent.timeout_seconds,
