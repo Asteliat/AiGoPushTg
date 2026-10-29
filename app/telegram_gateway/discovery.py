@@ -180,7 +180,7 @@ def _engine_search(engine, template, query):
         href = html.unescape(href)
         parsed = urlparse(href)
         params = parse_qs(parsed.query)
-        for key in ("uddg", "url", "u"):
+        for key in ("uddg", "url", "u", "q", "RU"):
             target = params.get(key, [None])[0]
             if target and target.startswith("http"):
                 href = unquote(target)
