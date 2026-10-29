@@ -49,8 +49,9 @@ async def analyze_channel_post(
         style += "\nИнструкции по комментариям: " + comments_instructions[:2500]
     if restrictions_instructions.strip():
         style += "\nОграничения: " + restrictions_instructions[:2500]
-    if channel.learning_prompt.strip():
-        style += "\nВыводы автообучения этого канала: " + channel.learning_prompt[:2500]
+    learned = channel.learning_prompt or account.channel_learning_prompt
+    if learned.strip():
+        style += "\nВыводы автообучения этого канала: " + learned[:2500]
 
     rendered_comments = "\n".join(f"- {str(item)[:700]}" for item in comments[:20]) or "Комментариев пока нет."
     client = AsyncOpenAI(api_key=agent.api_key, base_url=agent.base_url, timeout=agent.timeout_seconds)
