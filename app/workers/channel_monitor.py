@@ -53,6 +53,21 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                 state.updated_at = _utcnow()
                 await db.commit()
 
+    async def register_discussion_group(channel_id: int, group) -> None:
+        group_peer_id = int(utils.get_peer_id(group))
+        for old_group_id, mapped_channel_id in list(discussion_channels.items()):
+            if mapped_channel_id == channel_id and old_group_id != group_peer_id:
+                discussion_channels.pop(old_group_id, None)
+        discussion_channels[group_peer_id] = int(channel_id)
+        async with SessionFactory() as db:
+            binding = await db.scalar(select(ChannelBinding).where(
+                ChannelBinding.account_id == account_id,
+                ChannelBinding.channel_id == channel_id,
+            ))
+            if binding and binding.discussion_group_id != group_peer_id:
+                binding.discussion_group_id = group_peer_id
+                await db.commit()
+
     async def fetch_comments(group, root_id: int) -> list[str]:
         found = []
         async for item in client.iter_messages(group, reply_to=root_id, limit=30):
@@ -206,7 +221,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                 )
                 return
 
-            discussion_channels[int(utils.get_peer_id(group_entity))] = channel_id
+            await register_discussion_group(channel_id, group_entity)
             comments = await fetch_comments(group_entity, int(root_message.id))
             if len(comments) < min_comments:
                 if insufficient_action == "skip":
@@ -469,6 +484,16 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                 return
             try:
                 async with SessionFactory() as db:
+                    saved_mappings = list((await db.execute(
+                        select(ChannelBinding.channel_id, ChannelBinding.discussion_group_id).where(
+                            ChannelBinding.account_id == account_id,
+                            ChannelBinding.enabled.is_(True),
+                            ChannelBinding.discussion_group_id.is_not(None),
+                        )
+                    )).all())
+                for saved_channel_id, saved_group_id in saved_mappings:
+                    discussion_channels[int(saved_group_id)] = int(saved_channel_id)
+                async with SessionFactory() as db:
                     bindings = list((await db.scalars(select(ChannelBinding).where(
                         ChannelBinding.account_id == account_id,
                         ChannelBinding.enabled.is_(True),
@@ -491,7 +516,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                                     discussion = await client(GetDiscussionMessageRequest(peer=entity, msg_id=recent_post.id))
                                     group = next((chat for chat in getattr(discussion, "chats", []) if getattr(chat, "megagroup", False)), None)
                                     if group:
-                                        discussion_channels[int(utils.get_peer_id(group))] = int(binding.channel_id)
+                                        await register_discussion_group(int(binding.channel_id), group)
                                 except Exception:
                                     pass
                                 break
