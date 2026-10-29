@@ -101,7 +101,13 @@ async def search_public_groups(client, query: str, limit: int = 50) -> list[dict
 
 
 async def find_invite_links_in_dialogs(client, dialog_limit: int | None = None, messages_per_dialog: int = 5000, progress_callback=None) -> list[dict]:
-    """Collect distinct group-looking links shared in recent messages of joined groups."""
+    """Collect links from up to N recent messages in every joined group.
+
+    FloodWait responses are respected and scanning resumes from the last message read.
+    Text links, hidden text-URL entities and URL buttons are all considered.
+    """
+    from telethon.errors import FloodWaitError
+
     found: dict[str, dict] = {}
     scanned_groups = 0
     scanned_messages = 0
@@ -111,38 +117,66 @@ async def find_invite_links_in_dialogs(client, dialog_limit: int | None = None, 
             continue
         scanned_groups += 1
         source_title = (dialog.name or "чат")[:70]
-        try:
-            async for message in client.iter_messages(entity, limit=messages_per_dialog):
-                scanned_messages += 1
-                body = (getattr(message, "message", None) or "").strip()
-                if not body:
-                    continue
-                for match in _LINK_RE.finditer(body):
-                    invite_hash, join_hash, username = match.groups()
-                    if invite_hash:
-                        link = "https://t.me/+" + invite_hash
-                    elif join_hash:
-                        link = "https://t.me/joinchat/" + join_hash
-                    else:
-                        username = (username or "").strip()
-                        if username.casefold() in _SPECIAL_NAMES or username.casefold() == "c":
-                            continue
-                        link = "https://t.me/" + username
-                    found.setdefault(link, {
-                        "link": link,
-                        "title": link.rsplit("/", 1)[-1][:70],
-                        "source": source_title,
-                        "members": 0,
-                        "score": 0,
-                    })
-                if progress_callback and scanned_messages % 500 == 0:
-                    await progress_callback(scanned_groups, scanned_messages, len(found))
-        except Exception:
-            # One inaccessible/slow dialog should not abort the whole scan.
-            continue
+        processed = 0
+        last_message_id = 0
+        while processed < messages_per_dialog:
+            batch_count = 0
+            try:
+                async for message in client.iter_messages(
+                    entity,
+                    limit=messages_per_dialog - processed,
+                    offset_id=last_message_id,
+                ):
+                    batch_count += 1
+                    processed += 1
+                    scanned_messages += 1
+                    last_message_id = int(getattr(message, "id", 0) or 0)
+                    bodies = [getattr(message, "message", None) or ""]
+                    for text_entity in getattr(message, "entities", None) or []:
+                        hidden_url = getattr(text_entity, "url", None)
+                        if hidden_url:
+                            bodies.append(hidden_url)
+                    markup = getattr(message, "reply_markup", None)
+                    for row in getattr(markup, "rows", None) or []:
+                        for button in getattr(row, "buttons", None) or []:
+                            button_url = getattr(button, "url", None)
+                            if button_url:
+                                bodies.append(button_url)
+                    for body in bodies:
+                        for match in _LINK_RE.finditer(body):
+                            invite_hash, join_hash, username = match.groups()
+                            if invite_hash:
+                                link = "https://t.me/+" + invite_hash
+                            elif join_hash:
+                                link = "https://t.me/joinchat/" + join_hash
+                            else:
+                                username = (username or "").strip()
+                                if username.casefold() in _SPECIAL_NAMES or username.casefold() == "c":
+                                    continue
+                                link = "https://t.me/" + username
+                            found.setdefault(link.casefold(), {
+                                "link": link,
+                                "title": link.rsplit("/", 1)[-1][:70],
+                                "source": source_title,
+                                "members": 0,
+                                "score": 0,
+                                "private_invite": "/+" in link or "/joinchat/" in link,
+                            })
+                    if progress_callback and scanned_messages % 500 == 0:
+                        await progress_callback(scanned_groups, scanned_messages, len(found))
+                if batch_count == 0 or processed >= messages_per_dialog:
+                    break
+                # A short batch means the history has been exhausted.
+                break
+            except FloodWaitError as exc:
+                await asyncio.sleep(max(int(getattr(exc, "seconds", 1)), 1) + 1)
+                continue
+            except Exception:
+                # Skip this dialog if Telegram reports a non-retryable problem.
+                break
     if progress_callback:
         await progress_callback(scanned_groups, scanned_messages, len(found))
-    return list(found.values())
+    return sorted(found.values(), key=lambda item: (bool(item.get("private_invite")), item["link"]), reverse=True)
 
 
 class _SearchAnchors(HTMLParser):
