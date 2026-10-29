@@ -1801,7 +1801,9 @@ async def chat_discover_links(c):
     await c.answer("Запущено глубокое сканирование. Это может занять время.")
     anchor = {"ui_chat_id": c.message.chat.id, "ui_message_id": c.message.message_id}
     await edit_anchor(c.bot, anchor, f"🧭 Глубокий поиск ссылок · аккаунт #{aid}\n\nПросматриваю до 5 000 последних сообщений в каждой группе, где состоит аккаунт. Сканирование может занять значительное время.", kb([[("⬅️ К чатам", "chat:menu")]]))
+    scan_stats = {"groups": 0, "messages": 0, "links": 0}
     async def report_progress(groups, messages, links):
+        scan_stats.update(groups=groups, messages=messages, links=links)
         if messages % 5000 != 0 and messages != 0:
             return
         progress_text = f"🧭 Глубокий поиск ссылок · аккаунт #{aid}\n\nГрупп обработано: {groups}\nСообщений просмотрено: {messages:,}\nУникальных ссылок найдено: {links}\n\nСканирование продолжается…".replace(",", " ")
