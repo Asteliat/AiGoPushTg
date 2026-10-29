@@ -2406,8 +2406,17 @@ async def channel_settings_screen(c, scope, object_id):
         await c.answer("Настройки не найдены.", show_alert=True)
         return
     title = "Глобальные настройки" if scope == "global" else f"Настройки канала · {binding.title}"
-    lines = [f"⚙️ {title}", "Значения канала наследуются от глобальных настроек, пока не заданы отдельно.", ""]
+    lines = [f"⚙️ {title}", "Общие значения этого аккаунта применяются ко всем его каналам. Индивидуальные настройки канала могут их переопределить.", ""]
     rows = []
+    explanations = {
+        "post_instructions": "Как ИИ должен учитывать содержание публикаций.",
+        "comments_instructions": "На что обращать внимание в обсуждении.",
+        "restrictions_instructions": "Каких тем и действий избегать.",
+        "wait_seconds": "Сколько ждать, пока появится нужное число комментариев.",
+        "min_comments": "Минимум комментариев перед анализом и ответом.",
+        "reply_probability": "Шанс ответа на подходящий комментарий.",
+        "reply_cooldown_seconds": "Минимальная пауза между ответами в этом канале.",
+    }
     for field in ("post_instructions", "comments_instructions", "restrictions_instructions", "wait_seconds", "min_comments", "reply_probability", "reply_cooldown_seconds"):
         label, _, _, kind = CHANNEL_SETTING_FIELDS[field]
         value = channel_setting_value(account, binding, field)
@@ -2420,6 +2429,7 @@ async def channel_settings_screen(c, scope, object_id):
         else:
             shown = str(value)
         lines.append(f"{label}: {shown}")
+        lines.append(f"  {explanations[field]}")
         prefix = "g" if scope == "global" else "c"
         rows.append([(f"✏️ {label}", f"channel:edit:{prefix}:{object_id}:{field}")])
     action = account.channel_insufficient_action if binding is None else (binding.insufficient_action_override or account.channel_insufficient_action)
