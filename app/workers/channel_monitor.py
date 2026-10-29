@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 import random
 
 from sqlalchemy import select
-from telethon import events
+from telethon import events, utils
 from telethon.tl.functions.messages import GetDiscussionMessageRequest
 
 from app.ai.provider import AIUnavailableError
@@ -206,7 +206,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                 )
                 return
 
-            discussion_channels[int(group_entity.id)] = channel_id
+            discussion_channels[int(utils.get_peer_id(group_entity))] = channel_id
             comments = await fetch_comments(group_entity, int(root_message.id))
             if len(comments) < min_comments:
                 if insufficient_action == "skip":
@@ -438,7 +438,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                                     discussion = await client(GetDiscussionMessageRequest(peer=entity, msg_id=recent_post.id))
                                     group = next((chat for chat in getattr(discussion, "chats", []) if getattr(chat, "megagroup", False)), None)
                                     if group:
-                                        discussion_channels[int(group.id)] = int(binding.channel_id)
+                                        discussion_channels[int(utils.get_peer_id(group))] = int(binding.channel_id)
                                 except Exception:
                                     pass
                                 break
