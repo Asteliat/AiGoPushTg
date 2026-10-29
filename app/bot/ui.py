@@ -1782,7 +1782,7 @@ async def chat_search_query(m: Message, state: FSMContext):
     for i, item in enumerate(visible, 1):
         flags = " · ✓ проверена" if item.get("verified") else ""
         members = f"{int(item.get('members') or 0):,}".replace(",", " ") + " участников" if item.get("members") else "размер неизвестен"
-        text_lines.append(f"{i}. {item['title']} · {members}{flags} · оценка {item['score']}/100")
+        text_lines.append(f"{i}. {item['title']} · {members}{flags} · {item.get('source', 'Telegram')}")
     text_lines.append("\nНажмите на результат, чтобы проверить группу и подтвердить вступление.")
     await edit_anchor(m.bot, anchor, "\n".join(text_lines), _candidate_keyboard(aid, visible))
 
