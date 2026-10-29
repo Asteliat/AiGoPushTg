@@ -47,5 +47,5 @@ async def init_db() -> None:
             "INSERT INTO app_settings (key, value) VALUES ('ai_global_enabled', 'false') ON CONFLICT (key) DO NOTHING"
         )
         await connection.exec_driver_sql(
-            "INSERT INTO app_settings (key, value) VALUES ('mention_reply_probability', '100'), ('dm_reply_probability', '100') ON CONFLICT (key) DO NOTHING"
+            "INSERT INTO app_settings (key, value) VALUES ('mention_reply_probability', '100'), ('dm_reply_probability', '100'), ('reply_cooldown_seconds', '0') ON CONFLICT (key) DO NOTHING"
         )
