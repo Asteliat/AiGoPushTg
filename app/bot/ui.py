@@ -324,7 +324,6 @@ async def agent_runtime_set(c: CallbackQuery):
         setattr(agent, key + "_override", value)
         await db.commit()
     await agent_runtime_menu(c, aid)
-    await c.answer("Индивидуальное значение сохранено.")
 
 @router.callback_query(F.data.startswith("agent:rt:inherit:"))
 async def agent_runtime_inherit(c: CallbackQuery):
@@ -340,7 +339,6 @@ async def agent_runtime_inherit(c: CallbackQuery):
         setattr(agent, key + "_override", None)
         await db.commit()
     await agent_runtime_menu(c, aid)
-    await c.answer("Агент использует глобальное значение.")
 
 # Account menu and QR login
 @router.message(F.text=="👤 Аккаунты")
