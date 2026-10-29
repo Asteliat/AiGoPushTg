@@ -284,7 +284,7 @@ async def runtime_settings_input(c: CallbackQuery, state: FSMContext):
     await state.update_data(runtime_key=key, runtime_scope="global", ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
     await state.set_state(Flow.runtime_value)
     hint = "Введите число секунд. Например: 3600 секунд = 01:00:00 (60 минут)." if unit == "сек." else f"Введите процент от {minimum} до {maximum}."
-    await edit(c, f"{label}\\n{hint}\\nДопустимый диапазон: {minimum}–{maximum}.", CANCEL)
+    await edit(c, f"{label}\n{hint}\nДопустимый диапазон: {minimum}–{maximum}.", CANCEL)
 
 @router.message(Flow.runtime_value)
 async def runtime_value_save(m: Message, state: FSMContext):
@@ -323,7 +323,7 @@ async def runtime_value_save(m: Message, state: FSMContext):
         else:
             db.add(AppSetting(key=key, value=str(value)))
         await db.commit()
-    await finish_prompt(m, state, f"Глобальное значение «{label}» установлено: {shown}.\\nКак применить его к ИИ-агентам?", kb([
+    await finish_prompt(m, state, f"Глобальное значение «{label}» установлено: {shown}.\nКак применить его к ИИ-агентам?", kb([
         [("🌐 Применить ко всем агентам без исключения", f"runtime:apply:all:{key}:{value}")],
         [("🧩 Только агентам без собственного значения", f"runtime:apply:inherit:{key}:{value}")],
         [("⬅️ К настройкам", "runtime:menu")],
