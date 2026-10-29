@@ -40,6 +40,14 @@ async def analyze_channel_post(
         style += "\nДополнительные правила аккаунта: " + account.persona_style_override[:2000]
     if account.learning_prompt.strip():
         style += "\nОбщий контекст: " + account.learning_prompt[:1800]
+    if account.channel_post_instructions.strip():
+        style += "\nИнструкции по публикациям: " + account.channel_post_instructions[:2500]
+    if account.channel_comments_instructions.strip():
+        style += "\nИнструкции по комментариям: " + account.channel_comments_instructions[:2500]
+    if account.channel_restrictions_instructions.strip():
+        style += "\nОграничения: " + account.channel_restrictions_instructions[:2500]
+    if channel.learning_prompt.strip():
+        style += "\nВыводы автообучения этого канала: " + channel.learning_prompt[:2500]
 
     rendered_comments = "\n".join(f"- {str(item)[:700]}" for item in comments[:20]) or "Комментариев пока нет."
     client = AsyncOpenAI(api_key=agent.api_key, base_url=agent.base_url, timeout=agent.timeout_seconds)
