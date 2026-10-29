@@ -176,14 +176,17 @@ async def runtime_settings_text():
     async with SessionFactory() as db:
         mention = await db.get(AppSetting, "mention_reply_probability")
         dm = await db.get(AppSetting, "dm_reply_probability")
+        cooldown = await db.get(AppSetting, "reply_cooldown_seconds")
     mention_value = int(mention.value) if mention and mention.value.isdigit() else 100
     dm_value = int(dm.value) if dm and dm.value.isdigit() else 100
+    cooldown_value = int(cooldown.value) if cooldown and cooldown.value.isdigit() else 0
     return (
-        "🎚 Вероятность ответов\n\n"
-        f"📣 Ответ на упоминание / ответ на сообщение аккаунта: {mention_value}%\n"
-        f"💬 Ответ в личных сообщениях: {dm_value}%\n\n"
+        "🎚 Вероятность ответов\\n\\n"
+        f"📣 Ответ на упоминание / ответ на сообщение аккаунта: {mention_value}%\\n"
+        f"💬 Ответ в личных сообщениях: {dm_value}%\\n"
+        f"⏱ Пауза между ответами в одном чате: {cooldown_value} сек.\\n\\n"
         "Вероятность применяется перед вызовом ИИ. Если случайная проверка не пройдена, сообщение игнорируется. "
-        "В группах аккаунт не начинает разговор сам по себе: ответ только на прямое упоминание или ответ на его сообщение."
+        "Пауза ограничивает частоту ответов на обращения; самостоятельные сообщения без обращения не отправляются."
     )
 
 @router.callback_query(F.data == "runtime:menu")
@@ -192,13 +195,17 @@ async def runtime_settings_menu(c: CallbackQuery):
     async with SessionFactory() as db:
         mention = await db.get(AppSetting, "mention_reply_probability")
         dm = await db.get(AppSetting, "dm_reply_probability")
+        cooldown = await db.get(AppSetting, "reply_cooldown_seconds")
     mv = int(mention.value) if mention and mention.value.isdigit() else 100
     dv = int(dm.value) if dm and dm.value.isdigit() else 100
+    cv = int(cooldown.value) if cooldown and cooldown.value.isdigit() else 0
     buttons = [
         [(f"📣 Упоминания: {mv}%", "runtime:noop")],
         [(f"{v}%", f"runtime:set:mention_reply_probability:{v}") for v in (0, 10, 25, 50, 75, 100)],
         [(f"💬 Личные сообщения: {dv}%", "runtime:noop")],
         [(f"{v}%", f"runtime:set:dm_reply_probability:{v}") for v in (0, 10, 25, 50, 75, 100)],
+        [(f"⏱ Пауза: {cv} сек.", "runtime:noop")],
+        [(f"{v} сек.", f"runtime:set:reply_cooldown_seconds:{v}") for v in (0, 30, 60, 120, 300)],
         [("⬅️ Настройки", "nav:settings"), ("🏠 Главное меню", "nav:home")],
     ]
     await edit(c, await runtime_settings_text(), kb(buttons))
@@ -206,19 +213,20 @@ async def runtime_settings_menu(c: CallbackQuery):
 @router.callback_query(F.data == "runtime:noop")
 async def runtime_settings_noop(c: CallbackQuery):
     if not await check_cb(c): return
-    await c.answer("Выберите процент в кнопках ниже.")
+    await c.answer("Выберите значение в кнопках ниже.")
 
 @router.callback_query(F.data.startswith("runtime:set:"))
 async def runtime_settings_set(c: CallbackQuery):
     if not await check_cb(c): return
     parts = c.data.split(":")
-    if len(parts) != 4 or parts[2] not in {"mention_reply_probability", "dm_reply_probability"}:
+    if len(parts) != 4 or parts[2] not in {"mention_reply_probability", "dm_reply_probability", "reply_cooldown_seconds"}:
         await c.answer("Неизвестная настройка.", show_alert=True); return
     try:
         value = int(parts[3])
     except ValueError:
         await c.answer("Некорректное значение.", show_alert=True); return
-    if value not in {0, 10, 25, 50, 75, 100}:
+    allowed = {0, 30, 60, 120, 300} if parts[2] == "reply_cooldown_seconds" else {0, 10, 25, 50, 75, 100}
+    if value not in allowed:
         await c.answer("Выберите значение из кнопок.", show_alert=True); return
     async with SessionFactory() as db:
         setting = await db.get(AppSetting, parts[2])
@@ -227,7 +235,7 @@ async def runtime_settings_set(c: CallbackQuery):
         else:
             db.add(AppSetting(key=parts[2], value=str(value)))
         await db.commit()
-    await c.answer(f"Установлено: {value}%")
+    await c.answer(f"Установлено: {value}{' сек.' if parts[2] == 'reply_cooldown_seconds' else '%'}")
     await runtime_settings_menu(c)
 
 # Account menu and QR login
