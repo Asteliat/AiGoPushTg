@@ -40,12 +40,15 @@ async def analyze_channel_post(
         style += "\nДополнительные правила аккаунта: " + account.persona_style_override[:2000]
     if account.learning_prompt.strip():
         style += "\nОбщий контекст: " + account.learning_prompt[:1800]
-    if account.channel_post_instructions.strip():
-        style += "\nИнструкции по публикациям: " + account.channel_post_instructions[:2500]
-    if account.channel_comments_instructions.strip():
-        style += "\nИнструкции по комментариям: " + account.channel_comments_instructions[:2500]
-    if account.channel_restrictions_instructions.strip():
-        style += "\nОграничения: " + account.channel_restrictions_instructions[:2500]
+    post_instructions = channel.post_instructions_override if channel.post_instructions_override is not None else account.channel_post_instructions
+    comments_instructions = channel.comments_instructions_override if channel.comments_instructions_override is not None else account.channel_comments_instructions
+    restrictions_instructions = channel.restrictions_instructions_override if channel.restrictions_instructions_override is not None else account.channel_restrictions_instructions
+    if post_instructions.strip():
+        style += "\nИнструкции по публикациям: " + post_instructions[:2500]
+    if comments_instructions.strip():
+        style += "\nИнструкции по комментариям: " + comments_instructions[:2500]
+    if restrictions_instructions.strip():
+        style += "\nОграничения: " + restrictions_instructions[:2500]
     if channel.learning_prompt.strip():
         style += "\nВыводы автообучения этого канала: " + channel.learning_prompt[:2500]
 
