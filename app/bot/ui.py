@@ -422,7 +422,7 @@ async def agent_runtime_input(c: CallbackQuery, state: FSMContext):
     await state.update_data(runtime_key=key, runtime_scope="agent", runtime_aid=aid, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
     await state.set_state(Flow.runtime_value)
     hint = "Введите число секунд. Например: 3600 = 01:00:00." if unit == "сек." else f"Введите процент от {minimum} до {maximum}."
-    await edit(c, f"{label}\\n{hint}\\nДопустимый диапазон: {minimum}–{maximum}.", CANCEL)
+    await edit(c, f"{label}\n{hint}\nДопустимый диапазон: {minimum}–{maximum}.", CANCEL)
 
 @router.callback_query(F.data.startswith("agent:channelrt:input:"))
 async def agent_channel_runtime_input(c: CallbackQuery, state: FSMContext):
@@ -437,7 +437,7 @@ async def agent_channel_runtime_input(c: CallbackQuery, state: FSMContext):
     await state.update_data(runtime_key=key, runtime_scope="agent_channel", runtime_aid=aid, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
     await state.set_state(Flow.runtime_value)
     hint = "Введите целое число секунд. Например: 3600 = 01:00:00." if unit == "сек." else f"Введите процент от {minimum} до {maximum}."
-    await edit(c, f"{label}\\n{hint}\\nДопустимый диапазон: {minimum}–{maximum}.", CANCEL)
+    await edit(c, f"{label}\n{hint}\nДопустимый диапазон: {minimum}–{maximum}.", CANCEL)
 
 @router.callback_query(F.data.startswith("agent:channelrt:inherit:"))
 async def agent_channel_runtime_inherit(c: CallbackQuery):
@@ -877,7 +877,7 @@ async def qr_login(bot, uid, proxy_config=None, encrypted_proxy=None, ui_data=No
             keep_client = True
             await state.set_state(Flow.qr_password)
             twofa_text = (
-                "🔐 Telegram запросил пароль двухэтапной аутентификации (2FA).\\n\\n"
+                "🔐 Telegram запросил пароль двухэтапной аутентификации (2FA).\n\n"
                 "Отправьте пароль в этот личный чат. Бот не сохраняет его в БД и не выводит в логи, "
                 "а сообщение удаляется по возможности. Удаление не гарантируется — используйте только "
                 "собственный доверенный сервер. Нажмите «Отмена», если передумали."
@@ -2446,7 +2446,7 @@ async def channel_reply_toggle(c):
         binding.enabled = binding.reply_enabled
         aid, channel_id = binding.account_id, binding.channel_id
         await db.commit()
-    await edit(c, "Настройки канала обновлены.", kb([[("⬅️ Открыть канал", f"channel:open:{aid}:{channel_id}")], [("⬅️ К каналам аккаунта", f"channel:account:{aid}")]]))
+    await channel_open(c)
 
 async def channel_settings_screen(c, scope, object_id):
     async with SessionFactory() as db:
