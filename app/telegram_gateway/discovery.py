@@ -95,7 +95,7 @@ async def search_public_groups(client, query: str, limit: int = 50) -> list[dict
     return sorted(found.values(), key=lambda x: (x["score"], x["members"]), reverse=True)
 
 
-async def find_invite_links_in_dialogs(client, dialog_limit: int = 20, messages_per_dialog: int = 30) -> list[dict]:
+async def find_invite_links_in_dialogs(client, dialog_limit: int | None = None, messages_per_dialog: int = 5000) -> list[dict]:
     """Collect distinct group-looking links shared in recent messages of joined groups."""
     found: dict[str, dict] = {}
     async for dialog in client.iter_dialogs(limit=dialog_limit):
@@ -126,8 +126,6 @@ async def find_invite_links_in_dialogs(client, dialog_limit: int = 20, messages_
                         "members": 0,
                         "score": 0,
                     })
-                    if len(found) >= 40:
-                        return list(found.values())
         except Exception:
             # One inaccessible/slow dialog should not abort the whole scan.
             continue
