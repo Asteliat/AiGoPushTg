@@ -219,12 +219,12 @@ RUNTIME_KEYS = {
     "mention_reply_probability": ("📣 Ответ на упоминания", "%", 0, 100),
     "dm_reply_probability": ("💬 Ответ в личке", "%", 0, 100),
     "proactive_reply_probability": ("🗣 Самостоятельное участие", "%", 0, 100),
-    "reply_cooldown_seconds": ("⏱ Пауза между ответами", "сек.", 0, 31536000),
+    "reply_cooldown_seconds": ("⏱ Пауза между ответами", "сек.", 0, 2147483647),
 }
 
 AGENT_CHANNEL_RUNTIME_KEYS = {
     "channel_reply_probability": ("📡 Ответы в комментариях", "%", 0, 100, "channel_reply_probability_override"),
-    "channel_reply_cooldown_seconds": ("⏳ Пауза в комментариях", "сек.", 0, 31536000, "channel_reply_cooldown_seconds_override"),
+    "channel_reply_cooldown_seconds": ("⏳ Пауза в комментариях", "сек.", 0, 2147483647, "channel_reply_cooldown_seconds_override"),
 }
 
 def format_duration(seconds: int) -> str:
@@ -2519,7 +2519,7 @@ async def channel_setting_edit(c, state: FSMContext):
         await c.answer("Неизвестная настройка.", show_alert=True)
         return
     label, _, _, kind = CHANNEL_SETTING_FIELDS[field]
-    minimum, maximum = (1, 10) if kind == "min_comments" else (0, 100) if kind == "percent" else (0, 31536000) if kind == "seconds" else (0, 4000)
+    minimum, maximum = (1, 10) if kind == "min_comments" else (0, 100) if kind == "percent" else (0, 2147483647) if kind == "seconds" else (0, 4000)
     await state.clear()
     await state.update_data(channel_scope=scope, channel_object_id=int(object_raw), channel_field=field, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
     await state.set_state(Flow.channel_setting_value)
@@ -2554,7 +2554,7 @@ async def channel_setting_save(m: Message, state: FSMContext):
             await prompt_message(m, state, "Введите целое число.")
             return
         value = int(raw)
-        minimum, maximum = (1, 10) if kind == "min_comments" else (0, 100) if kind == "percent" else (0, 31536000)
+        minimum, maximum = (1, 10) if kind == "min_comments" else (0, 100) if kind == "percent" else (0, 2147483647)
         if not minimum <= value <= maximum:
             await prompt_message(m, state, f"Допустимый диапазон: {minimum}–{maximum}.")
             return
