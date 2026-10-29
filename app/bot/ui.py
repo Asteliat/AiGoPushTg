@@ -1755,6 +1755,24 @@ async def chat_search_query(m: Message, state: FSMContext):
     except Exception as exc:
         await edit_anchor(m.bot, anchor, f"Поиск не удался: {str(exc)[:180]}", kb([[("🔎 Повторить поиск", f"chat:search:{aid}")], [("⬅️ К чатам", "chat:menu")]]))
         return
+    try:
+        web_results = await search_web_groups(query, limit=180)
+    except Exception:
+        web_results = []
+    combined = {}
+    for item in native_results + web_results:
+        link = str(item.get("link") or "").casefold()
+        if not link:
+            continue
+        if link in combined:
+            current = combined[link]
+            current["score"] = max(int(current.get("score") or 0), int(item.get("score") or 0))
+            current["source"] = ", ".join(dict.fromkeys((current.get("source", "") + ", " + item.get("source", "")).strip(", ").split(", ")))
+            if item.get("members"):
+                current["members"] = item["members"]
+        else:
+            combined[link] = item
+    candidates = sorted(combined.values(), key=lambda item: (int(item.get("score") or 0), int(item.get("members") or 0)), reverse=True)
     CHAT_CANDIDATES[(m.from_user.id, aid)] = candidates
     if not candidates:
         await edit_anchor(m.bot, anchor, f"По запросу «{query}» подходящих публичных групп не найдено.\n\nПопробуйте более короткие или альтернативные ключевые слова.", kb([[("🔎 Новый запрос", f"chat:search:{aid}")], [("🧭 Найти ссылки в чатах", f"chat:discover:{aid}")], [("⬅️ К чатам", "chat:menu")]]))
