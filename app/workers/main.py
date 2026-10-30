@@ -484,7 +484,7 @@ async def main():
                     else:
                         db.add(ChatBinding(
                             account_id=aid, chat_id=chat_id, title=title,
-                            enabled=True, auto_discovered=True,
+                            enabled=False, auto_discovered=True,
                         ))
                 await db.commit()
             logging.info("Discovered %d eligible dialogs for account %s", len(discovered), aid)
