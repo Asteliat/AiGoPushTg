@@ -1,5 +1,5 @@
 from app.services.ai_responses import build_reply_style_instructions
-from app.services.channels import build_channel_analysis_style
+from app.services.channels import build_channel_analysis_style, build_channel_analysis_user_content
 
 
 def test_channel_analysis_uses_channel_learning_not_chat_learning() -> None:
@@ -31,3 +31,21 @@ def test_channel_comment_replies_reuse_chat_learning_and_account_style() -> None
     assert "Контекст автообучения чатов" in style
     assert "Ограничения комментариев канала" not in style
     assert "автообучения этого канала" not in style
+
+
+def test_channel_analysis_payload_includes_photo_as_image() -> None:
+    image = "data:image/jpeg;base64,ZmFrZQ=="
+    content = build_channel_analysis_user_content(
+        "Текст поста", ["Первый комментарий"], image
+    )
+    assert len(content) == 2
+    assert content[0]["type"] == "text"
+    assert "Текст поста" in content[0]["text"]
+    assert "Первый комментарий" in content[0]["text"]
+    assert content[1] == {"type": "image_url", "image_url": {"url": image}}
+
+
+def test_channel_analysis_payload_without_photo_stays_text_only() -> None:
+    content = build_channel_analysis_user_content("Текст поста", [])
+    assert len(content) == 1
+    assert content[0]["type"] == "text"
