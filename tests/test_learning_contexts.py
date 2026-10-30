@@ -4,17 +4,18 @@ from app.services.channels import build_channel_analysis_style
 
 def test_channel_analysis_uses_channel_learning_not_chat_learning() -> None:
     style = build_channel_analysis_style(
-        persona_style="Стиль личности",
-        account_style_override="Общие правила аккаунта",
         post_instructions="Правила публикаций",
         comments_instructions="Правила комментариев",
         restrictions_instructions="Ограничения канала",
         channel_learning_prompt="Контекст автообучения канала",
     )
 
-    assert "Стиль личности" in style
-    assert "Общие правила аккаунта" in style
+    assert "Правила публикаций" in style
+    assert "Правила комментариев" in style
+    assert "Ограничения канала" in style
     assert "Контекст автообучения канала" in style
+    assert "Стиль личности" not in style
+    assert "Общие правила аккаунта" not in style
     assert "контекст выбранных чатов" not in style
 
 
@@ -23,11 +24,10 @@ def test_channel_comment_replies_reuse_chat_learning_and_account_style() -> None
         persona_style="Стиль личности",
         account_style_override="Общие правила аккаунта",
         chat_learning_prompt="Контекст автообучения чатов",
-        additional_instructions="Ограничения комментариев канала",
     )
 
     assert "Стиль личности" in style
     assert "Общие правила аккаунта" in style
     assert "Контекст автообучения чатов" in style
-    assert "Ограничения комментариев канала" in style
+    assert "Ограничения комментариев канала" not in style
     assert "автообучения этого канала" not in style
