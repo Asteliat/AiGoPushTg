@@ -72,7 +72,7 @@ class Flow(StatesGroup):
     example_incoming=State(); example_reply=State()
     proxy_host=State(); proxy_port=State(); proxy_username=State(); proxy_password=State()
     learning_prompt_edit=State(); persona_override=State()
-    runtime_value=State(); channel_setting_value=State()
+    runtime_value=State(); channel_setting_value=State(); log_chat_id=State()
     phone_number=State(); phone_code=State(); phone_password=State(); qr_password=State()
     chat_search_query=State(); chat_join_link=State()
 
@@ -212,8 +212,125 @@ async def settings_cb(c: CallbackQuery):
     )
     await edit(c, text, kb([
         [("🎚 Вероятность ответов", "runtime:menu")],
+        [("🧾 Логи", "logs:menu")],
         [("⬅️ Главное меню", "nav:home")],
     ]))
+
+LOG_CATEGORIES = {
+    "main": "📌 Основные логи",
+    "replies": "💬 Ответы ИИ",
+    "errors": "🚨 Ошибки",
+    "learning": "🧠 Обучение",
+    "channels": "📡 Каналы и обсуждения",
+}
+
+def log_ids_from_value(value: str | None) -> list[int]:
+    result = []
+    for raw in (value or "").replace(";", ",").split(","):
+        try:
+            chat_id = int(raw.strip())
+        except (TypeError, ValueError):
+            continue
+        if chat_id and chat_id not in result:
+            result.append(chat_id)
+    return result
+
+async def logs_menu_text():
+    async with SessionFactory() as db:
+        rows = {}
+        for category in LOG_CATEGORIES:
+            setting = await db.get(AppSetting, f"log_chat_ids_{category}")
+            ids = log_ids_from_value(setting.value if setting else "")
+            if category == "main" and not ids and cfg.log_chat_id:
+                ids = [cfg.log_chat_id]
+            rows[category] = ids
+    lines = ["🧾 Настройка логов", "", "Для каждого типа событий можно задать один или несколько чатов/групп. Добавляйте ID чата или супергруппы, куда бот сможет отправлять сообщения.", ""]
+    for category, label in LOG_CATEGORIES.items():
+        ids = rows[category]
+        shown = ", ".join(str(value) for value in ids) if ids else "не настроено"
+        lines.append(f"{label}: {shown}")
+    lines += ["", "Основные логи по умолчанию используют LOG_CHAT_ID из .env, если отдельный ID не добавлен."]
+    return "\n".join(lines)
+
+@router.callback_query(F.data == "logs:menu")
+async def logs_menu(c: CallbackQuery):
+    if not await check_cb(c): return
+    rows = [[(label, f"logs:category:{category}")] for category, label in LOG_CATEGORIES.items()]
+    rows += [[("⬅️ Настройки", "nav:settings"), ("🏠 Главное меню", "nav:home")]]
+    await edit(c, await logs_menu_text(), kb(rows))
+
+@router.callback_query(F.data.startswith("logs:category:"))
+async def logs_category(c: CallbackQuery):
+    if not await check_cb(c): return
+    category = c.data.split(":")[2]
+    if category not in LOG_CATEGORIES:
+        await c.answer("Неизвестная категория.", show_alert=True); return
+    async with SessionFactory() as db:
+        setting = await db.get(AppSetting, f"log_chat_ids_{category}")
+        ids = log_ids_from_value(setting.value if setting else "")
+    if category == "main" and not ids and cfg.log_chat_id:
+        ids = [cfg.log_chat_id]
+    lines = [LOG_CATEGORIES[category], "", "Чаты для этой категории:"]
+    lines += [f"• {chat_id}" for chat_id in ids] if ids else ["• пока не добавлены"]
+    rows = [[("➕ Добавить ID чата", f"logs:add:{category}")]]
+    rows += [[(f"➖ Удалить {chat_id}", f"logs:remove:{category}:{chat_id}")] for chat_id in ids]
+    rows += [[("⬅️ К списку логов", "logs:menu")]]
+    await edit(c, "\n".join(lines), kb(rows))
+
+@router.callback_query(F.data.startswith("logs:add:"))
+async def logs_add(c: CallbackQuery, state: FSMContext):
+    if not await check_cb(c): return
+    category = c.data.split(":")[2]
+    if category not in LOG_CATEGORIES:
+        await c.answer("Неизвестная категория.", show_alert=True); return
+    await state.clear()
+    await state.update_data(log_category=category, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
+    await state.set_state(Flow.log_chat_id)
+    await edit(c, f"{LOG_CATEGORIES[category]}\n\nОтправьте числовой ID пользователя, чата или группы. Для супергрупп обычно используется ID вида -1001234567890.", CANCEL)
+
+@router.message(Flow.log_chat_id)
+async def logs_add_save(m: Message, state: FSMContext):
+    if not await check_msg(m) or not await private(m): return
+    data = await state.get_data()
+    category = data.get("log_category")
+    try:
+        chat_id = int((m.text or "").strip())
+        if chat_id == 0: raise ValueError
+    except ValueError:
+        await prompt_message(m, state, "Неверный ID. Отправьте целое ненулевое число, например -1001234567890.")
+        return
+    await delete_msg(m)
+    try:
+        await m.bot.send_message(chat_id, "✅ Проверка связи: этот чат добавлен для логов AtcivPerson.")
+    except Exception as exc:
+        await finish_prompt(m, state, f"Не удалось отправить тестовое сообщение в {chat_id}. Проверьте ID и права бота.\nОшибка: {type(exc).__name__}: {str(exc)[:300]}", kb([[("↩️ К категории", f"logs:category:{category}")], [("🧾 Все логи", "logs:menu")]]))
+        return
+    async with SessionFactory() as db:
+        key = f"log_chat_ids_{category}"
+        setting = await db.get(AppSetting, key)
+        ids = log_ids_from_value(setting.value if setting else "")
+        if chat_id not in ids: ids.append(chat_id)
+        value = ",".join(str(item) for item in ids)
+        if setting: setting.value = value
+        else: db.add(AppSetting(key=key, value=value))
+        await db.commit()
+    await finish_prompt(m, state, f"✅ Чат {chat_id} добавлен в категорию «{LOG_CATEGORIES[category]}».", kb([[("↩️ К категории", f"logs:category:{category}")], [("🧾 Все логи", "logs:menu")]]))
+
+@router.callback_query(F.data.startswith("logs:remove:"))
+async def logs_remove(c: CallbackQuery):
+    if not await check_cb(c): return
+    _, _, category, chat_raw = c.data.split(":")
+    if category not in LOG_CATEGORIES:
+        await c.answer("Неизвестная категория.", show_alert=True); return
+    chat_id = int(chat_raw)
+    async with SessionFactory() as db:
+        key = f"log_chat_ids_{category}"
+        setting = await db.get(AppSetting, key)
+        ids = log_ids_from_value(setting.value if setting else "")
+        ids = [item for item in ids if item != chat_id]
+        if setting: setting.value = ",".join(str(item) for item in ids)
+        await db.commit()
+    await logs_category(c)
 
 RUNTIME_KEYS = {
     "mention_reply_probability": ("📣 Ответ на упоминания", "%", 0, 100),
