@@ -74,6 +74,12 @@ async def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS ix_notification_outbox_due ON notification_outbox (status, next_retry_at, created_at)",
             "ALTER TABLE ai_agents ADD COLUMN IF NOT EXISTS channel_reply_probability_override INTEGER NULL",
             "ALTER TABLE ai_agents ADD COLUMN IF NOT EXISTS channel_reply_cooldown_seconds_override INTEGER NULL",
+            "ALTER TABLE channel_analyses ADD COLUMN IF NOT EXISTS should_reply BOOLEAN NOT NULL DEFAULT FALSE",
+            "ALTER TABLE channel_analyses ADD COLUMN IF NOT EXISTS publication_status VARCHAR(20) NOT NULL DEFAULT 'legacy'",
+            "ALTER TABLE channel_analyses ALTER COLUMN publication_status SET DEFAULT 'pending'",
+            "ALTER TABLE channel_analyses ADD COLUMN IF NOT EXISTS discussion_group_id BIGINT NULL",
+            "ALTER TABLE channel_analyses ADD COLUMN IF NOT EXISTS published_comment_id BIGINT NULL",
+            "ALTER TABLE channel_analyses ADD COLUMN IF NOT EXISTS publication_error TEXT NOT NULL DEFAULT ''",
         ]
         for statement in statements:
             await connection.exec_driver_sql(statement)
