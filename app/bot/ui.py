@@ -2457,6 +2457,10 @@ async def chat_select(c):
     await chat_account_screen(c, aid, page)
 
 
+async def chat_account_refresh(c, aid, page=0):
+    await chat_account_screen(c, aid, page)
+
+
 @router.callback_query(F.data.startswith("chat:toggle:"))
 async def chat_toggle(c):
     if not await check_cb(c): return
