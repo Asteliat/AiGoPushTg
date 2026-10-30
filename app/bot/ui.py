@@ -1,12 +1,12 @@
 from __future__ import annotations
-import asyncio, io, os, re, secrets, sqlite3, tempfile
+import asyncio, io, os, re, secrets, sqlite3, tempfile, logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from aiogram import F, Router
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, BufferedInputFile
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, BufferedInputFile, ErrorEvent
 from sqlalchemy import select
 from telethon import TelegramClient, utils
 from telethon.errors import SessionPasswordNeededError
@@ -22,6 +22,23 @@ from app.storage.models import Account, AIAgent, AppSetting, ChatBinding, Channe
 from app.telegram_gateway.proxy import ProxyConfigurationError, encrypt_proxy, telethon_proxy
 
 router = Router()
+
+
+@router.errors()
+async def handle_unexpected_update_error(event: ErrorEvent):
+    error = event.exception
+    callback = event.update.callback_query
+    if callback:
+        try:
+            await callback.answer("Не удалось выполнить действие. Попробуйте ещё раз.", show_alert=True)
+        except Exception:
+            pass
+    logging.error(
+        "Unhandled Telegram update error: %s",
+        error,
+        exc_info=(type(error), error, error.__traceback__),
+    )
+    return True
 cfg = get_settings()
 LOGIN_TASKS: dict[int, asyncio.Task] = {}
 PHONE_LOGIN_DATA: dict[int, dict] = {}
