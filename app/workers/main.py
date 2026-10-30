@@ -369,7 +369,11 @@ async def main():
                         ChannelBinding.discussion_group_id.is_not(None),
                     )
                 )).all())
-                bindings = [binding for binding in bindings if int(binding.chat_id) not in discussion_ids]
+                channel_ids = set((await db.scalars(
+                    select(ChannelBinding.channel_id).where(ChannelBinding.account_id == aid)
+                )).all())
+                excluded_chat_ids = discussion_ids | channel_ids
+                bindings = [binding for binding in bindings if int(binding.chat_id) not in excluded_chat_ids]
             if not bindings:
                 async with SessionFactory() as db:
                     account = await db.get(Account, aid)
@@ -453,7 +457,10 @@ async def main():
                         ChannelBinding.account_id == aid,
                         ChannelBinding.discussion_group_id.is_not(None),
                     ))).all())
-                    current_chat_ids -= discussion_ids
+                    channel_ids = set((await db.scalars(select(ChannelBinding.channel_id).where(
+                        ChannelBinding.account_id == aid,
+                    ))).all())
+                    current_chat_ids -= discussion_ids | channel_ids
                     if current_chat_ids != set(chat_ids):
                         break
                     expires = account.learning_ends_at
@@ -588,7 +595,11 @@ async def main():
 
             async for dialog in client.iter_dialogs():
                 entity = dialog.entity
-                if getattr(entity, "deleted", False) or getattr(entity, "bot", False):
+                if (
+                    getattr(entity, "deleted", False)
+                    or getattr(entity, "bot", False)
+                    or (getattr(entity, "broadcast", False) and not getattr(entity, "megagroup", False))
+                ):
                     continue
                 title = (dialog.name or "").strip()
                 if not title:
@@ -601,7 +612,13 @@ async def main():
                         ChannelBinding.discussion_group_id.is_not(None),
                     )
                 )).all())
-            discovered = [item for item in discovered if item[0] not in discussion_ids]
+                channel_ids = set((await db.scalars(
+                    select(ChannelBinding.channel_id).where(ChannelBinding.account_id == aid)
+                )).all())
+            discovered = [
+                item for item in discovered
+                if item[0] not in discussion_ids and item[0] not in channel_ids
+            ]
             async with SessionFactory() as db:
                 current_bindings = list((await db.scalars(
                     select(ChatBinding).where(ChatBinding.account_id == aid)
@@ -643,9 +660,12 @@ async def main():
                     ChannelBinding.discussion_group_id.is_not(None),
                 )
             )).all())
+            channel_ids = set((await db.scalars(
+                select(ChannelBinding.channel_id).where(ChannelBinding.account_id == aid)
+            )).all())
         return {
             binding.chat_id: binding.title for binding in current_bindings
-            if int(binding.chat_id) not in discussion_ids
+            if int(binding.chat_id) not in discussion_ids and int(binding.chat_id) not in channel_ids
         }
 
     def schedule_reconnect(aid: int) -> None:
