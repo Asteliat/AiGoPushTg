@@ -489,7 +489,7 @@ async def main():
                 account.connection_status = status
                 await db.commit()
 
-    async def sync_account_dialogs(client: TelegramClient, aid: int) -> dict[int, str]:
+    async def sync_account_dialogs(client: TelegramClient, aid: int, attempt: int = 0) -> dict[int, str]:
         discovered = []
         try:
             async for dialog in client.iter_dialogs():
@@ -516,6 +516,13 @@ async def main():
                         ))
                 await db.commit()
             logging.info("Discovered %d eligible dialogs for account %s", len(discovered), aid)
+        except FloodWaitError as exc:
+            wait_seconds = max(1, int(getattr(exc, "seconds", 1))) + 1
+            if attempt < 2:
+                logging.warning("Telegram FloodWait while discovering dialogs for account %s; retry %s after %ss", aid, attempt + 1, wait_seconds)
+                await asyncio.sleep(min(wait_seconds, 300))
+                return await sync_account_dialogs(client, aid, attempt + 1)
+            logging.error("Dialog discovery paused after repeated Telegram FloodWait for account %s", aid)
         except Exception:
             # A transient history/dialogs failure must not take the whole account offline.
             logging.exception("Could not refresh dialogs for account %s", aid)
