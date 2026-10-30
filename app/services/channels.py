@@ -9,6 +9,12 @@ from app.ai.provider import AIUnavailableError, chat_completion_with_retry
 from app.storage.models import Account, AIAgent, ChannelAnalysis, ChannelBinding
 
 
+def effective_channel_reply_mode(account: Account, channel: ChannelBinding) -> str:
+    """Resolve channel publication mode without consulting the Chats reply mode."""
+    value = channel.reply_mode_override if channel.reply_mode_override is not None else account.channel_reply_mode
+    return "automatic" if value == "automatic" else "manual"
+
+
 def channel_comment_threshold_action(action: str, comment_count: int, minimum: int) -> str:
     """Return skip, wait, or continue for the configured discussion comment policy."""
     if action == "skip_empty" and comment_count == 0:
