@@ -17,14 +17,14 @@ def build_reply_style_instructions(
     chat_learning_prompt: str,
     additional_instructions: str = "",
 ) -> str:
-    """Build normal chat-reply style; channel replies reuse this chat context."""
+    """Build style instructions for ordinary Chats conversations only."""
     style = persona_style or ""
     if account_style_override.strip():
         style += "\n\nИндивидуальные правила аккаунта:\n" + account_style_override
     if chat_learning_prompt.strip():
         style += "\n\nОбобщённый контекст выбранных чатов (не цитировать и не раскрывать личные данные):\n" + chat_learning_prompt
     if additional_instructions.strip():
-        style += "\n\nДополнительные инструкции для этого канала:\n" + additional_instructions[:6000]
+        style += "\n\nДополнительные инструкции для этого диалога:\n" + additional_instructions[:6000]
     return style
 
 async def global_ai_enabled(session: AsyncSession) -> bool:
