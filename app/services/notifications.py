@@ -2,7 +2,7 @@
 import logging
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import or_, select
+from sqlalchemy import delete, or_, select
 from aiogram import Bot
 
 from app.storage.db import SessionFactory
@@ -56,6 +56,10 @@ async def dispatch_pending_notifications(bot: Bot | None, limit: int = 50) -> in
         return 0
     now = datetime.now(timezone.utc)
     async with SessionFactory() as db:
+        await db.execute(delete(OutboxNotification).where(
+            OutboxNotification.status == "sent",
+            OutboxNotification.sent_at < now - timedelta(days=30),
+        ))
         rows = list((await db.scalars(
             select(OutboxNotification)
             .where(
