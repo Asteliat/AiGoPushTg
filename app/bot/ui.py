@@ -83,7 +83,6 @@ def kb(rows):
 MAIN = kb([
     [("👤 Аккаунты", "acc:list"), ("🤖 ИИ-агенты", "agent:menu")],
     [("🎭 Персоны", "persona:menu"), ("💡 Примеры", "example:menu")],
-    [("💬 Чаты", "chat:menu"), ("📡 Каналы", "channel:menu")],
     [("⚙️ Настройки", "nav:settings")],
 ])
 CANCEL = kb([[("❌ Отмена", "nav:cancel")]])
@@ -162,6 +161,59 @@ async def edit(c, text, keyboard):
     await c.answer()
 def back_home(): return kb([[('🏠 Главное меню','nav:home')]])
 
+def cancel_return_for(callback_data: str) -> str:
+    parts = callback_data.split(":")
+    if callback_data.startswith("channel:edit:") and len(parts) >= 5:
+        return f"channel:{'gsettings' if parts[2] == 'g' else 'csettings'}:{parts[3]}"
+    if callback_data.startswith("acc:context:edit:"): return f"acc:learnprompt:{parts[3]}"
+    if callback_data.startswith("acc:personaoverride:"): return f"acc:view:{parts[2]}"
+    if callback_data.startswith("acc:proxyset:"): return f"acc:proxysettings:{parts[2]}"
+    if callback_data.startswith(("chat:search:", "chat:joinlink:")): return f"acc:view:{parts[2]}"
+    if callback_data.startswith("logs:add:"): return f"logs:category:{parts[2]}"
+    if callback_data.startswith(("runtime:input:", "runtime:apply:")): return "runtime:menu"
+    if callback_data.startswith(("agent:rt:input:", "agent:channelrt:input:")): return f"agent:runtime:menu:{parts[3]}"
+    if callback_data.startswith("agent:edit:"): return f"agent:view:{parts[3]}"
+    if callback_data.startswith("agent:"): return "agent:menu"
+    if callback_data.startswith("persona:edit:"): return f"persona:view:{parts[2]}"
+    if callback_data.startswith("persona:"): return "persona:menu"
+    if callback_data.startswith("example:addacc:"): return f"example:account:{parts[2]}"
+    if callback_data.startswith("example:add:"): return f"persona:view:{parts[2]}" if parts[2] != "0" else "example:menu"
+    if callback_data.startswith("example:account:"): return callback_data
+    if callback_data.startswith("example:"): return "example:menu"
+    if callback_data.startswith("channel:"): return "channel:menu"
+    if callback_data.startswith("acc:"): return f"acc:view:{parts[-1]}" if parts[-1].isdigit() else "acc:list"
+    return callback_data
+
+
+async def restore_previous_screen(c, callback_data):
+    if not callback_data:
+        await edit(c, await home_text(), MAIN)
+        return
+    parts = callback_data.split(":")
+    if callback_data.startswith("acc:view:"): await acc_view(c, int(parts[2]))
+    elif callback_data == "acc:list": await acc_list(c)
+    elif callback_data.startswith("acc:learnprompt:"): await acc_learning_prompt(c, int(parts[2]))
+    elif callback_data.startswith("acc:learn:"): await acc_learning_menu(c, int(parts[2]))
+    elif callback_data.startswith("acc:proxysettings:"): await acc_proxy_settings(c, int(parts[2]))
+    elif callback_data.startswith("channel:account:"): await channel_account_screen(c, int(parts[2]))
+    elif callback_data.startswith("channel:gsettings:"): await channel_settings_screen(c, "global", int(parts[2]))
+    elif callback_data.startswith("channel:csettings:"): await channel_settings_screen(c, "channel", int(parts[2]))
+    elif callback_data.startswith("chat:account:"): await chat_account_screen(c, int(parts[2]), int(parts[3]) if len(parts)>3 else 0)
+    elif callback_data.startswith("agent:view:"): await agent_view(c, int(parts[2]))
+    elif callback_data == "agent:menu": await agents_cb(c)
+    elif callback_data.startswith("agent:runtime:menu:"): await agent_runtime_menu(c, int(parts[-1]))
+    elif callback_data.startswith("persona:view:"): await persona_view(c, int(parts[2]))
+    elif callback_data == "persona:menu": await persona_menu(c)
+    elif callback_data.startswith("example:account:"): await account_examples(c, int(parts[2]))
+    elif callback_data.startswith("example:view:"): await example_view(c, int(parts[2]))
+    elif callback_data == "example:menu": await example_menu(c)
+    elif callback_data == "logs:menu": await logs_menu(c)
+    elif callback_data.startswith("logs:category:"): await logs_category(c, parts[2])
+    elif callback_data == "runtime:menu": await runtime_settings_menu(c)
+    elif callback_data == "channel:menu": await channels_legacy_redirect(c)
+    else: await edit(c, "Действие отменено. Вернитесь в предыдущий раздел:", kb([[("↩️ Назад", callback_data)]]))
+
+
 @router.message(CommandStart())
 async def start(m: Message, state: FSMContext):
     if await check_msg(m):
@@ -172,12 +224,17 @@ async def start(m: Message, state: FSMContext):
 @router.message(F.text.in_({"❌ Отмена","Отмена"}))
 async def cancel(m: Message, state: FSMContext):
     if await check_msg(m):
+        data = await state.get_data()
+        previous = data.get("return_callback")
         await state.clear()
-        task=LOGIN_TASKS.pop(m.from_user.id, None)
+        task = LOGIN_TASKS.pop(m.from_user.id, None)
         if task and not task.done(): task.cancel()
         await cleanup_phone_login(m.from_user.id)
         await cleanup_qr_login(m.from_user.id)
-        await m.answer("Действие отменено.", reply_markup=MAIN)
+        if previous:
+            await m.answer("Действие отменено. Вернитесь в предыдущий раздел:", reply_markup=kb([[("↩️ Назад", previous)]]))
+        else:
+            await m.answer("Действие отменено.", reply_markup=MAIN)
 
 @router.callback_query(F.data=="nav:home")
 async def home_cb(c: CallbackQuery, state: FSMContext):
@@ -188,12 +245,15 @@ async def home_cb(c: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data=="nav:cancel")
 async def cancel_cb(c: CallbackQuery, state: FSMContext):
     if not await check_cb(c): return
+    data = await state.get_data()
+    previous = data.get("return_callback")
     await state.clear()
     task = LOGIN_TASKS.pop(c.from_user.id, None)
     if task and not task.done(): task.cancel()
     await cleanup_phone_login(c.from_user.id)
     await cleanup_qr_login(c.from_user.id)
-    await edit(c, "Действие отменено.\n\n" + await home_text(), MAIN)
+    await restore_previous_screen(c, previous)
+
 
 @router.callback_query(F.data=="nav:settings")
 async def settings_cb(c: CallbackQuery):
@@ -204,8 +264,8 @@ async def settings_cb(c: CallbackQuery):
         "🤖 ИИ-агенты — провайдеры, API-ключи, модели, глобальный ИИ и назначение агента аккаунтам.\n"
         "🎭 Персоны — общие стили ответов; изменения применяются ко всем назначенным аккаунтам.\n"
         "💡 Примеры — образцы входящих сообщений и желаемых ответов для стиля.\n"
-        "💬 Чаты — выбрать, какие существующие диалоги аккаунтов доступны для обработки.\n"
-        "📡 Каналы — отдельный список каналов и анализ обсуждений.\n"
+
+        "📡 Каналы — управление каналами внутри карточки каждого аккаунта.\n"
         "Ответы в ручном режиме показываются в уведомлении и не сохраняются.\n\n"
         "В карточке аккаунта: «Пауза» временно останавливает работу; «ИИ» включает генерацию; «Режим» выбирает ручную или автоматическую отправку; «Агент» и «Персона» задают модель и стиль; «Прокси» меняет сетевое подключение; «Автообучение» обновляет контекст.\n\n"
         "API ID/hash, токен бота и ключ шифрования задаются в .env на сервере. Сообщения с кодом и паролем входа удаляются ботом по возможности; не используйте бота, которому не доверяете."
@@ -274,9 +334,9 @@ async def logs_menu(c: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("logs:category:"))
-async def logs_category(c: CallbackQuery):
+async def logs_category(c: CallbackQuery, category_override: str | None = None):
     if not await check_cb(c): return
-    category = c.data.split(":")[2]
+    category = category_override or c.data.split(":")[2]
     if category not in LOG_CATEGORIES:
         await c.answer("Неизвестная категория.", show_alert=True); return
     async with SessionFactory() as db:
@@ -299,7 +359,7 @@ async def logs_add(c: CallbackQuery, state: FSMContext):
     if category not in LOG_CATEGORIES:
         await c.answer("Неизвестная категория.", show_alert=True); return
     await state.clear()
-    await state.update_data(log_category=category, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
+    await state.update_data(log_category=category, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data))
     await state.set_state(Flow.log_chat_id)
     await edit(c, f"{LOG_CATEGORIES[category]}\n\nОтправьте ID чата или супергруппы. Чтобы направлять логи в тему форума, добавьте через двоеточие ID темы.\n\nПримеры:\n-1004351902275 — общий чат\n-1004351902275:108 — тема с ID 108.", CANCEL)
 
@@ -435,7 +495,7 @@ async def runtime_settings_input(c: CallbackQuery, state: FSMContext):
         await c.answer("Неизвестная настройка.", show_alert=True); return
     label, unit, minimum, maximum = RUNTIME_KEYS[key]
     await state.clear()
-    await state.update_data(runtime_key=key, runtime_scope="global", ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
+    await state.update_data(runtime_key=key, runtime_scope="global", ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data))
     await state.set_state(Flow.runtime_value)
     hint = f"Введите число секунд. Например: 3600 = 01:00:00 (60 минут). Максимум: {maximum} сек. ({format_duration(maximum)})." if unit == "сек." else f"Введите процент от {minimum}% до {maximum}%."
     await edit(c, f"{label}\n{hint}", CANCEL)
@@ -568,7 +628,7 @@ async def agent_runtime_input(c: CallbackQuery, state: FSMContext):
         await c.answer("Неизвестная настройка.", show_alert=True); return
     label, unit, minimum, maximum = RUNTIME_KEYS[key]
     await state.clear()
-    await state.update_data(runtime_key=key, runtime_scope="agent", runtime_aid=aid, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
+    await state.update_data(runtime_key=key, runtime_scope="agent", runtime_aid=aid, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data))
     await state.set_state(Flow.runtime_value)
     hint = f"Введите число секунд. Например: 3600 = 01:00:00. Максимум: {maximum} сек. ({format_duration(maximum)})." if unit == "сек." else f"Введите процент от {minimum}% до {maximum}%."
     await edit(c, f"{label}\n{hint}", CANCEL)
@@ -583,7 +643,7 @@ async def agent_channel_runtime_input(c: CallbackQuery, state: FSMContext):
         return
     label, unit, minimum, maximum, _ = AGENT_CHANNEL_RUNTIME_KEYS[key]
     await state.clear()
-    await state.update_data(runtime_key=key, runtime_scope="agent_channel", runtime_aid=aid, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
+    await state.update_data(runtime_key=key, runtime_scope="agent_channel", runtime_aid=aid, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data))
     await state.set_state(Flow.runtime_value)
     hint = f"Введите целое число секунд. Например: 3600 = 01:00:00. Максимум: {maximum} сек. ({format_duration(maximum)})." if unit == "сек." else f"Введите процент от {minimum}% до {maximum}%."
     await edit(c, f"{label}\n{hint}", CANCEL)
@@ -713,7 +773,7 @@ async def acc_add_direct(c, state: FSMContext):
     if not cfg.telegram_api_id or not cfg.telegram_api_hash:
         await c.answer("Заполните TELEGRAM_API_ID и TELEGRAM_API_HASH в .env.", show_alert=True); return
     await state.clear()
-    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
+    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data))
     await c.answer()
     await start_qr_login(c.message.bot, c.from_user.id, state)
 
@@ -727,7 +787,7 @@ async def acc_add_proxy(c, state: FSMContext):
     if not cfg.proxy_encryption_key.strip():
         await c.answer("Сначала задайте PROXY_ENCRYPTION_KEY в .env и перезапустите приложение.", show_alert=True); return
     await state.clear()
-    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, login_method="qr")
+    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data), login_method="qr")
     await edit(c, "Выберите тип прокси:", kb([[("SOCKS5", "proxy:type:socks5"), ("HTTP", "proxy:type:http")], [("⬅️ Назад", "acc:add")]]))
 
 @router.callback_query(F.data=="acc:add:phone:direct")
@@ -738,7 +798,7 @@ async def acc_add_phone_direct(c: CallbackQuery, state: FSMContext):
     if not cfg.telegram_api_id or not cfg.telegram_api_hash:
         await c.answer("Заполните TELEGRAM_API_ID и TELEGRAM_API_HASH в .env.", show_alert=True); return
     await state.clear()
-    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, login_method="phone")
+    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data), login_method="phone")
     await c.answer()
     await start_phone_login_prompt(c.message.bot, c.from_user.id, state)
 
@@ -752,7 +812,7 @@ async def acc_add_phone_proxy(c: CallbackQuery, state: FSMContext):
     if not cfg.proxy_encryption_key.strip():
         await c.answer("Сначала задайте PROXY_ENCRYPTION_KEY в .env и перезапустите приложение.", show_alert=True); return
     await state.clear()
-    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, login_method="phone")
+    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data), login_method="phone")
     await edit(c, "Выберите тип прокси:", kb([[("SOCKS5", "proxy:type:socks5"), ("HTTP", "proxy:type:http")], [("⬅️ Назад", "acc:add")]]))
 
 @router.callback_query(F.data.startswith("proxy:type:"))
@@ -762,7 +822,7 @@ async def proxy_type(c, state: FSMContext):
     if kind not in {"socks5", "http"}:
         await c.answer("Неизвестный тип прокси.", show_alert=True); return
     existing = await state.get_data()
-    await state.update_data(proxy_type=kind, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, login_method=existing.get("login_method", "qr"))
+    await state.update_data(proxy_type=kind, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=existing.get("return_callback", "acc:list"), login_method=existing.get("login_method", "qr"))
     await state.set_state(Flow.proxy_host)
     await edit(c, "Введите IP-адрес или домен прокси:", CANCEL)
 
@@ -880,7 +940,7 @@ async def start_phone_login_prompt(bot, uid: int, state: FSMContext, proxy_confi
         "session_path": None, "ui_data": ui_data, "success": False,
     }
     await state.clear()
-    await state.update_data(ui_chat_id=ui_data.get("ui_chat_id"), ui_message_id=ui_data.get("ui_message_id"))
+    await state.update_data(ui_chat_id=ui_data.get("ui_chat_id"), ui_message_id=ui_data.get("ui_message_id"), return_callback=ui_data.get("return_callback"))
     await state.set_state(Flow.phone_number)
     text = "📱 Вход по номеру телефона\n\nВведите номер в международном формате, например +79991234567. Сообщение будет удалено по возможности."
     if not await edit_anchor(bot, ui_data, text, CANCEL):
@@ -1160,40 +1220,24 @@ async def acc_view(c, account_id: int | None = None):
         else:
             learning_text = "контекст сохранён вручную" if a.learning_prompt.strip() else "не запускалось"
     conn_label = {"connected": "подключён", "connecting": "подключается", "paused": "пауза", "disconnected": "отключён", "error": "ошибка подключения", "unauthorized": "сессия не авторизована"}.get(a.connection_status, a.connection_status)
-    txt=f"👤 {a.display_name} (@{a.username or 'нет username'})\nID: #{aid}\nАккаунт: {'включён' if a.enabled else 'выключен'}\nСоединение: {conn_label}\nРабота: {'⏸ на паузе' if a.manual_pause else ('активна' if a.enabled else 'отключена')}\nИИ для аккаунта: {'включён' if a.ai_enabled else 'выключен'}\nРежим ответов: {'автоматический' if a.reply_mode=='automatic' else 'ручной'}\nАгент: {agent.name if agent else 'не назначен'}\nПерсона: {persona.name if persona else 'не назначена'}\nАктивных чатов: {chats}\nОбучение: {learning_text}\nПрокси: {'настроен' if a.proxy_config_encrypted else 'нет'}\nИИ обозначен в профиле: {'да' if a.ai_identity_disclosed else 'нет'}\nИндивидуальные правила: {'заданы' if a.persona_style_override.strip() else 'нет'}"
+    txt=f"👤 {a.display_name} (@{a.username or 'нет username'})\nID: #{aid}\nАккаунт: {'включён' if a.enabled else 'выключен'}\nСоединение: {conn_label}\nРабота: {'⏸ на паузе' if a.manual_pause else ('активна' if a.enabled else 'отключена')}\nИИ для аккаунта: {'включён' if a.ai_enabled else 'выключен'}\nРежим ответов: {'автоматический' if a.reply_mode=='automatic' else 'ручной'}\nАгент: {agent.name if agent else 'не назначен'}\nПерсона: {persona.name if persona else 'не назначена'}\nАктивных чатов: {chats}\nОбучение: {learning_text}\nПрокси: {'настроен' if a.proxy_config_encrypted else 'нет'}\nИндивидуальные правила: {'заданы' if a.persona_style_override.strip() else 'нет'}"
     buttons=[
-        [(("▶️ Возобновить работу" if a.manual_pause else "⏸ Пауза работы"),f"acc:pause:{aid}")],
-        [(("⏸ Отключить аккаунт" if a.enabled else "▶️ Подключить аккаунт"),f"acc:toggle:{aid}")],
-        [(("🤖 Выключить ИИ" if a.ai_enabled else "🤖 Включить ИИ"),f"acc:ai:{aid}")],
-        [(f"Режим: {'Автомат' if a.reply_mode=='automatic' else 'Ручной'} · изменить",f"acc:mode:{aid}")],
-        [("🧠 Назначить ИИ-агента",f"acc:agents:{aid}")],
-        [("🎭 Назначить персону",f"acc:personas:{aid}")],
-        [("🌐 Настройки прокси",f"acc:proxysettings:{aid}")],
-        [(("🤖 Снять отметку об ИИ в профиле" if a.ai_identity_disclosed else "🤖 Подтвердить: ИИ указан в профиле"),f"acc:aidisclosure:{aid}")],
-        [("✏️ Индивидуальные правила",f"acc:personaoverride:{aid}")],
-        [("💡 Примеры аккаунта",f"example:account:{aid}")],
-        [("💬 Чаты аккаунта",f"chat:account:{aid}")],
-        [("🔗 Вступить в чат по ссылке",f"chat:joinlink:{aid}")],
-        [((("⏳ Завершается обучение" if a.learning_status == "stopping" else "⏹ Закончить обучение") if learning else "🧠 Автообучение"), (f"learn:stop:{aid}" if learning else f"acc:learn:{aid}"))],
-        [("🧠 Контекст обучения",f"acc:learnprompt:{aid}")],
+        [(("▶️ Возобновить" if a.manual_pause else "⏸ Пауза"),f"acc:pause:{aid}"),
+         (("▶️ Включить" if not a.enabled else "⏸ Отключить"),f"acc:toggle:{aid}")],
+        [("ИИ 🟢" if a.ai_enabled else "ИИ 🔴",f"acc:ai:{aid}"),
+         ("Автомат" if a.reply_mode=="automatic" else "Ручной",f"acc:mode:{aid}")],
+        [("🧠 ИИ Агент",f"acc:agents:{aid}"),("🎭 Персона",f"acc:personas:{aid}")],
+        [("⚙️ Прокси",f"acc:proxysettings:{aid}"),("✏️ Правила",f"acc:personaoverride:{aid}")],
+        [("💡 Примеры",f"example:account:{aid}"),("💬 Чаты",f"chat:account:{aid}")],
+        [("👥 Вступление в 👥",f"chat:joinlink:{aid}"),
+         ((("⏳ Завершение" if a.learning_status == "stopping" else "⏹ Остановить") if learning else "🧠 Автообучение"),(f"learn:stop:{aid}" if learning else f"acc:learn:{aid}"))],
+        [("📡 Каналы",f"channel:account:{aid}")],
         [("⬅️ К аккаунтам","acc:list"),("🏠 Главное меню","nav:home")]]
     await edit(c,txt,kb(buttons))
-@router.callback_query(F.data.startswith("acc:aidisclosure:"))
-async def acc_ai_disclosure_toggle(c):
-    if not await check_cb(c): return
-    aid = int(c.data.split(":")[2])
-    async with SessionFactory() as db:
-        account = await db.get(Account, aid)
-        if not account:
-            await c.answer("Аккаунт не найден.", show_alert=True); return
-        account.ai_identity_disclosed = not account.ai_identity_disclosed
-        await db.commit()
-    await acc_view(c, aid)
-
 @router.callback_query(F.data.startswith("acc:proxysettings:"))
-async def acc_proxy_settings(c):
+async def acc_proxy_settings(c, account_id: int | None = None):
     if not await check_cb(c): return
-    aid = int(c.data.split(":")[2])
+    aid = account_id if account_id is not None else int(c.data.split(":")[2])
     async with SessionFactory() as db:
         account = await db.get(Account, aid)
     if not account: await c.answer("Аккаунт не найден", show_alert=True); return
@@ -1211,7 +1255,7 @@ async def acc_proxy_set(c, state: FSMContext):
     if not cfg.proxy_encryption_key.strip():
         await c.answer("Сначала задайте PROXY_ENCRYPTION_KEY в .env.", show_alert=True); return
     await state.clear()
-    await state.update_data(proxy_account_id=aid, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
+    await state.update_data(proxy_account_id=aid, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data))
     await edit(c, "Выберите тип прокси для существующего аккаунта:", kb([
         [("SOCKS5", "proxy:type:socks5"), ("HTTP", "proxy:type:http")],
         [("⬅️ Отмена", f"acc:proxysettings:{aid}")],
@@ -1326,9 +1370,9 @@ async def acc_set_persona(c):
 
 
 @router.callback_query(F.data.startswith("acc:learnprompt:"))
-async def acc_learning_prompt(c):
+async def acc_learning_prompt(c, account_id: int | None = None):
     if not await check_cb(c): return
-    aid = int(c.data.split(":")[2])
+    aid = account_id if account_id is not None else int(c.data.split(":")[2])
     async with SessionFactory() as db:
         account = await db.get(Account, aid)
     if not account:
@@ -1360,7 +1404,7 @@ async def acc_context_edit_start(c, state: FSMContext):
     if account.learning_status in {"training", "stopping"}:
         await c.answer("Сначала завершите или остановите обучение, чтобы не потерять изменения.", show_alert=True); return
     await state.clear()
-    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, context_account_id=aid)
+    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data), context_account_id=aid)
     await state.set_state(Flow.learning_prompt_edit)
     await edit(c, f"Редактирование контекста аккаунта #{aid}\nОтправьте новый текст одним сообщением (до 3500 символов). Старый контекст останется, пока вы не отправите новый. Для отмены нажмите кнопку ниже.", CANCEL)
 
@@ -1423,7 +1467,7 @@ async def acc_persona_override_start(c, state: FSMContext):
         account = await db.get(Account, aid)
     if not account: await c.answer("Аккаунт не найден", show_alert=True); return
     await state.clear()
-    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, persona_override_account_id=aid)
+    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data), persona_override_account_id=aid)
     await state.set_state(Flow.persona_override)
     current = account.persona_style_override or "не заданы"
     await edit(c, f"Индивидуальные правила аккаунта #{aid}\n\nТекущие: {current[:1200]}\n\nОтправьте новый текст до 3500 символов. Для очистки отправьте /clear.", CANCEL)
@@ -1450,33 +1494,35 @@ async def acc_persona_override_save(m: Message, state: FSMContext):
     ]))
 
 @router.callback_query(F.data.startswith("acc:learn:"))
-async def acc_learning_menu(c):
+async def acc_learning_menu(c, account_id: int | None = None):
     if not await check_cb(c): return
-    aid = int(c.data.split(":")[2])
+    aid = account_id if account_id is not None else int(c.data.split(":")[2])
     async with SessionFactory() as db:
         account = await db.get(Account, aid)
-        chat_count = len((await db.scalars(select(ChatBinding).where(
-            ChatBinding.account_id == aid, ChatBinding.enabled.is_(True)
-        ))).all())
+        chat_count = len((await db.scalars(select(ChatBinding).where(ChatBinding.account_id == aid, ChatBinding.enabled.is_(True)))).all())
         enabled_agent = await db.scalar(select(AIAgent.id).where(AIAgent.enabled.is_(True)))
         ai_on = await global_ai_enabled(db)
     if not account:
         await c.answer("Аккаунт не найден", show_alert=True); return
-    if not account.enabled:
-        await c.answer("Сначала включите аккаунт.", show_alert=True); return
-    if account.manual_pause:
-        await c.answer("Сначала возобновите работу аккаунта.", show_alert=True); return
-    if account.reply_mode != "manual":
-        await c.answer("Перед обучением переключите режим ответов на «Ручной».", show_alert=True); return
-    if not chat_count:
-        await c.answer("Список диалогов ещё не загружен. Откройте «Чаты аккаунта» для первичной загрузки и повторите попытку.", show_alert=True); return
-    if not ai_on or not enabled_agent:
-        await c.answer("Включите глобальный ИИ и настройте хотя бы одного ИИ-агента.", show_alert=True); return
-    buttons = [
-        [("✅ Подтверждаю право на обработку", f"learn:confirm:{aid}")],
-        [("⬅️ Назад", f"acc:view:{aid}")],
-    ]
-    await edit(c, f"🧠 Автообучение · аккаунт #{aid}\n\nБудут обработаны все доступные подходящие чаты аккаунта. Система сохранит краткую сводку, временные тексты удалит после завершения. Новые сообщения учитываются до остановки или максимум 3 дня. Подтвердите право передавать эти сообщения выбранному ИИ-провайдеру. Обучение не отправляет сообщения в чаты.", kb(buttons))
+    learning = account.learning_status in {"training", "stopping"}
+    requirements = []
+    if not account.enabled: requirements.append("включите аккаунт")
+    if account.manual_pause: requirements.append("возобновите работу аккаунта")
+    if account.reply_mode != "manual": requirements.append("переключите режим на «Ручной»")
+    if not chat_count: requirements.append("загрузите чаты и включите хотя бы один")
+    if not ai_on or not enabled_agent: requirements.append("включите глобальный ИИ и настройте ИИ-агента")
+    lines = [f"🧠 Автообучение · аккаунт #{aid}", "", "Контекст: сохранён" if account.learning_prompt.strip() else "Контекст: пока не задан"]
+    if learning:
+        lines.append("Статус: обучение выполняется." if account.learning_status == "training" else "Статус: обучение останавливается.")
+    elif requirements:
+        lines += ["", "Для запуска необходимо:"] + [f"• {item}" for item in requirements]
+    else:
+        lines += ["", "Готово к запуску. Перед стартом подтвердите право передавать сообщения выбранному ИИ-провайдеру."]
+    rows = [[("🧠 Контекст обучения", f"acc:learnprompt:{aid}")]]
+    if learning: rows.append([("⏹ Остановить обучение", f"learn:stop:{aid}")])
+    elif not requirements: rows.append([("▶️ Запустить автообучение", f"learn:confirm:{aid}")])
+    rows.append([("⬅️ К аккаунту", f"acc:view:{aid}")])
+    await edit(c, "\\n".join(lines), kb(rows))
 
 
 @router.callback_query(F.data.startswith("learn:confirm:"))
@@ -1609,7 +1655,7 @@ async def global_toggle(c):
 async def agent_add(c,state):
     if not await check_cb(c): return
     await state.clear()
-    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
+    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data))
     await state.set_state(Flow.agent_name)
     await edit(c, "Введите название профиля, например Groq или OpenAI.", CANCEL)
 @router.message(Flow.agent_name)
@@ -1670,9 +1716,9 @@ async def assign_all(c):
         await db.commit()
     await edit(c,f"«{a.name}» назначен всем аккаунтам. Локальные переключатели ИИ не менялись.",back_home())
 @router.callback_query(F.data.startswith("agent:view:"))
-async def agent_view(c):
+async def agent_view(c, agent_id: int | None = None):
     if not await check_cb(c): return
-    aid=int(c.data.split(":")[2])
+    aid=agent_id if agent_id is not None else int(c.data.split(":")[2])
     async with SessionFactory() as db:
         a=await db.get(AIAgent,aid)
         if not a: await c.answer("Агент не найден",show_alert=True); return
@@ -1727,7 +1773,7 @@ async def agent_unset_default(c):
 async def agent_edit_start(c,state):
     if not await check_cb(c): return
     _,_,field,aid=c.data.split(":")
-    await state.clear(); await state.update_data(edit_field=field,edit_aid=int(aid),ui_chat_id=c.message.chat.id,ui_message_id=c.message.message_id); await state.set_state(Flow.agent_edit)
+    await state.clear(); await state.update_data(edit_field=field,edit_aid=int(aid),ui_chat_id=c.message.chat.id,ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data)); await state.set_state(Flow.agent_edit)
     await edit(c, "Введите новое значение для "+field+". Для ключа сообщение будет удалено по возможности.", CANCEL)
 @router.message(Flow.agent_edit)
 async def agent_edit_save(m,state):
@@ -1783,7 +1829,7 @@ async def persona_menu(c):
 async def persona_add(c,state):
     if not await check_cb(c): return
     await state.clear()
-    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
+    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data))
     await state.set_state(Flow.persona_name)
     await edit(c, "Введите название персоны.", CANCEL)
 @router.message(Flow.persona_name)
@@ -1817,9 +1863,9 @@ async def persona_style(m,state):
         await db.refresh(p)
     await finish_prompt(m, state, label, kb([[("🎭 К персонам","persona:menu")],[("🏠 Главное меню","nav:home")]]))
 @router.callback_query(F.data.startswith("persona:view:"))
-async def persona_view(c):
+async def persona_view(c, persona_id: int | None = None):
     if not await check_cb(c): return
-    pid=int(c.data.split(":")[2])
+    pid=persona_id if persona_id is not None else int(c.data.split(":")[2])
     async with SessionFactory() as db:
         p=await db.get(Persona,pid); n=len((await db.scalars(select(Example).where(Example.persona_id==pid))).all())
     if not p: await c.answer("Персона не найдена",show_alert=True); return
@@ -1832,7 +1878,7 @@ async def persona_edit_start(c, state: FSMContext):
         persona = await db.get(Persona, pid)
     if not persona: await c.answer("Персона не найдена", show_alert=True); return
     await state.clear()
-    await state.update_data(persona_edit_id=pid, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
+    await state.update_data(persona_edit_id=pid, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data))
     await state.set_state(Flow.persona_style)
     await edit(c, f"Изменение общей персоны «{persona.name}». Изменения сразу повлияют на все аккаунты, которые её используют. Отправьте новый стиль (до 5000 символов).", CANCEL)
 
@@ -1868,9 +1914,9 @@ async def example_menu(c):
     buttons += [[("➕ Добавить общий пример","example:add:0")],[("⬅️ Главное меню","nav:home")]]
     await edit(c,"🧩 Примеры",kb(buttons))
 @router.callback_query(F.data.startswith("example:account:"))
-async def account_examples(c):
+async def account_examples(c, account_id: int | None = None):
     if not await check_cb(c): return
-    aid = int(c.data.split(":")[2])
+    aid = account_id if account_id is not None else int(c.data.split(":")[2])
     async with SessionFactory() as db:
         account = await db.get(Account, aid)
         examples = list((await db.scalars(select(Example).where(Example.account_id == aid).order_by(Example.id.desc()).limit(15))).all())
@@ -1889,7 +1935,7 @@ async def account_example_add(c, state: FSMContext):
     async with SessionFactory() as db:
         if not await db.get(Account, aid): await c.answer("Аккаунт не найден", show_alert=True); return
     await state.clear()
-    await state.update_data(example_pid=0, example_account_id=aid, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
+    await state.update_data(example_pid=0, example_account_id=aid, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data))
     await state.set_state(Flow.example_incoming)
     await edit(c, "Добавление примера для конкретного аккаунта. Отправьте входящее сообщение без личных данных.", CANCEL)
 
@@ -1899,7 +1945,7 @@ async def example_add(c,state):
     pid=int(c.data.split(":")[2])
     async with SessionFactory() as db:
         if pid and not await db.get(Persona,pid): await c.answer("Персона не найдена",show_alert=True); return
-    await state.clear(); await state.update_data(example_pid=pid, example_account_id=None, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id); await state.set_state(Flow.example_incoming)
+    await state.clear(); await state.update_data(example_pid=pid, example_account_id=None, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data)); await state.set_state(Flow.example_incoming)
     await edit(c, "Введите входящее сообщение для примера. Удалите личные данные и сохраняйте только разрешённый текст.", CANCEL)
 @router.message(Flow.example_incoming)
 async def example_incoming(m,state):
@@ -1924,9 +1970,9 @@ async def example_reply(m,state):
     else:
         await finish_prompt(m,state,"Общий пример сохранён.",kb([[("💡 К примерам","example:menu")],[("🏠 Главное меню","nav:home")]]))
 @router.callback_query(F.data.startswith("example:view:"))
-async def example_view(c):
+async def example_view(c, example_id: int | None = None):
     if not await check_cb(c): return
-    eid=int(c.data.split(":")[2])
+    eid=example_id if example_id is not None else int(c.data.split(":")[2])
     async with SessionFactory() as db: e=await db.get(Example,eid); p=await db.get(Persona,e.persona_id) if e and e.persona_id else None
     if not e: await c.answer("Пример не найден",show_alert=True); return
     back = f"example:account:{e.account_id}" if e.account_id else "example:menu"
@@ -1984,7 +2030,7 @@ def _candidate_keyboard(aid: int, candidates: list[dict], offset: int = 0):
         navigation.append(("➡️ Ещё результаты", f"chat:page:{aid}:{offset + 12}"))
     if navigation:
         rows.append(navigation)
-    rows += [[("⬅️ К чатам", "chat:menu"), ("🏠 Главное меню", "nav:home")]]
+    rows += [[("⬅️ К аккаунту", f"acc:view:{aid}"), ("🏠 Главное меню", "nav:home")]]
     return kb(rows)
 
 
@@ -2008,7 +2054,7 @@ async def chat_search_start(c, state: FSMContext):
     if not await check_cb(c): return
     aid = int(c.data.split(":")[2])
     await state.clear()
-    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, chat_search_account_id=aid)
+    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data), chat_search_account_id=aid)
     await state.set_state(Flow.chat_search_query)
     await edit(c, f"🔎 Расширенный поиск Telegram-групп · аккаунт #{aid}\n\nВведите тему или несколько ключевых слов, например: «Python разработка», «настольные игры», «дизайн».\n\nПоиск объединяет результаты Telegram, Google, Яндекса, Bing, Yahoo и DuckDuckGo. Закрытые группы находятся, только если их пригласительные ссылки опубликованы в интернете; неопубликованные приватные группы поисковики не видят.", CANCEL)
 
@@ -2056,7 +2102,7 @@ async def chat_search_query(m: Message, state: FSMContext):
     candidates = sorted(combined.values(), key=lambda item: (int(item.get("score") or 0), int(item.get("members") or 0)), reverse=True)
     CHAT_CANDIDATES[(m.from_user.id, aid)] = candidates
     if not candidates:
-        await edit_anchor(m.bot, anchor, f"По запросу «{query}» подходящих публичных групп не найдено.\n\nПопробуйте более короткие или альтернативные ключевые слова.", kb([[("🔎 Новый запрос", f"chat:search:{aid}")], [("🧭 Найти ссылки в чатах", f"chat:discover:{aid}")], [("⬅️ К чатам", "chat:menu")]]))
+        await edit_anchor(m.bot, anchor, f"По запросу «{query}» подходящих публичных групп не найдено.\n\nПопробуйте более короткие или альтернативные ключевые слова.", kb([[("🔎 Новый запрос", f"chat:search:{aid}")], [("🧭 Найти ссылки в чатах", f"chat:discover:{aid}")], [("⬅️ К аккаунту", f"acc:view:{aid}")]]))
         return
     visible = candidates[:12]
     text_lines = [f"🔎 Результаты по запросу «{query}» · найдено {len(candidates)}", "Страница 1 · показываю 1–{min(12, len(candidates))}", "", "Результаты собраны из Telegram и внешних поисковиков. Ссылки проверяются перед вступлением."]
@@ -2074,14 +2120,14 @@ async def chat_discover_links(c):
     aid = int(c.data.split(":")[2])
     await c.answer("Запущено глубокое сканирование. Это может занять время.")
     anchor = {"ui_chat_id": c.message.chat.id, "ui_message_id": c.message.message_id}
-    await edit_anchor(c.bot, anchor, f"🧭 Глубокий поиск ссылок · аккаунт #{aid}\n\nПросматриваю до 5 000 последних сообщений в каждой группе, где состоит аккаунт. Сканирование может занять значительное время.", kb([[("⬅️ К чатам", "chat:menu")]]))
+    await edit_anchor(c.bot, anchor, f"🧭 Глубокий поиск ссылок · аккаунт #{aid}\n\nПросматриваю до 5 000 последних сообщений в каждой группе, где состоит аккаунт. Сканирование может занять значительное время.", kb([[("⬅️ К аккаунту", f"acc:view:{aid}")]]))
     scan_stats = {"groups": 0, "messages": 0, "links": 0}
     async def report_progress(groups, messages, links):
         scan_stats.update(groups=groups, messages=messages, links=links)
         if messages % 5000 != 0 and messages != 0:
             return
         progress_text = f"🧭 Глубокий поиск ссылок · аккаунт #{aid}\n\nГрупп обработано: {groups}\nСообщений просмотрено: {messages:,}\nУникальных ссылок найдено: {links}\n\nСканирование продолжается…".replace(",", " ")
-        await edit_anchor(c.bot, anchor, progress_text, kb([[("⬅️ К чатам", "chat:menu")]]))
+        await edit_anchor(c.bot, anchor, progress_text, kb([[("⬅️ К аккаунту", f"acc:view:{aid}")]]))
     try:
         account, client = await _load_account_client(aid)
         try:
@@ -2089,11 +2135,11 @@ async def chat_discover_links(c):
         finally:
             await client.disconnect()
     except Exception as exc:
-        await edit_anchor(c.bot, {"ui_chat_id": c.message.chat.id, "ui_message_id": c.message.message_id}, f"Не удалось найти ссылки: {str(exc)[:180]}", kb([[("⬅️ К чатам", "chat:menu")]]))
+        await edit_anchor(c.bot, {"ui_chat_id": c.message.chat.id, "ui_message_id": c.message.message_id}, f"Не удалось найти ссылки: {str(exc)[:180]}", kb([[("⬅️ К аккаунту", f"acc:view:{aid}")]]))
         return
     CHAT_CANDIDATES[(c.from_user.id, aid)] = candidates
     if not candidates:
-        await edit_anchor(c.bot, {"ui_chat_id": c.message.chat.id, "ui_message_id": c.message.message_id}, "🧭 Подходящих ссылок в последних сообщениях доступных групп не найдено.\n\nПоиск проверяет недавние сообщения в группах, к которым аккаунт уже имеет доступ; он не читает закрытые чаты, где аккаунт не состоит.", kb([[("🔎 Поиск публичных групп", f"chat:search:{aid}")], [("⬅️ К чатам", "chat:menu")]]))
+        await edit_anchor(c.bot, {"ui_chat_id": c.message.chat.id, "ui_message_id": c.message.message_id}, "🧭 Подходящих ссылок в последних сообщениях доступных групп не найдено.\n\nПоиск проверяет недавние сообщения в группах, к которым аккаунт уже имеет доступ; он не читает закрытые чаты, где аккаунт не состоит.", kb([[("🔎 Поиск публичных групп", f"chat:search:{aid}")], [("⬅️ К аккаунту", f"acc:view:{aid}")]]))
         return
     lines = [
         f"🧭 Найдено ссылок: {len(candidates)} · аккаунт #{aid}",
@@ -2114,7 +2160,7 @@ async def chat_candidate_page(c):
     aid, offset = int(aid_raw), max(0, int(offset_raw))
     candidates = CHAT_CANDIDATES.get((c.from_user.id, aid), [])
     if not candidates:
-        await edit(c, "Результаты больше не сохранены. Запустите поиск ещё раз.", kb([[("🔎 Поиск групп", f"chat:search:{aid}")], [("⬅️ К чатам", "chat:menu")]]))
+        await edit(c, "Результаты больше не сохранены. Запустите поиск ещё раз.", kb([[("🔎 Поиск групп", f"chat:search:{aid}")], [("⬅️ К аккаунту", f"acc:view:{aid}")]]))
         return
     page = candidates[offset:offset + 12]
     lines = [f"Найденные группы · аккаунт #{aid}", f"Показаны {offset + 1}–{min(offset + 12, len(candidates))} из {len(candidates)}", "", "Выберите результат для проверки."]
@@ -2166,11 +2212,11 @@ async def chat_candidate_preview(c):
         finally:
             await client.disconnect()
     except Exception as exc:
-        await edit(c, f"Не удалось проверить ссылку:\n{str(exc)[:220]}", kb([[("⬅️ К результатам", f"chat:results:{aid}")], [("⬅️ К чатам", "chat:menu")]]))
+        await edit(c, f"Не удалось проверить ссылку:\n{str(exc)[:220]}", kb([[("⬅️ К результатам", f"chat:results:{aid}")], [("⬅️ К аккаунту", f"acc:view:{aid}")]]))
         return
     CHAT_PENDING_JOIN[(c.from_user.id, aid)] = {"link": link, "kind": kind, "target": target, "title": title, "members": members, "entity_id": entity_id, "already": already}
     status = "Аккаунт уже состоит в группе." if already else "Вступление произойдёт только после вашего подтверждения."
-    await edit(c, f"👥 {title}\nУчастников: {members or 'неизвестно'}\nСсылка: {link}\n\n{status}\n\nПроверьте название и ссылку перед вступлением.", kb([[("✅ Подтвердить вступление", f"chat:joinconfirm:{aid}")], [("⬅️ К результатам", f"chat:results:{aid}")], [("⬅️ К чатам", "chat:menu")]]))
+    await edit(c, f"👥 {title}\nУчастников: {members or 'неизвестно'}\nСсылка: {link}\n\n{status}\n\nПроверьте название и ссылку перед вступлением.", kb([[("✅ Подтвердить вступление", f"chat:joinconfirm:{aid}")], [("⬅️ К результатам", f"chat:results:{aid}")], [("⬅️ К аккаунту", f"acc:view:{aid}")]]))
 
 
 @router.callback_query(F.data.startswith("chat:results:"))
@@ -2179,7 +2225,7 @@ async def chat_results_back(c):
     aid = int(c.data.split(":")[2])
     candidates = CHAT_CANDIDATES.get((c.from_user.id, aid), [])
     if not candidates:
-        await edit(c, "Результаты больше не сохранены. Запустите поиск ещё раз.", kb([[("🔎 Поиск групп", f"chat:search:{aid}")], [("⬅️ К чатам", "chat:menu")]]))
+        await edit(c, "Результаты больше не сохранены. Запустите поиск ещё раз.", kb([[("🔎 Поиск групп", f"chat:search:{aid}")], [("⬅️ К аккаунту", f"acc:view:{aid}")]]))
         return
     lines = [f"Найденные кандидаты · аккаунт #{aid}", "", "Выберите группу для проверки."]
     for i, item in enumerate(candidates[:12], 1):
@@ -2192,7 +2238,7 @@ async def chat_join_link_start(c, state: FSMContext):
     if not await check_cb(c): return
     aid = int(c.data.split(":")[2])
     await state.clear()
-    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, chat_join_account_id=aid)
+    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data), chat_join_account_id=aid)
     await state.set_state(Flow.chat_join_link)
     await edit(c, f"🔗 Вступление в группу · аккаунт #{aid}\n\nОтправьте ссылку-приглашение t.me/+… / t.me/joinchat/… или публичную ссылку t.me/username.\n\nСначала бот проверит ссылку и покажет название группы. Само вступление будет только после отдельного подтверждения.", CANCEL)
 
@@ -2319,111 +2365,111 @@ async def chat_join_confirm(c):
     await edit(c, f"✅ Группа «{title}» добавлена в чаты аккаунта #{aid}.\n\nЧат включён для работы и обучения. Если нужно, его можно выключить в разделе «Чаты аккаунта».", kb([[("💬 Чаты аккаунта", f"chat:account:{aid}:0")], [("👤 К аккаунту", f"acc:view:{aid}")], [("🏠 Главное меню", "nav:home")]]))
 
 
-# Chats
-@router.message(F.text=="💬 Чаты")
-async def chats(m):
-    if not await check_msg(m): return
-    await chats_screen(m)
-async def chats_screen(m):
-    async with SessionFactory() as db:
-        aa=list((await db.scalars(select(Account).order_by(Account.id))).all())
-        bs=list((await db.scalars(select(ChatBinding).order_by(ChatBinding.account_id,ChatBinding.id))).all())
-    buttons=[[(f"Загрузить чаты · #{a.id} {a.display_name[:22]}",f"chat:account:{a.id}")] for a in aa]
-    buttons += [[(f"🔎 Поиск групп · #{a.id}",f"chat:search:{a.id}"),(f"🧭 Найти ссылки · #{a.id}",f"chat:discover:{a.id}")] for a in aa]
-    buttons += [[(f"{'🟢' if b.enabled else '⚪'} #{b.account_id} · {b.title[:30]}",f"chat:toggle:{b.id}")] for b in bs[:20]]
-    buttons += [[("⬅️ Главное меню","nav:home")]]
-    await m.answer("💬 Чаты\nВыберите аккаунт, чтобы загрузить его чаты, найти публичные группы или просканировать ссылки в сообщениях. Вступление всегда подтверждается вручную." if aa else "Сначала подключите аккаунт в разделе «👤 Аккаунты».",reply_markup=kb(buttons))
-@router.callback_query(F.data=="chat:menu")
-async def chats_cb(c):
+# Chat management is accessed from each account card. Keep the old callback as a safe redirect.
+@router.callback_query(F.data == "chat:menu")
+async def chats_legacy_redirect(c):
     if not await check_cb(c): return
+    await edit(c, "Управление чатами теперь находится внутри карточки аккаунта.", kb([[("👤 К аккаунтам", "acc:list")], [("🏠 Главное меню", "nav:home")]]))
+
+async def chat_account_screen(c, aid, page=0):
     async with SessionFactory() as db:
-        aa=list((await db.scalars(select(Account).order_by(Account.id))).all()); bs=list((await db.scalars(select(ChatBinding).order_by(ChatBinding.account_id,ChatBinding.id))).all())
-    buttons=[[(f"Загрузить чаты · #{a.id} {a.display_name[:22]}",f"chat:account:{a.id}")] for a in aa]
-    buttons += [[(f"🔎 Поиск групп · #{a.id}",f"chat:search:{a.id}"),(f"🧭 Найти ссылки · #{a.id}",f"chat:discover:{a.id}")] for a in aa]
-    buttons += [[(f"{'🟢' if b.enabled else '⚪'} #{b.account_id} · {b.title[:30]}",f"chat:toggle:{b.id}")] for b in bs[:20]]
-    buttons += [[("⬅️ Главное меню","nav:home")]]
-    await edit(c,"💬 Чаты · выберите аккаунт или переключите выбранный чат.",kb(buttons))
+        account = await db.get(Account, aid)
+        bindings = list((await db.scalars(
+            select(ChatBinding).where(ChatBinding.account_id == aid).order_by(ChatBinding.title, ChatBinding.id)
+        )).all())
+    if not account:
+        await c.answer("Аккаунт не найден.", show_alert=True)
+        return
+    page_size = 20
+    max_page = max(0, (len(bindings) - 1) // page_size)
+    page = max(0, min(page, max_page))
+    visible = bindings[page * page_size:(page + 1) * page_size]
+    rows = [[(f"{'🟢' if row.enabled else '⚪'} {row.title[:38]}", f"chat:select:{aid}:{row.id}:{page}")] for row in visible]
+    nav = []
+    if page > 0: nav.append(("⬅️ Назад", f"chat:account:{aid}:{page-1}"))
+    if page < max_page: nav.append(("➡️ Далее", f"chat:account:{aid}:{page+1}"))
+    if nav: rows.append(nav)
+    rows += [
+        [("↻ Загрузить чаты" if not bindings else "↻ Обновить список чатов", f"chat:load:{aid}:{page}")],
+        [("🔎 Поиск групп", f"chat:search:{aid}"), ("🧭 Поиск ссылок", f"chat:discover:{aid}")],
+        [("⬅️ К аккаунту", f"acc:view:{aid}")],
+    ]
+    hint = "Сначала нажмите «Загрузить чаты»." if not bindings else f"Всего чатов: {len(bindings)}. Нажатие на строку сразу включает или выключает чат."
+    await edit(c, f"💬 Чаты · {account.display_name} · страница {page+1}/{max_page+1}\\n\\n{hint}\\n🟢 — включён · ⚪ — выключен", kb(rows))
+
+
 @router.callback_query(F.data.startswith("chat:account:"))
 async def chat_account(c):
     if not await check_cb(c): return
     parts = c.data.split(":")
     aid = int(parts[2])
     page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
-    if not cfg.telegram_api_id or not cfg.telegram_api_hash: await c.answer("Не заданы Telegram API credentials.",show_alert=True); return
-    async with SessionFactory() as db: a=await db.get(Account,aid)
-    if not a: await c.answer("Аккаунт не найден",show_alert=True); return
+    await chat_account_screen(c, aid, page)
+
+
+@router.callback_query(F.data.startswith("chat:load:"))
+async def chat_load(c):
+    if not await check_cb(c): return
+    parts = c.data.split(":")
+    aid = int(parts[2])
+    page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
+    if not cfg.telegram_api_id or not cfg.telegram_api_hash:
+        await c.answer("Не заданы Telegram API credentials.", show_alert=True); return
+    async with SessionFactory() as db:
+        account = await db.get(Account, aid)
+    if not account:
+        await c.answer("Аккаунт не найден", show_alert=True); return
     try:
-        async with isolated_telegram_client(a) as client:
+        async with isolated_telegram_client(account) as client:
             if not await client.is_user_authorized():
-                await c.answer("Сессия не авторизована",show_alert=True)
+                await c.answer("Сессия не авторизована", show_alert=True)
                 return
-            dialogs=[]
-            async for d in client.iter_dialogs():
-                entity = d.entity
+            dialogs = []
+            async for dialog in client.iter_dialogs():
+                entity = dialog.entity
                 if getattr(entity, "deleted", False) or getattr(entity, "bot", False):
                     continue
-                title = (d.name or str(d.id)).strip()
+                title = (dialog.name or str(dialog.id)).strip()
                 if title:
-                    dialogs.append((int(d.id), title[:255]))
+                    dialogs.append((int(dialog.id), title[:255]))
     except Exception as exc:
-        await c.answer(f"Ошибка загрузки: {type(exc).__name__}: {str(exc)[:180]}",show_alert=True)
+        await c.answer(f"Ошибка загрузки: {type(exc).__name__}: {str(exc)[:180]}", show_alert=True)
         return
     async with SessionFactory() as db:
         existing = list((await db.scalars(select(ChatBinding).where(ChatBinding.account_id == aid))).all())
-        by_chat = {binding.chat_id: binding for binding in existing}
-        for cid, title in dialogs:
-            binding = by_chat.get(cid)
+        by_chat = {row.chat_id: row for row in existing}
+        added = 0
+        for chat_id, title in dialogs:
+            binding = by_chat.get(chat_id)
             if binding:
                 binding.title = title
             else:
-                db.add(ChatBinding(account_id=aid, chat_id=cid, title=title, enabled=True, auto_discovered=True))
+                db.add(ChatBinding(account_id=aid, chat_id=chat_id, title=title, enabled=True, auto_discovered=True))
+                added += 1
         await db.commit()
-        selected={b.chat_id for b in (await db.scalars(select(ChatBinding).where(ChatBinding.account_id==aid,ChatBinding.enabled.is_(True)))).all()}
-    page_size = 20
-    max_page = max(0, (len(dialogs) - 1) // page_size)
-    page = max(0, min(page, max_page))
-    visible = dialogs[page * page_size:(page + 1) * page_size]
-    buttons=[[(f"{'🟢' if cid in selected else '▫️'} {title[:36]}",f"chat:select:x:{aid}:{cid}:{page}")] for cid,title in visible]
-    nav = []
-    if page > 0: nav.append(("⬅️ Назад", f"chat:account:{aid}:{page-1}"))
-    if page < max_page: nav.append(("➡️ Далее", f"chat:account:{aid}:{page+1}"))
-    if nav: buttons.append(nav)
-    buttons += [[("📋 Выбранные чаты",f"chat:refresh:{aid}:{page}")], [("⬅️ К чатам","chat:menu"),("🏠 Главное меню","nav:home")]]
-    await edit(c,f"Чаты аккаунта #{aid}\nСтраница {page+1} из {max_page+1} · Всего доступно: {len(dialogs)}\n🟢 включён для работы и обучения · ▫️ исключён.",kb(buttons))
+    await chat_account_screen(c, aid, page)
+    await c.message.answer(f"✅ Загружено чатов: {len(dialogs)} · новых добавлено: {added}")
+
 
 @router.callback_query(F.data.startswith("chat:select:"))
 async def chat_select(c):
     if not await check_cb(c): return
-    parts=c.data.split(":"); aid,cid=int(parts[3]),int(parts[4]); page=int(parts[5]) if len(parts)>5 and parts[5].isdigit() else 0
-    async with SessionFactory() as db: a=await db.get(Account,aid)
-    if not a:
-        await c.answer("Аккаунт не найден",show_alert=True)
-        return
-    try:
-        async with isolated_telegram_client(a) as client:
-            entity=await client.get_entity(cid)
-            title=getattr(entity,"title",None) or getattr(entity,"username",None) or " ".join(x for x in [getattr(entity,"first_name",None),getattr(entity,"last_name",None)] if x) or str(cid)
-    except Exception as exc:
-        await c.answer(f"Не удалось открыть чат: {type(exc).__name__}: {str(exc)[:180]}",show_alert=True)
-        return
+    _, _, aid_raw, binding_raw, page_raw = c.data.split(":")
+    aid, binding_id, page = int(aid_raw), int(binding_raw), int(page_raw)
     async with SessionFactory() as db:
-        b=await db.scalar(select(ChatBinding).where(ChatBinding.account_id==aid,ChatBinding.chat_id==cid))
-        if b:
-            b.enabled = not b.enabled
-            b.title = title
-        else:
-            db.add(ChatBinding(account_id=aid, chat_id=cid, title=title, enabled=True, auto_discovered=True))
+        binding = await db.get(ChatBinding, binding_id)
+        if not binding or binding.account_id != aid:
+            await c.answer("Чат не найден.", show_alert=True)
+            return
+        binding.enabled = not binding.enabled
         await db.commit()
-    await chat_account_refresh(c,aid,page)
-@router.callback_query(F.data.startswith("chat:refresh:"))
-async def chat_refresh(c):
-    if not await check_cb(c): return
-    parts = c.data.split(":")
-    aid = int(parts[2]); page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
-    await chat_account_refresh(c, aid, page)
-async def chat_account_refresh(c,aid,page=0):
-    async with SessionFactory() as db: bs=list((await db.scalars(select(ChatBinding).where(ChatBinding.account_id==aid).order_by(ChatBinding.id))).all())
-    await edit(c,f"Выбранные чаты аккаунта #{aid}. 🟢 включён · ⚪ исключён.",kb([[(f"{'🟢' if b.enabled else '⚪'} {b.title[:36]}",f"chat:toggle:{b.id}")] for b in bs[:40]]+[[("↻ Загрузить список чатов",f"chat:account:{aid}:{page}")],[("⬅️ К чатам","chat:menu"),("🏠 Главное меню","nav:home")]]))
+    await chat_account_screen(c, aid, page)
+
+
+async def chat_account_refresh(c, aid, page=0):
+    await chat_account_screen(c, aid, page)
+
+
 @router.callback_query(F.data.startswith("chat:toggle:"))
 async def chat_toggle(c):
     if not await check_cb(c): return
@@ -2466,34 +2512,15 @@ def channel_setting_text(field, value):
         return f"{label}: {value}"
     return label
 
-async def channels_screen_message(m):
-    async with SessionFactory() as db:
-        accounts = list((await db.scalars(select(Account).order_by(Account.id))).all())
-        counts = {}
-        for account in accounts:
-            counts[account.id] = len((await db.scalars(
-                select(ChannelBinding.id).where(ChannelBinding.account_id == account.id)
-            )).all())
-    rows = [[(f"👤 #{a.id} · {a.display_name[:24]} · каналов: {counts[a.id]}", f"channel:account:{a.id}")] for a in accounts]
-    rows += [[("⬅️ Главное меню", "nav:home")]]
-    await m.answer("📡 Каналы\nСначала выберите Telegram-аккаунт. Внутри него находятся его каналы и общие настройки для них.", reply_markup=kb(rows))
-
-@router.message(F.text == "📡 Каналы")
-async def channels_message(m):
-    if not await check_msg(m): return
-    await channels_screen_message(m)
-
 @router.callback_query(F.data == "channel:menu")
-async def channels_menu(c):
+async def channels_legacy_redirect(c):
     if not await check_cb(c): return
     async with SessionFactory() as db:
         accounts = list((await db.scalars(select(Account).order_by(Account.id))).all())
-        counts = {}
-        for account in accounts:
-            counts[account.id] = len((await db.scalars(select(ChannelBinding.id).where(ChannelBinding.account_id == account.id))).all())
-    rows = [[(f"👤 #{a.id} · {a.display_name[:24]} · каналов: {counts[a.id]}", f"channel:account:{a.id}")] for a in accounts]
-    rows += [[("⬅️ Главное меню", "nav:home")]]
-    await edit(c, "📡 Каналы\nВыберите аккаунт, чтобы открыть список его каналов и настройки.", kb(rows))
+    rows = [[(f"👤 {a.display_name[:28]}", f"channel:account:{a.id}")] for a in accounts]
+    rows.append([("⬅️ К аккаунтам", "acc:list")])
+    await edit(c, "Управление каналами теперь находится в карточке соответствующего аккаунта.", kb(rows))
+
 
 async def channel_account_screen(c, aid):
     async with SessionFactory() as db:
@@ -2509,7 +2536,7 @@ async def channel_account_screen(c, aid):
         [("↻ Загрузить / обновить каналы", f"channel:sync:{aid}")],
         [("⚙️ Глобальные настройки каналов", f"channel:gsettings:{aid}")],
         [("🧾 История анализа", f"channel:history:{aid}")],
-        [("⬅️ К аккаунтам", "channel:menu"), ("🏠 Главное меню", "nav:home")],
+        [("⬅️ К аккаунту", f"acc:view:{aid}")],
     ]
     summary = "Каналов пока нет. Нажмите «Загрузить / обновить каналы»." if not bindings else "🟢 — ответы в комментариях включены · 🔴 — выключены.\nНажмите на канал, чтобы открыть его карточку. Нажатие не меняет его состояние."
     await edit(c, f"📡 Каналы · аккаунт #{aid} · {account.display_name}\n\n{summary}", kb(rows))
@@ -2681,7 +2708,7 @@ async def channel_setting_edit(c, state: FSMContext):
     label, _, _, kind = CHANNEL_SETTING_FIELDS[field]
     minimum, maximum = (1, 10) if kind == "min_comments" else (0, 100) if kind == "percent" else (0, 2147483647) if kind == "seconds" else (0, 4000)
     await state.clear()
-    await state.update_data(channel_scope=scope, channel_object_id=int(object_raw), channel_field=field, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
+    await state.update_data(channel_scope=scope, channel_object_id=int(object_raw), channel_field=field, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data))
     await state.set_state(Flow.channel_setting_value)
     if kind == "text":
         hint = "Отправьте текст инструкции. Можно несколько абзацев. Чтобы очистить, отправьте точку: ."
