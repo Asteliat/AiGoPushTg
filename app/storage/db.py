@@ -19,6 +19,7 @@ async def init_db() -> None:
         # Serialize schema upgrades even when a trusted CLI tool starts concurrently.
         await connection.exec_driver_sql("SELECT pg_advisory_xact_lock(741928461)")
         await connection.run_sync(Base.metadata.create_all)
+        await connection.exec_driver_sql("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())")
         # Safe additive migration for installations created by earlier versions.
         statements = [
             "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS reply_mode VARCHAR(20) NOT NULL DEFAULT 'manual'",
@@ -75,10 +76,14 @@ async def init_db() -> None:
         ]
         for statement in statements:
             await connection.exec_driver_sql(statement)
-        # Existing bindings were the only available chat list before auto-discovery.
-        # Enable them once, then mark them discovered so future manual disables persist.
+        # One-time compatibility migration: preserve the historical default for bindings
+        # that existed before discovery was introduced, without re-enabling them on deploy.
         await connection.exec_driver_sql(
-            "UPDATE chat_bindings SET enabled = TRUE, auto_discovered = TRUE WHERE auto_discovered = FALSE"
+            "DO $ BEGIN "
+            "IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = 1) THEN "
+            "UPDATE chat_bindings SET enabled = TRUE, auto_discovered = TRUE WHERE auto_discovered = FALSE; "
+            "INSERT INTO schema_migrations(version) VALUES (1); "
+            "END IF; END $"
         )
         await connection.exec_driver_sql(
             "INSERT INTO app_settings (key, value) VALUES ('ai_global_enabled', 'false') ON CONFLICT (key) DO NOTHING"
