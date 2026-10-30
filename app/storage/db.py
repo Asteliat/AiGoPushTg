@@ -68,6 +68,7 @@ async def init_db() -> None:
             "ALTER TABLE channel_bindings ADD COLUMN IF NOT EXISTS learning_started_at TIMESTAMPTZ NULL",
             "CREATE INDEX IF NOT EXISTS ix_chat_bindings_account_enabled ON chat_bindings (account_id, enabled)",
             "CREATE INDEX IF NOT EXISTS ix_channel_bindings_account_enabled ON channel_bindings (account_id, enabled)",
+            "CREATE INDEX IF NOT EXISTS ix_channel_bindings_learning ON channel_bindings (account_id, learning_status)",
             "CREATE INDEX IF NOT EXISTS ix_channel_post_states_due ON channel_post_states (status, next_retry_at)",
             "CREATE INDEX IF NOT EXISTS ix_channel_analyses_account_created ON channel_analyses (account_id, created_at DESC)",
             "CREATE INDEX IF NOT EXISTS ix_notification_outbox_due ON notification_outbox (status, next_retry_at, created_at)",
