@@ -140,16 +140,16 @@ async def main():
         lock_key = f"atcivperson:trigger-lock:{aid}"
         lock_token = secrets.token_urlsafe(18)
         try:
-            locked = bool(await redis.set(lock_key, lock_token, nx=True, ex=300))
+            locked = bool(await redis.set(lock_key, lock_token, nx=True, ex=3600))
+            while not locked:
+                # Serialize trigger events instead of dropping a second distinct message.
+                await asyncio.sleep(0.5)
+                locked = bool(await redis.set(lock_key, lock_token, nx=True, ex=3600))
         except Exception as exc:
             record.status = "failed"
             record.error = f"Redis lock error: {type(exc).__name__}: {str(exc)[:400]}"
             await db.commit()
             logging.exception("Could not acquire trigger lock for account %s", aid)
-            return True
-        if not locked:
-            record.status = "skipped_busy"
-            await db.commit()
             return True
 
         release_script = (
