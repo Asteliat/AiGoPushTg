@@ -83,7 +83,6 @@ def kb(rows):
 MAIN = kb([
     [("👤 Аккаунты", "acc:list"), ("🤖 ИИ-агенты", "agent:menu")],
     [("🎭 Персоны", "persona:menu"), ("💡 Примеры", "example:menu")],
-    [("📡 Каналы", "channel:menu")],
     [("⚙️ Настройки", "nav:settings")],
 ])
 CANCEL = kb([[("❌ Отмена", "nav:cancel")]])
@@ -172,12 +171,17 @@ async def start(m: Message, state: FSMContext):
 @router.message(F.text.in_({"❌ Отмена","Отмена"}))
 async def cancel(m: Message, state: FSMContext):
     if await check_msg(m):
+        data = await state.get_data()
+        previous = data.get("return_callback")
         await state.clear()
-        task=LOGIN_TASKS.pop(m.from_user.id, None)
+        task = LOGIN_TASKS.pop(m.from_user.id, None)
         if task and not task.done(): task.cancel()
         await cleanup_phone_login(m.from_user.id)
         await cleanup_qr_login(m.from_user.id)
-        await m.answer("Действие отменено.", reply_markup=MAIN)
+        if previous:
+            await m.answer("Действие отменено. Вернитесь в предыдущий раздел:", reply_markup=kb([[("↩️ Назад", previous)]]))
+        else:
+            await m.answer("Действие отменено.", reply_markup=MAIN)
 
 @router.callback_query(F.data=="nav:home")
 async def home_cb(c: CallbackQuery, state: FSMContext):
@@ -188,12 +192,15 @@ async def home_cb(c: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data=="nav:cancel")
 async def cancel_cb(c: CallbackQuery, state: FSMContext):
     if not await check_cb(c): return
+    data = await state.get_data()
+    previous = data.get("return_callback")
     await state.clear()
     task = LOGIN_TASKS.pop(c.from_user.id, None)
     if task and not task.done(): task.cancel()
     await cleanup_phone_login(c.from_user.id)
     await cleanup_qr_login(c.from_user.id)
-    await edit(c, "Действие отменено.\n\n" + await home_text(), MAIN)
+    await restore_previous_screen(c, previous)
+
 
 @router.callback_query(F.data=="nav:settings")
 async def settings_cb(c: CallbackQuery):
@@ -205,7 +212,7 @@ async def settings_cb(c: CallbackQuery):
         "🎭 Персоны — общие стили ответов; изменения применяются ко всем назначенным аккаунтам.\n"
         "💡 Примеры — образцы входящих сообщений и желаемых ответов для стиля.\n"
 
-        "📡 Каналы — отдельный список каналов и анализ обсуждений.\n"
+        "📡 Каналы — управление каналами внутри карточки каждого аккаунта.\n"
         "Ответы в ручном режиме показываются в уведомлении и не сохраняются.\n\n"
         "В карточке аккаунта: «Пауза» временно останавливает работу; «ИИ» включает генерацию; «Режим» выбирает ручную или автоматическую отправку; «Агент» и «Персона» задают модель и стиль; «Прокси» меняет сетевое подключение; «Автообучение» обновляет контекст.\n\n"
         "API ID/hash, токен бота и ключ шифрования задаются в .env на сервере. Сообщения с кодом и паролем входа удаляются ботом по возможности; не используйте бота, которому не доверяете."
@@ -299,7 +306,7 @@ async def logs_add(c: CallbackQuery, state: FSMContext):
     if category not in LOG_CATEGORIES:
         await c.answer("Неизвестная категория.", show_alert=True); return
     await state.clear()
-    await state.update_data(log_category=category, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
+    await state.update_data(log_category=category, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data))
     await state.set_state(Flow.log_chat_id)
     await edit(c, f"{LOG_CATEGORIES[category]}\n\nОтправьте ID чата или супергруппы. Чтобы направлять логи в тему форума, добавьте через двоеточие ID темы.\n\nПримеры:\n-1004351902275 — общий чат\n-1004351902275:108 — тема с ID 108.", CANCEL)
 
@@ -435,7 +442,7 @@ async def runtime_settings_input(c: CallbackQuery, state: FSMContext):
         await c.answer("Неизвестная настройка.", show_alert=True); return
     label, unit, minimum, maximum = RUNTIME_KEYS[key]
     await state.clear()
-    await state.update_data(runtime_key=key, runtime_scope="global", ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
+    await state.update_data(runtime_key=key, runtime_scope="global", ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data))
     await state.set_state(Flow.runtime_value)
     hint = f"Введите число секунд. Например: 3600 = 01:00:00 (60 минут). Максимум: {maximum} сек. ({format_duration(maximum)})." if unit == "сек." else f"Введите процент от {minimum}% до {maximum}%."
     await edit(c, f"{label}\n{hint}", CANCEL)
@@ -568,7 +575,7 @@ async def agent_runtime_input(c: CallbackQuery, state: FSMContext):
         await c.answer("Неизвестная настройка.", show_alert=True); return
     label, unit, minimum, maximum = RUNTIME_KEYS[key]
     await state.clear()
-    await state.update_data(runtime_key=key, runtime_scope="agent", runtime_aid=aid, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
+    await state.update_data(runtime_key=key, runtime_scope="agent", runtime_aid=aid, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data))
     await state.set_state(Flow.runtime_value)
     hint = f"Введите число секунд. Например: 3600 = 01:00:00. Максимум: {maximum} сек. ({format_duration(maximum)})." if unit == "сек." else f"Введите процент от {minimum}% до {maximum}%."
     await edit(c, f"{label}\n{hint}", CANCEL)
@@ -583,7 +590,7 @@ async def agent_channel_runtime_input(c: CallbackQuery, state: FSMContext):
         return
     label, unit, minimum, maximum, _ = AGENT_CHANNEL_RUNTIME_KEYS[key]
     await state.clear()
-    await state.update_data(runtime_key=key, runtime_scope="agent_channel", runtime_aid=aid, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
+    await state.update_data(runtime_key=key, runtime_scope="agent_channel", runtime_aid=aid, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data))
     await state.set_state(Flow.runtime_value)
     hint = f"Введите целое число секунд. Например: 3600 = 01:00:00. Максимум: {maximum} сек. ({format_duration(maximum)})." if unit == "сек." else f"Введите процент от {minimum}% до {maximum}%."
     await edit(c, f"{label}\n{hint}", CANCEL)
@@ -713,7 +720,7 @@ async def acc_add_direct(c, state: FSMContext):
     if not cfg.telegram_api_id or not cfg.telegram_api_hash:
         await c.answer("Заполните TELEGRAM_API_ID и TELEGRAM_API_HASH в .env.", show_alert=True); return
     await state.clear()
-    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
+    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data))
     await c.answer()
     await start_qr_login(c.message.bot, c.from_user.id, state)
 
@@ -727,7 +734,7 @@ async def acc_add_proxy(c, state: FSMContext):
     if not cfg.proxy_encryption_key.strip():
         await c.answer("Сначала задайте PROXY_ENCRYPTION_KEY в .env и перезапустите приложение.", show_alert=True); return
     await state.clear()
-    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, login_method="qr")
+    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data), login_method="qr")
     await edit(c, "Выберите тип прокси:", kb([[("SOCKS5", "proxy:type:socks5"), ("HTTP", "proxy:type:http")], [("⬅️ Назад", "acc:add")]]))
 
 @router.callback_query(F.data=="acc:add:phone:direct")
@@ -738,7 +745,7 @@ async def acc_add_phone_direct(c: CallbackQuery, state: FSMContext):
     if not cfg.telegram_api_id or not cfg.telegram_api_hash:
         await c.answer("Заполните TELEGRAM_API_ID и TELEGRAM_API_HASH в .env.", show_alert=True); return
     await state.clear()
-    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, login_method="phone")
+    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data), login_method="phone")
     await c.answer()
     await start_phone_login_prompt(c.message.bot, c.from_user.id, state)
 
@@ -752,7 +759,7 @@ async def acc_add_phone_proxy(c: CallbackQuery, state: FSMContext):
     if not cfg.proxy_encryption_key.strip():
         await c.answer("Сначала задайте PROXY_ENCRYPTION_KEY в .env и перезапустите приложение.", show_alert=True); return
     await state.clear()
-    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, login_method="phone")
+    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data), login_method="phone")
     await edit(c, "Выберите тип прокси:", kb([[("SOCKS5", "proxy:type:socks5"), ("HTTP", "proxy:type:http")], [("⬅️ Назад", "acc:add")]]))
 
 @router.callback_query(F.data.startswith("proxy:type:"))
@@ -762,7 +769,7 @@ async def proxy_type(c, state: FSMContext):
     if kind not in {"socks5", "http"}:
         await c.answer("Неизвестный тип прокси.", show_alert=True); return
     existing = await state.get_data()
-    await state.update_data(proxy_type=kind, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, login_method=existing.get("login_method", "qr"))
+    await state.update_data(proxy_type=kind, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data), login_method=existing.get("login_method", "qr"))
     await state.set_state(Flow.proxy_host)
     await edit(c, "Введите IP-адрес или домен прокси:", CANCEL)
 
@@ -1195,7 +1202,7 @@ async def acc_proxy_set(c, state: FSMContext):
     if not cfg.proxy_encryption_key.strip():
         await c.answer("Сначала задайте PROXY_ENCRYPTION_KEY в .env.", show_alert=True); return
     await state.clear()
-    await state.update_data(proxy_account_id=aid, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
+    await state.update_data(proxy_account_id=aid, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data))
     await edit(c, "Выберите тип прокси для существующего аккаунта:", kb([
         [("SOCKS5", "proxy:type:socks5"), ("HTTP", "proxy:type:http")],
         [("⬅️ Отмена", f"acc:proxysettings:{aid}")],
@@ -1344,7 +1351,7 @@ async def acc_context_edit_start(c, state: FSMContext):
     if account.learning_status in {"training", "stopping"}:
         await c.answer("Сначала завершите или остановите обучение, чтобы не потерять изменения.", show_alert=True); return
     await state.clear()
-    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, context_account_id=aid)
+    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data), context_account_id=aid)
     await state.set_state(Flow.learning_prompt_edit)
     await edit(c, f"Редактирование контекста аккаунта #{aid}\nОтправьте новый текст одним сообщением (до 3500 символов). Старый контекст останется, пока вы не отправите новый. Для отмены нажмите кнопку ниже.", CANCEL)
 
@@ -1407,7 +1414,7 @@ async def acc_persona_override_start(c, state: FSMContext):
         account = await db.get(Account, aid)
     if not account: await c.answer("Аккаунт не найден", show_alert=True); return
     await state.clear()
-    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, persona_override_account_id=aid)
+    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data), persona_override_account_id=aid)
     await state.set_state(Flow.persona_override)
     current = account.persona_style_override or "не заданы"
     await edit(c, f"Индивидуальные правила аккаунта #{aid}\n\nТекущие: {current[:1200]}\n\nОтправьте новый текст до 3500 символов. Для очистки отправьте /clear.", CANCEL)
@@ -1595,7 +1602,7 @@ async def global_toggle(c):
 async def agent_add(c,state):
     if not await check_cb(c): return
     await state.clear()
-    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
+    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data))
     await state.set_state(Flow.agent_name)
     await edit(c, "Введите название профиля, например Groq или OpenAI.", CANCEL)
 @router.message(Flow.agent_name)
@@ -1713,7 +1720,7 @@ async def agent_unset_default(c):
 async def agent_edit_start(c,state):
     if not await check_cb(c): return
     _,_,field,aid=c.data.split(":")
-    await state.clear(); await state.update_data(edit_field=field,edit_aid=int(aid),ui_chat_id=c.message.chat.id,ui_message_id=c.message.message_id); await state.set_state(Flow.agent_edit)
+    await state.clear(); await state.update_data(edit_field=field,edit_aid=int(aid),ui_chat_id=c.message.chat.id,ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data)); await state.set_state(Flow.agent_edit)
     await edit(c, "Введите новое значение для "+field+". Для ключа сообщение будет удалено по возможности.", CANCEL)
 @router.message(Flow.agent_edit)
 async def agent_edit_save(m,state):
@@ -1769,7 +1776,7 @@ async def persona_menu(c):
 async def persona_add(c,state):
     if not await check_cb(c): return
     await state.clear()
-    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
+    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data))
     await state.set_state(Flow.persona_name)
     await edit(c, "Введите название персоны.", CANCEL)
 @router.message(Flow.persona_name)
@@ -1818,7 +1825,7 @@ async def persona_edit_start(c, state: FSMContext):
         persona = await db.get(Persona, pid)
     if not persona: await c.answer("Персона не найдена", show_alert=True); return
     await state.clear()
-    await state.update_data(persona_edit_id=pid, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
+    await state.update_data(persona_edit_id=pid, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data))
     await state.set_state(Flow.persona_style)
     await edit(c, f"Изменение общей персоны «{persona.name}». Изменения сразу повлияют на все аккаунты, которые её используют. Отправьте новый стиль (до 5000 символов).", CANCEL)
 
@@ -1875,7 +1882,7 @@ async def account_example_add(c, state: FSMContext):
     async with SessionFactory() as db:
         if not await db.get(Account, aid): await c.answer("Аккаунт не найден", show_alert=True); return
     await state.clear()
-    await state.update_data(example_pid=0, example_account_id=aid, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
+    await state.update_data(example_pid=0, example_account_id=aid, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data))
     await state.set_state(Flow.example_incoming)
     await edit(c, "Добавление примера для конкретного аккаунта. Отправьте входящее сообщение без личных данных.", CANCEL)
 
@@ -1885,7 +1892,7 @@ async def example_add(c,state):
     pid=int(c.data.split(":")[2])
     async with SessionFactory() as db:
         if pid and not await db.get(Persona,pid): await c.answer("Персона не найдена",show_alert=True); return
-    await state.clear(); await state.update_data(example_pid=pid, example_account_id=None, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id); await state.set_state(Flow.example_incoming)
+    await state.clear(); await state.update_data(example_pid=pid, example_account_id=None, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data)); await state.set_state(Flow.example_incoming)
     await edit(c, "Введите входящее сообщение для примера. Удалите личные данные и сохраняйте только разрешённый текст.", CANCEL)
 @router.message(Flow.example_incoming)
 async def example_incoming(m,state):
@@ -1994,7 +2001,7 @@ async def chat_search_start(c, state: FSMContext):
     if not await check_cb(c): return
     aid = int(c.data.split(":")[2])
     await state.clear()
-    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, chat_search_account_id=aid)
+    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data), chat_search_account_id=aid)
     await state.set_state(Flow.chat_search_query)
     await edit(c, f"🔎 Расширенный поиск Telegram-групп · аккаунт #{aid}\n\nВведите тему или несколько ключевых слов, например: «Python разработка», «настольные игры», «дизайн».\n\nПоиск объединяет результаты Telegram, Google, Яндекса, Bing, Yahoo и DuckDuckGo. Закрытые группы находятся, только если их пригласительные ссылки опубликованы в интернете; неопубликованные приватные группы поисковики не видят.", CANCEL)
 
@@ -2178,7 +2185,7 @@ async def chat_join_link_start(c, state: FSMContext):
     if not await check_cb(c): return
     aid = int(c.data.split(":")[2])
     await state.clear()
-    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, chat_join_account_id=aid)
+    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data), chat_join_account_id=aid)
     await state.set_state(Flow.chat_join_link)
     await edit(c, f"🔗 Вступление в группу · аккаунт #{aid}\n\nОтправьте ссылку-приглашение t.me/+… / t.me/joinchat/… или публичную ссылку t.me/username.\n\nСначала бот проверит ссылку и покажет название группы. Само вступление будет только после отдельного подтверждения.", CANCEL)
 
@@ -2644,7 +2651,7 @@ async def channel_setting_edit(c, state: FSMContext):
     label, _, _, kind = CHANNEL_SETTING_FIELDS[field]
     minimum, maximum = (1, 10) if kind == "min_comments" else (0, 100) if kind == "percent" else (0, 2147483647) if kind == "seconds" else (0, 4000)
     await state.clear()
-    await state.update_data(channel_scope=scope, channel_object_id=int(object_raw), channel_field=field, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
+    await state.update_data(channel_scope=scope, channel_object_id=int(object_raw), channel_field=field, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data))
     await state.set_state(Flow.channel_setting_value)
     if kind == "text":
         hint = "Отправьте текст инструкции. Можно несколько абзацев. Чтобы очистить, отправьте точку: ."
