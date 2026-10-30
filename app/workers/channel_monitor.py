@@ -167,17 +167,6 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
                 binding.discussion_group_id = group_peer_id
                 await db.commit()
 
-    async def fetch_comments(group, root_id: int) -> list[str]:
-        found = []
-        async for item in client.iter_messages(group, reply_to=root_id, limit=30):
-            text = (item.message or "").strip()
-            if text and not item.out:
-                found.append(text[:1000])
-                if len(found) >= 10:
-                    break
-        found.reverse()
-        return found
-
     async def download_post_image_data_uri(message) -> str | None:
         """Download and normalize a Telegram photo for a vision-capable AI model."""
         if not getattr(message, "photo", None):
