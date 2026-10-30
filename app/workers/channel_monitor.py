@@ -32,6 +32,7 @@ def _utcnow() -> datetime:
 def install_channel_monitor(client, account_id: int, redis, send_log):
     active_posts: set[tuple[int, int]] = set()
     background_tasks: set[asyncio.Task] = set()
+    active_channel_learning: set[int] = set()
     discussion_channels: dict[int, int] = {}
 
     def spawn(coro):
