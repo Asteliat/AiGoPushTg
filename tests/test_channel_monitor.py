@@ -214,15 +214,15 @@ def test_channel_reply_probability_has_deterministic_zero_and_hundred_percent(mo
         raise AssertionError("random roll must not be used for 0% or 100%")
 
     monkeypatch.setattr(monitor.random, "randint", unexpected_random_call)
-    assert monitor.channel_reply_probability_passes(0) is False
-    assert monitor.channel_reply_probability_passes(100) is True
-    assert monitor.channel_reply_probability_passes(150) is True
-    assert monitor.channel_reply_probability_passes(-10) is False
+    assert channel_reply_probability_passes(0) is False
+    assert channel_reply_probability_passes(100) is True
+    assert channel_reply_probability_passes(150) is True
+    assert channel_reply_probability_passes(-10) is False
 
 
 def test_channel_reply_probability_roll_controls_reply_selection(monkeypatch):
     import app.workers.channel_monitor as monitor
 
     monkeypatch.setattr(monitor.random, "randint", lambda low, high: 35)
-    assert monitor.channel_reply_probability_passes(35) is True
-    assert monitor.channel_reply_probability_passes(34) is False
+    assert channel_reply_probability_passes(35) is True
+    assert channel_reply_probability_passes(34) is False
