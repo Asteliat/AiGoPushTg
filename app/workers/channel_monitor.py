@@ -269,6 +269,9 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
                     post_text=post_text, comments=comments[:10],
                 )
                 result.discussion_group_id = group_peer_id
+                if not result.should_reply and result.publication_status == "pending":
+                    result.publication_status = "skipped_ai"
+                    await db.commit()
 
                 # Existing analyses from before publication support was introduced are
                 # deliberately not published retroactively.
@@ -424,6 +427,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
                 "published": "Комментарий опубликован ответом на исходную публикацию.",
                 "manual": "Подготовлен черновик. Ручной режим: комментарий не опубликован.",
                 "skipped_probability": "Публикация пропущена по вероятности ответа.",
+                "skipped_ai": "ИИ решил, что отдельный комментарий к публикации не нужен.",
                 "skipped_cooldown": "Публикация пропущена из-за паузы между ответами.",
                 "approved": "Ответ подготовлен, ожидает публикации.",
                 "publishing": "Публикация выполняется.",
