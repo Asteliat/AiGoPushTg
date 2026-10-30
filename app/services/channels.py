@@ -37,8 +37,8 @@ def build_channel_analysis_user_text(
         if image_not_analyzed else ""
     )
     return (
-        f"ПУБЛИКАЦИЯ:\\n{post_text[:6000]}{image_note}"
-        f"\\n\\nКОММЕНТАРИИ:\\n{rendered_comments}"
+        f"ПУБЛИКАЦИЯ:\n{post_text[:6000]}{image_note}"
+        f"\n\nКОММЕНТАРИИ:\n{rendered_comments}"
     )
 
 
