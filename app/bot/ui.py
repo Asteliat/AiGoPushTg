@@ -2057,7 +2057,7 @@ async def chat_search_query(m: Message, state: FSMContext):
     candidates = sorted(combined.values(), key=lambda item: (int(item.get("score") or 0), int(item.get("members") or 0)), reverse=True)
     CHAT_CANDIDATES[(m.from_user.id, aid)] = candidates
     if not candidates:
-        await edit_anchor(m.bot, anchor, f"По запросу «{query}» подходящих публичных групп не найдено.\n\nПопробуйте более короткие или альтернативные ключевые слова.", kb([[("🔎 Новый запрос", f"chat:search:{aid}")], [("🧭 Найти ссылки в чатах", f"chat:discover:{aid}")], [("⬅️ К чатам", "chat:menu")]]))
+        await edit_anchor(m.bot, anchor, f"По запросу «{query}» подходящих публичных групп не найдено.\n\nПопробуйте более короткие или альтернативные ключевые слова.", kb([[("🔎 Новый запрос", f"chat:search:{aid}")], [("🧭 Найти ссылки в чатах", f"chat:discover:{aid}")], [("⬅️ К аккаунту", f"acc:view:{aid}")]]))
         return
     visible = candidates[:12]
     text_lines = [f"🔎 Результаты по запросу «{query}» · найдено {len(candidates)}", "Страница 1 · показываю 1–{min(12, len(candidates))}", "", "Результаты собраны из Telegram и внешних поисковиков. Ссылки проверяются перед вступлением."]
@@ -2075,14 +2075,14 @@ async def chat_discover_links(c):
     aid = int(c.data.split(":")[2])
     await c.answer("Запущено глубокое сканирование. Это может занять время.")
     anchor = {"ui_chat_id": c.message.chat.id, "ui_message_id": c.message.message_id}
-    await edit_anchor(c.bot, anchor, f"🧭 Глубокий поиск ссылок · аккаунт #{aid}\n\nПросматриваю до 5 000 последних сообщений в каждой группе, где состоит аккаунт. Сканирование может занять значительное время.", kb([[("⬅️ К чатам", "chat:menu")]]))
+    await edit_anchor(c.bot, anchor, f"🧭 Глубокий поиск ссылок · аккаунт #{aid}\n\nПросматриваю до 5 000 последних сообщений в каждой группе, где состоит аккаунт. Сканирование может занять значительное время.", kb([[("⬅️ К аккаунту", f"acc:view:{aid}")]]))
     scan_stats = {"groups": 0, "messages": 0, "links": 0}
     async def report_progress(groups, messages, links):
         scan_stats.update(groups=groups, messages=messages, links=links)
         if messages % 5000 != 0 and messages != 0:
             return
         progress_text = f"🧭 Глубокий поиск ссылок · аккаунт #{aid}\n\nГрупп обработано: {groups}\nСообщений просмотрено: {messages:,}\nУникальных ссылок найдено: {links}\n\nСканирование продолжается…".replace(",", " ")
-        await edit_anchor(c.bot, anchor, progress_text, kb([[("⬅️ К чатам", "chat:menu")]]))
+        await edit_anchor(c.bot, anchor, progress_text, kb([[("⬅️ К аккаунту", f"acc:view:{aid}")]]))
     try:
         account, client = await _load_account_client(aid)
         try:
@@ -2090,11 +2090,11 @@ async def chat_discover_links(c):
         finally:
             await client.disconnect()
     except Exception as exc:
-        await edit_anchor(c.bot, {"ui_chat_id": c.message.chat.id, "ui_message_id": c.message.message_id}, f"Не удалось найти ссылки: {str(exc)[:180]}", kb([[("⬅️ К чатам", "chat:menu")]]))
+        await edit_anchor(c.bot, {"ui_chat_id": c.message.chat.id, "ui_message_id": c.message.message_id}, f"Не удалось найти ссылки: {str(exc)[:180]}", kb([[("⬅️ К аккаунту", f"acc:view:{aid}")]]))
         return
     CHAT_CANDIDATES[(c.from_user.id, aid)] = candidates
     if not candidates:
-        await edit_anchor(c.bot, {"ui_chat_id": c.message.chat.id, "ui_message_id": c.message.message_id}, "🧭 Подходящих ссылок в последних сообщениях доступных групп не найдено.\n\nПоиск проверяет недавние сообщения в группах, к которым аккаунт уже имеет доступ; он не читает закрытые чаты, где аккаунт не состоит.", kb([[("🔎 Поиск публичных групп", f"chat:search:{aid}")], [("⬅️ К чатам", "chat:menu")]]))
+        await edit_anchor(c.bot, {"ui_chat_id": c.message.chat.id, "ui_message_id": c.message.message_id}, "🧭 Подходящих ссылок в последних сообщениях доступных групп не найдено.\n\nПоиск проверяет недавние сообщения в группах, к которым аккаунт уже имеет доступ; он не читает закрытые чаты, где аккаунт не состоит.", kb([[("🔎 Поиск публичных групп", f"chat:search:{aid}")], [("⬅️ К аккаунту", f"acc:view:{aid}")]]))
         return
     lines = [
         f"🧭 Найдено ссылок: {len(candidates)} · аккаунт #{aid}",
@@ -2115,7 +2115,7 @@ async def chat_candidate_page(c):
     aid, offset = int(aid_raw), max(0, int(offset_raw))
     candidates = CHAT_CANDIDATES.get((c.from_user.id, aid), [])
     if not candidates:
-        await edit(c, "Результаты больше не сохранены. Запустите поиск ещё раз.", kb([[("🔎 Поиск групп", f"chat:search:{aid}")], [("⬅️ К чатам", "chat:menu")]]))
+        await edit(c, "Результаты больше не сохранены. Запустите поиск ещё раз.", kb([[("🔎 Поиск групп", f"chat:search:{aid}")], [("⬅️ К аккаунту", f"acc:view:{aid}")]]))
         return
     page = candidates[offset:offset + 12]
     lines = [f"Найденные группы · аккаунт #{aid}", f"Показаны {offset + 1}–{min(offset + 12, len(candidates))} из {len(candidates)}", "", "Выберите результат для проверки."]
@@ -2167,11 +2167,11 @@ async def chat_candidate_preview(c):
         finally:
             await client.disconnect()
     except Exception as exc:
-        await edit(c, f"Не удалось проверить ссылку:\n{str(exc)[:220]}", kb([[("⬅️ К результатам", f"chat:results:{aid}")], [("⬅️ К чатам", "chat:menu")]]))
+        await edit(c, f"Не удалось проверить ссылку:\n{str(exc)[:220]}", kb([[("⬅️ К результатам", f"chat:results:{aid}")], [("⬅️ К аккаунту", f"acc:view:{aid}")]]))
         return
     CHAT_PENDING_JOIN[(c.from_user.id, aid)] = {"link": link, "kind": kind, "target": target, "title": title, "members": members, "entity_id": entity_id, "already": already}
     status = "Аккаунт уже состоит в группе." if already else "Вступление произойдёт только после вашего подтверждения."
-    await edit(c, f"👥 {title}\nУчастников: {members or 'неизвестно'}\nСсылка: {link}\n\n{status}\n\nПроверьте название и ссылку перед вступлением.", kb([[("✅ Подтвердить вступление", f"chat:joinconfirm:{aid}")], [("⬅️ К результатам", f"chat:results:{aid}")], [("⬅️ К чатам", "chat:menu")]]))
+    await edit(c, f"👥 {title}\nУчастников: {members or 'неизвестно'}\nСсылка: {link}\n\n{status}\n\nПроверьте название и ссылку перед вступлением.", kb([[("✅ Подтвердить вступление", f"chat:joinconfirm:{aid}")], [("⬅️ К результатам", f"chat:results:{aid}")], [("⬅️ К аккаунту", f"acc:view:{aid}")]]))
 
 
 @router.callback_query(F.data.startswith("chat:results:"))
@@ -2180,7 +2180,7 @@ async def chat_results_back(c):
     aid = int(c.data.split(":")[2])
     candidates = CHAT_CANDIDATES.get((c.from_user.id, aid), [])
     if not candidates:
-        await edit(c, "Результаты больше не сохранены. Запустите поиск ещё раз.", kb([[("🔎 Поиск групп", f"chat:search:{aid}")], [("⬅️ К чатам", "chat:menu")]]))
+        await edit(c, "Результаты больше не сохранены. Запустите поиск ещё раз.", kb([[("🔎 Поиск групп", f"chat:search:{aid}")], [("⬅️ К аккаунту", f"acc:view:{aid}")]]))
         return
     lines = [f"Найденные кандидаты · аккаунт #{aid}", "", "Выберите группу для проверки."]
     for i, item in enumerate(candidates[:12], 1):
