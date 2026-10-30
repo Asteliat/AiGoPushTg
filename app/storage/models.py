@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.storage.db import Base
@@ -121,7 +121,10 @@ class ChannelBinding(Base):
 
 class ChannelAnalysis(Base):
     __tablename__ = "channel_analyses"
-    __table_args__ = (UniqueConstraint("account_id", "channel_id", "post_id", name="uq_channel_post_analysis"),)
+    __table_args__ = (
+        UniqueConstraint("account_id", "channel_id", "post_id", name="uq_channel_post_analysis"),
+        Index("ix_channel_analysis_published_comment", "account_id", "discussion_group_id", "published_comment_id"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), index=True)
