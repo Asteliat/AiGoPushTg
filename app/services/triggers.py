@@ -34,3 +34,18 @@ def format_trigger_duration(seconds: int) -> str:
     hours, value = divmod(value, 3600)
     minutes, secs = divmod(value, 60)
     return f"{days:02d}:{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
+def select_matching_trigger(local_rules, global_rules, message: str, *, has_local_rules: bool):
+    """Prefer a matching account rule; then apply eligible global rules."""
+    for rule in local_rules:
+        term = find_matching_term(message, rule.terms)
+        if term:
+            return rule, term
+    for rule in global_rules:
+        if rule.apply_mode == "empty_only" and has_local_rules:
+            continue
+        term = find_matching_term(message, rule.terms)
+        if term:
+            return rule, term
+    return None, None
