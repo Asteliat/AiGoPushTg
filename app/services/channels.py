@@ -44,16 +44,6 @@ def effective_channel_chat_replies_enabled(account: Account, channel: ChannelBin
     return bool(account.channel_chat_replies_enabled)
 
 
-def channel_comment_threshold_action(action: str, comment_count: int, minimum: int) -> str:
-    """Return skip, wait, or continue for the configured discussion comment policy."""
-    if action == "skip_empty" and comment_count == 0:
-        return "skip"
-    if comment_count >= minimum:
-        return "continue"
-    if action == "skip":
-        return "skip"
-    return "wait"
-
  
 
 def build_channel_analysis_style(
