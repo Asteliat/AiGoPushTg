@@ -14,7 +14,7 @@ from telethon import events, utils
 from telethon.tl.functions.messages import GetDiscussionMessageRequest
 
 from app.ai.provider import AIUnavailableError
-from app.services.channels import analyze_channel_post, channel_comment_threshold_action
+from app.services.channels import analyze_channel_post, channel_comment_threshold_action, learn_channel_style
 from app.services.ai_responses import generate_response, global_ai_enabled
 from app.storage.db import SessionFactory
 from app.storage.models import Account, AIAgent, ChannelAnalysis, ChannelBinding, ChannelPostState
