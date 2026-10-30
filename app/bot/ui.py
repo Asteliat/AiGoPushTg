@@ -2523,7 +2523,7 @@ async def channel_account_screen(c, aid):
         [("↻ Загрузить / обновить каналы", f"channel:sync:{aid}")],
         [("⚙️ Глобальные настройки каналов", f"channel:gsettings:{aid}")],
         [("🧾 История анализа", f"channel:history:{aid}")],
-        [("⬅️ К аккаунтам", "channel:menu"), ("🏠 Главное меню", "nav:home")],
+        [("⬅️ К аккаунту", f"acc:view:{aid}")],
     ]
     summary = "Каналов пока нет. Нажмите «Загрузить / обновить каналы»." if not bindings else "🟢 — ответы в комментариях включены · 🔴 — выключены.\nНажмите на канал, чтобы открыть его карточку. Нажатие не меняет его состояние."
     await edit(c, f"📡 Каналы · аккаунт #{aid} · {account.display_name}\n\n{summary}", kb(rows))
