@@ -813,7 +813,7 @@ async def proxy_type(c, state: FSMContext):
     if kind not in {"socks5", "http"}:
         await c.answer("Неизвестный тип прокси.", show_alert=True); return
     existing = await state.get_data()
-    await state.update_data(proxy_type=kind, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data), login_method=existing.get("login_method", "qr"))
+    await state.update_data(proxy_type=kind, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=existing.get("return_callback", "acc:list"), login_method=existing.get("login_method", "qr"))
     await state.set_state(Flow.proxy_host)
     await edit(c, "Введите IP-адрес или домен прокси:", CANCEL)
 
