@@ -2741,7 +2741,7 @@ async def channel_settings_screen(c, scope, object_id):
     mode = effective_channel_reply_mode(account, binding) if binding is not None else (
         "automatic" if account.channel_reply_mode == "automatic" else "manual"
     )
-    mode_label = "Автоматическая публикация" if mode == "automatic" else "Ручное подтверждение"
+    mode_label = "Автоматическая публикация" if mode == "automatic" else "Ручной режим · черновик"
     mode_source = "собственная настройка" if binding is not None and binding.reply_mode_override is not None else "глобальная настройка"
     lines.append(f"Режим публикации: {mode_label} ({mode_source})")
     rows.append([(f"🔄 Переключить режим публикации · {mode_label}", f"channel:mode:{prefix}:{object_id}")])
