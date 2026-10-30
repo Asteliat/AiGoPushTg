@@ -540,10 +540,16 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                         ChannelBinding.account_id == account_id,
                         ChannelBinding.enabled.is_(True),
                     ))).all())
+                async with SessionFactory() as db:
+                    training_bindings = list((await db.scalars(select(ChannelBinding).where(
+                        ChannelBinding.account_id == account_id,
+                        ChannelBinding.learning_status == "training",
+                    ))).all())
+                for learning_binding in training_bindings:
+                    if learning_binding.id not in active_channel_learning:
+                        active_channel_learning.add(learning_binding.id)
+                        spawn(process_channel_learning(learning_binding.id))
                 for binding in bindings:
-                    if binding.learning_status == "training" and binding.id not in active_channel_learning:
-                        active_channel_learning.add(binding.id)
-                        spawn(process_channel_learning(binding.id))
                     try:
                         async with SessionFactory() as db:
                             known_states = list((await db.scalars(select(ChannelPostState).where(
