@@ -79,12 +79,14 @@ async def init_db() -> None:
             await connection.exec_driver_sql(statement)
         # One-time compatibility migration: preserve the historical default for bindings
         # that existed before discovery was introduced, without re-enabling them on deploy.
+        # One-time compatibility migration without a procedural SQL block.
+        # The INSERT claims version 1 only once; UPDATE runs only for that first claim.
         await connection.exec_driver_sql(
-            "DO $ BEGIN "
-            "IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = 1) THEN "
-            "UPDATE chat_bindings SET enabled = TRUE, auto_discovered = TRUE WHERE auto_discovered = FALSE; "
-            "INSERT INTO schema_migrations(version) VALUES (1); "
-            "END IF; END $"
+            "WITH first_run AS ("
+            "INSERT INTO schema_migrations(version) VALUES (1) "
+            "ON CONFLICT (version) DO NOTHING RETURNING version"
+            ") UPDATE chat_bindings SET enabled = TRUE, auto_discovered = TRUE "
+            "WHERE auto_discovered = FALSE AND EXISTS (SELECT 1 FROM first_run)"
         )
         await connection.exec_driver_sql(
             "INSERT INTO app_settings (key, value) VALUES ('ai_global_enabled', 'false') ON CONFLICT (key) DO NOTHING"
