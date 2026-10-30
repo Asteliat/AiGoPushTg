@@ -635,13 +635,14 @@ async def main():
             watched[account.id]=labels
             client.add_event_handler(lambda event, aid=account.id, labels=labels: on_message(event,aid=aid,labels=labels),events.NewMessage(incoming=True))
 
-            async def route_discussion_reply(event, channel_title):
+            async def route_discussion_reply(event, channel_title, extra_context):
                 await on_message(
                     event,
                     aid=account.id,
                     labels=watched.get(account.id, {}),
                     allow_unbound=True,
                     forced_label=f"Обсуждение канала · {channel_title}",
+                    extra_context=extra_context,
                 )
 
             install_channel_monitor(client, account.id, redis, send_log, route_chat_reply=route_discussion_reply)
