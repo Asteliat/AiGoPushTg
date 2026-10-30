@@ -49,11 +49,14 @@ services:
       - |
         mkdir -p /backups && chmod 700 /backups
         while true; do
-          stamp=$(date -u +%Y%m%dT%H%M%SZ)
-          if pg_dump -Fc -f "/backups/atcivperson-$stamp.dump"; then
-            chmod 600 "/backups/atcivperson-$stamp.dump"
+          stamp=$$(date -u +%Y%m%dT%H%M%SZ)
+          tmp="/backups/atcivperson-$$stamp.dump.tmp"
+          out="/backups/atcivperson-$$stamp.dump"
+          if pg_dump -Fc -f "$$tmp" && mv "$$tmp" "$$out"; then
+            chmod 600 "$$out"
             find /backups -maxdepth 1 -type f -name 'atcivperson-*.dump' -mtime +14 -delete
           else
+            rm -f "$$tmp"
             echo "Database backup failed" >&2
           fi
           sleep 86400
