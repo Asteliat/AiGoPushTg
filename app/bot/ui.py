@@ -171,7 +171,7 @@ def cancel_return_for(callback_data: str) -> str:
     if callback_data.startswith(("chat:search:", "chat:joinlink:")): return f"acc:view:{parts[2]}"
     if callback_data.startswith("logs:add:"): return f"logs:category:{parts[2]}"
     if callback_data.startswith(("runtime:input:", "runtime:apply:")): return "runtime:menu"
-    if callback_data.startswith(("agent:rt:input:", "agent:channelrt:input:")): return f"agent:runtime:menu:{parts[-1]}"
+    if callback_data.startswith(("agent:rt:input:", "agent:channelrt:input:")): return f"agent:runtime:menu:{parts[3]}"
     if callback_data.startswith("agent:"): return "agent:menu"
     if callback_data.startswith("persona:"): return "persona:menu"
     if callback_data.startswith("example:"): return "example:menu"
@@ -1217,8 +1217,8 @@ async def acc_view(c, account_id: int | None = None):
          (("▶️ Включить" if not a.enabled else "⏸ Отключить"),f"acc:toggle:{aid}")],
         [("ИИ 🟢" if a.ai_enabled else "ИИ 🔴",f"acc:ai:{aid}"),
          ("Автомат" if a.reply_mode=="automatic" else "Ручной",f"acc:mode:{aid}")],
-        [("🤖 ИИ Агент",f"acc:agents:{aid}"),("🎭 Персона",f"acc:personas:{aid}")],
-        [("⚙️ Прокси",f"acc:proxysettings:{aid}"),("📋 Правила",f"acc:personaoverride:{aid}")],
+        [("🧠 ИИ Агент",f"acc:agents:{aid}"),("🎭 Персона",f"acc:personas:{aid}")],
+        [("⚙️ Прокси",f"acc:proxysettings:{aid}"),("✏️ Правила",f"acc:personaoverride:{aid}")],
         [("💡 Примеры",f"example:account:{aid}"),("💬 Чаты",f"chat:account:{aid}")],
         [("👥 Вступление в 👥",f"chat:joinlink:{aid}"),
          ((("⏳ Завершение" if a.learning_status == "stopping" else "⏹ Остановить") if learning else "🧠 Автообучение"),(f"learn:stop:{aid}" if learning else f"acc:learn:{aid}"))],
