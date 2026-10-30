@@ -577,7 +577,6 @@ async def main():
         if os.path.isfile(session_file):
             try:
                 os.chmod(session_file, 0o600)
-                os.chmod(os.path.dirname(session_file) or ".", 0o700)
             except OSError:
                 logging.exception("Could not harden session file permissions for account %s", account.id)
         lease_key = f"atcivperson:telegram-session:{account.id}"
