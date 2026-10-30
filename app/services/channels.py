@@ -1,4 +1,5 @@
 """AI analysis for channel posts; stores analysis results, never publishes comments."""
+# Retry and prompt-size hardening lives in the provider layer.
 import json
 from openai import AsyncOpenAI
 from sqlalchemy import select
