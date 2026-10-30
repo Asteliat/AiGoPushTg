@@ -272,7 +272,8 @@ async def main():
             await redis.delete(key)
         await send_log(
             f"🧠 Обучение аккаунта #{aid} завершено. "
-            f"{'Краткий контекст сохранён для черновиков.' if summary_saved else 'Сводка не сохранена: нет подходящих сообщений или доступного ИИ-агента.'}"
+            f"{'Краткий контекст сохранён для черновиков.' if summary_saved else 'Сводка не сохранена: нет подходящих сообщений или доступного ИИ-агента.'}",
+            category="learning",
         )
 
     async def run_learning(aid: int, client: TelegramClient) -> None:
@@ -424,7 +425,8 @@ async def main():
             await redis.delete(key)
             await send_log(
                 f"🧠 Обучение аккаунта #{aid} завершено. "
-                f"{'Краткий контекст сохранён для черновиков.' if summary_saved else 'Сводка не сохранена: нет подходящих сообщений или доступного ИИ-агента.'}"
+                f"{'Краткий контекст сохранён для черновиков.' if summary_saved else 'Сводка не сохранена: нет подходящих сообщений или доступного ИИ-агента.'}",
+                category="learning",
             )
         except asyncio.CancelledError:
             if handler:
@@ -510,6 +512,7 @@ async def main():
             watched[account.id]=labels
             client.add_event_handler(lambda event, aid=account.id, labels=labels: on_message(event,aid=aid,labels=labels),events.NewMessage(incoming=True))
             install_channel_monitor(client, account.id, redis, send_log)
+            await send_log(f"🟢 Аккаунт подключён: {account.display_name} (#{account.id}). Отслеживается чатов: {len(labels)}.", category="main")
             clients[account.id]=client
             tasks[account.id]=asyncio.create_task(client.run_until_disconnected())
             account_snapshot[account.id]=account
