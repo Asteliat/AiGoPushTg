@@ -51,7 +51,7 @@ async def main():
                         continue
                     if chat_id and chat_id not in destinations:
                         destinations.append(chat_id)
-        if not destinations and category == "main" and cfg.log_chat_id:
+        if setting is None and category == "main" and cfg.log_chat_id:
             destinations = [cfg.log_chat_id]
         for chat_id in destinations:
             try:
