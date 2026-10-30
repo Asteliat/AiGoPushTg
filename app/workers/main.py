@@ -21,7 +21,7 @@ from app.workers.channel_monitor import has_channel_post_content, install_channe
 from app.settings import get_settings
 from app.storage.db import SessionFactory
 from app.storage.models import Account, AIAgent, AppSetting, ChatBinding, ChannelBinding, TriggerRule, TriggerEvent
-from app.services.triggers import find_matching_term
+from app.services.triggers import select_matching_trigger
 from app.services.notifications import enqueue_notification, dispatch_pending_notifications
 from app.services.chat_bindings import discovered_binding_values
 from app.telegram_gateway.proxy import telethon_proxy
@@ -104,27 +104,14 @@ async def main():
         local_configured = bool(await db.scalar(
             select(TriggerRule.id).where(TriggerRule.account_id == account.id).limit(1)
         ))
-        selected = None
-        matched_term = None
-        for rule in local_rules:
-            term = find_matching_term(incoming, rule.terms)
-            if term:
-                selected, matched_term = rule, term
-                break
-
-        if selected is None:
-            global_rules = list((await db.scalars(
-                select(TriggerRule).where(
-                    TriggerRule.account_id.is_(None), TriggerRule.enabled.is_(True)
-                ).order_by(TriggerRule.id)
-            )).all())
-            for rule in global_rules:
-                if rule.apply_mode == "empty_only" and local_configured:
-                    continue
-                term = find_matching_term(incoming, rule.terms)
-                if term:
-                    selected, matched_term = rule, term
-                    break
+        global_rules = list((await db.scalars(
+            select(TriggerRule).where(
+                TriggerRule.account_id.is_(None), TriggerRule.enabled.is_(True)
+            ).order_by(TriggerRule.id)
+        )).all())
+        selected, matched_term = select_matching_trigger(
+            local_rules, global_rules, incoming, has_local_rules=local_configured
+        )
         if selected is None or not matched_term:
             return False
 
@@ -279,7 +266,7 @@ async def main():
                     category="errors",
                 )
             return True
-        except (AIUnavailableError, Exception) as exc:
+        except Exception as exc:
             record.status = "failed"
             record.error = f"{type(exc).__name__}: {str(exc)[:700]}"
             await db.commit()
