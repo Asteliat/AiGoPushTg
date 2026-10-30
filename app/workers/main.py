@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import random
+import secrets
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 from aiogram import Bot
@@ -39,6 +40,8 @@ async def main():
     last_discovery: dict[int,datetime] = {}
     reconnect_failures: dict[int, int] = {}
     reconnect_after: dict[int, datetime] = {}
+    session_lease_tasks: dict[int, asyncio.Task] = {}
+    session_lease_tokens: dict[int, str] = {}
 
     async def send_log(text: str, category: str = "main") -> bool:
         # The outbox commit is the delivery guarantee; Telegram delivery is retried
@@ -533,19 +536,56 @@ async def main():
         reconnect_after[aid] = datetime.now(timezone.utc) + timedelta(seconds=delay)
         logging.warning("Telegram account %s reconnect scheduled in %ss (attempt %s)", aid, delay, failures)
 
+    async def maintain_session_lease(aid: int, token: str, client: TelegramClient) -> None:
+        key = f"atcivperson:telegram-session:{aid}"
+        script = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('expire', KEYS[1], 90) else return 0 end"
+        while True:
+            await asyncio.sleep(20)
+            try:
+                renewed = await redis.eval(script, 1, key, token)
+            except Exception:
+                logging.exception("Could not renew Telegram session lease for account %s", aid)
+                continue
+            if not renewed:
+                logging.error("Telegram session lease lost for account %s; disconnecting", aid)
+                if client.is_connected():
+                    await client.disconnect()
+                return
+
+    async def release_session_lease(aid: int) -> None:
+        task = session_lease_tasks.pop(aid, None)
+        if task and not task.done():
+            task.cancel()
+        token = session_lease_tokens.pop(aid, None)
+        if token:
+            key = f"atcivperson:telegram-session:{aid}"
+            script = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end"
+            try:
+                await redis.eval(script, 1, key, token)
+            except Exception:
+                logging.exception("Could not release Telegram session lease for account %s", aid)
+
     async def connect_account(account, binding_rows):
         if not cfg.telegram_api_id or not cfg.telegram_api_hash:
             await set_connection_status(account.id, "error")
             schedule_reconnect(account.id)
             return
+        lease_key = f"atcivperson:telegram-session:{account.id}"
+        lease_token = secrets.token_urlsafe(24)
+        if not await redis.set(lease_key, lease_token, nx=True, ex=90):
+            logging.warning("Telegram session for account %s is already owned by another Worker", account.id)
+            return
         await set_connection_status(account.id, "connecting")
         client=TelegramClient(account.session_path,cfg.telegram_api_id,cfg.telegram_api_hash,proxy=telethon_proxy(account.proxy_config_encrypted),connection_retries=5,retry_delay=2,auto_reconnect=True)
+        lease_task = asyncio.create_task(maintain_session_lease(account.id, lease_token, client))
         try:
             await client.connect()
             if not await client.is_user_authorized():
                 logging.error("Account %s session is unauthorized",account.id)
                 await set_connection_status(account.id, "unauthorized")
                 await client.disconnect()
+                lease_task.cancel()
+                await redis.eval("if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end", 1, lease_key, lease_token)
                 schedule_reconnect(account.id)
                 return
             labels = await sync_account_dialogs(client, account.id)
@@ -556,6 +596,8 @@ async def main():
             await send_log(f"🟢 Аккаунт подключён: {account.display_name} (#{account.id}). Отслеживается чатов: {len(labels)}.", category="main")
             clients[account.id]=client
             tasks[account.id]=asyncio.create_task(client.run_until_disconnected())
+            session_lease_tasks[account.id] = lease_task
+            session_lease_tokens[account.id] = lease_token
             account_snapshot[account.id]=account
             reconnect_failures.pop(account.id, None)
             reconnect_after.pop(account.id, None)
@@ -564,6 +606,11 @@ async def main():
             logging.exception("Could not connect account %s",account.id)
             await set_connection_status(account.id, "error")
             schedule_reconnect(account.id)
+            lease_task.cancel()
+            try:
+                await redis.eval("if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end", 1, lease_key, lease_token)
+            except Exception:
+                logging.exception("Could not release failed Telegram session lease for account %s", account.id)
             if client.is_connected():
                 await client.disconnect()
 
