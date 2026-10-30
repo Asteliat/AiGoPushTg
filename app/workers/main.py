@@ -526,9 +526,17 @@ async def main():
             )).all())
         return {binding.chat_id: binding.title for binding in current_bindings}
 
+    def schedule_reconnect(aid: int) -> None:
+        failures = reconnect_failures.get(aid, 0) + 1
+        reconnect_failures[aid] = failures
+        delay = min(300, 5 * (2 ** min(failures - 1, 6)))
+        reconnect_after[aid] = datetime.now(timezone.utc) + timedelta(seconds=delay)
+        logging.warning("Telegram account %s reconnect scheduled in %ss (attempt %s)", aid, delay, failures)
+
     async def connect_account(account, binding_rows):
         if not cfg.telegram_api_id or not cfg.telegram_api_hash:
             await set_connection_status(account.id, "error")
+            schedule_reconnect(account.id)
             return
         await set_connection_status(account.id, "connecting")
         client=TelegramClient(account.session_path,cfg.telegram_api_id,cfg.telegram_api_hash,proxy=telethon_proxy(account.proxy_config_encrypted),connection_retries=5,retry_delay=2,auto_reconnect=True)
@@ -538,6 +546,7 @@ async def main():
                 logging.error("Account %s session is unauthorized",account.id)
                 await set_connection_status(account.id, "unauthorized")
                 await client.disconnect()
+                schedule_reconnect(account.id)
                 return
             labels = await sync_account_dialogs(client, account.id)
             await set_connection_status(account.id, "connected")
@@ -548,10 +557,13 @@ async def main():
             clients[account.id]=client
             tasks[account.id]=asyncio.create_task(client.run_until_disconnected())
             account_snapshot[account.id]=account
+            reconnect_failures.pop(account.id, None)
+            reconnect_after.pop(account.id, None)
             logging.info("Connected account %s; watching %d eligible chats",account.id,len(labels))
         except Exception:
             logging.exception("Could not connect account %s",account.id)
             await set_connection_status(account.id, "error")
+            schedule_reconnect(account.id)
             if client.is_connected():
                 await client.disconnect()
 
@@ -597,6 +609,8 @@ async def main():
                             or previous_snapshot.session_path != latest_account.session_path
                         )
                     )
+                    if existing_task is not None and existing_task.done():
+                        schedule_reconnect(aid)
                     if aid not in active or runtime_config_changed or (existing_task is not None and existing_task.done()):
                         learning = learning_tasks.pop(aid, None)
                         if learning and not learning.done():
@@ -616,7 +630,8 @@ async def main():
                     by_account[b.account_id].append(b)
                 for aid,account in active.items():
                     if aid not in clients:
-                        await connect_account(account,by_account.get(aid,[]))
+                        if now >= reconnect_after.get(aid, datetime.min.replace(tzinfo=timezone.utc)):
+                            await connect_account(account,by_account.get(aid,[]))
                     else:
                         labels=watched.get(aid,{})
                         if now - last_discovery.get(aid, datetime.min.replace(tzinfo=timezone.utc)) >= timedelta(minutes=5):
