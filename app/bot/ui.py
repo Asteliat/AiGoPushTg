@@ -3117,7 +3117,12 @@ async def channel_analysis_view(c):
         "approved": "Ожидает публикации",
         "publishing": "Публикуется",
     }
-    decision = ("не определялось в старом анализе" if row.publication_status == "legacy" else ("ответ нужен" if row.should_reply else "ответ не требуется"))
+    if row.publication_status == "legacy":
+        decision = "не определялось в старом анализе"
+    elif row.publication_status == "skipped_probability":
+        decision = "ответ не выбран по вероятности"
+    else:
+        decision = "ответ нужен" if row.should_reply else "ответ не требуется"
     text = (
         f"📡 {row.channel_title} · пост #{row.post_id}\n"
         f"Комментариев: {row.comments_count} · обсуждение: {topic}\n"
