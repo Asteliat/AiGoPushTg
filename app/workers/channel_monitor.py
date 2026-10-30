@@ -19,7 +19,6 @@ from telethon.tl.functions.messages import GetDiscussionMessageRequest
 from app.ai.provider import AIUnavailableError
 from app.services.channels import (
     analyze_channel_post,
-    channel_comment_threshold_action,
     effective_channel_chat_replies_enabled,
     effective_channel_reply_mode,
     learn_channel_style,
@@ -34,6 +33,8 @@ RECOVERY_SCAN_LIMIT = 500
 PROCESSING_STALE_MINUTES = 20
 PUBLISHED_REPLY_POLL_LIMIT = 100
 PUBLISHED_REPLY_COMMENT_LIMIT = 100
+DISCUSSION_COMMENT_SCAN_LIMIT = 100
+DISCUSSION_COMMENT_CONTEXT_LIMIT = 10
 
 # Keep channel diagnostics visible even when the application root log level is WARNING.
 logging.getLogger(__name__).setLevel(logging.INFO)
@@ -41,6 +42,85 @@ logging.getLogger(__name__).setLevel(logging.INFO)
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def has_channel_post_content(post_text: str | None, post_message=None) -> bool:
+    """Only process channel posts that contain text or a supported photo."""
+    return bool((post_text or "").strip() or getattr(post_message, "photo", None))
+
+
+def is_legacy_comment_threshold_skip(last_error: str | None) -> bool:
+    """Identify old terminal states that were incorrectly skipped for having few comments."""
+    reason = (last_error or "").strip().lower()
+    return reason.startswith("skipped by comment threshold:") or (
+        reason.startswith("skipped:")
+        and "comment" in reason
+        and "minimum" in reason
+    )
+
+
+async def fetch_discussion_comments(
+    client,
+    *,
+    channel_entity,
+    channel_post_id: int,
+    discussion_group,
+    discussion_root_id: int,
+) -> tuple[list[str], str]:
+    """Read textual audience context from the linked thread using both Telegram peer forms.
+
+    A channel post and its auto-forwarded root message in the linked megagroup have
+    different message IDs. Try the discussion-group/root pair first, then Telethon's
+    documented broadcast-channel/post pair as a fallback. No comment count gates analysis.
+    """
+    attempts = (
+        ("discussion_group", discussion_group, int(discussion_root_id)),
+        ("channel", channel_entity, int(channel_post_id)),
+    )
+    diagnostics: list[str] = []
+    errors: list[Exception] = []
+    successful_reads = 0
+
+    for source, peer, reply_to_id in attempts:
+        comments: list[str] = []
+        seen = 0
+        outgoing = 0
+        without_text = 0
+        try:
+            async for item in client.iter_messages(
+                peer,
+                reply_to=reply_to_id,
+                limit=DISCUSSION_COMMENT_SCAN_LIMIT,
+            ):
+                seen += 1
+                if getattr(item, "out", False):
+                    outgoing += 1
+                    continue
+                text = (getattr(item, "message", None) or "").strip()
+                if not text:
+                    without_text += 1
+                    continue
+                comments.append(text[:1000])
+                if len(comments) >= DISCUSSION_COMMENT_CONTEXT_LIMIT:
+                    break
+            successful_reads += 1
+            diagnostics.append(
+                f"{source}: messages={seen}, text={len(comments)}, "
+                f"outgoing={outgoing}, without_text={without_text}"
+            )
+            if comments:
+                comments.reverse()
+                return comments, "; ".join(diagnostics)
+        except Exception as exc:
+            errors.append(exc)
+            diagnostics.append(f"{source}: error={type(exc).__name__}")
+            logging.warning(
+                "Could not fetch channel discussion comments via %s: %s", source, exc
+            )
+
+    if successful_reads == 0 and errors:
+        raise errors[-1]
+    return [], "; ".join(diagnostics) or "no discussion comments returned"
 
 
 def install_channel_monitor(client, account_id: int, redis, send_log, route_chat_reply=None):
@@ -282,7 +362,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
     async def process_post(channel_entity, channel_id: int, post_id: int, post_text: str, channel_title: str, post_message=None):
         key = (channel_id, post_id)
         post_text = post_text or ""
-        if key in active_posts or (not post_text.strip() and not getattr(post_message, "photo", None)):
+        if key in active_posts or not has_channel_post_content(post_text, post_message):
             return
         stored_post_text = post_text.strip() or "[Фотография без текстового описания]"
         active_posts.add(key)
@@ -305,23 +385,6 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
                     or not account.ai_agent_id
                 ):
                     return
-
-                wait_value = (
-                    binding.comment_wait_seconds_override
-                    if binding.comment_wait_seconds_override is not None
-                    else account.channel_wait_seconds
-                )
-                wait_seconds = max(0, int(wait_value if wait_value is not None else binding.comment_wait_seconds))
-                min_comments = max(1, min(10, int(
-                    binding.min_comments_override
-                    if binding.min_comments_override is not None
-                    else account.channel_min_comments or 2
-                )))
-                insufficient_action = (
-                    binding.insufficient_action_override
-                    or account.channel_insufficient_action
-                    or "wait"
-                )
 
                 lock_acquired = bool(await redis.set(lock_key, "processing", nx=True, ex=30 * 60))
                 if not lock_acquired:
@@ -410,33 +473,24 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
                 account_id, channel_id, post_id, group_peer_id, root_message_id,
             )
 
-            comments = await fetch_comments(channel_entity, post_id)
-            threshold_action = channel_comment_threshold_action(
-                insufficient_action, len(comments), min_comments
+            comments, comment_fetch_diagnostics = await fetch_discussion_comments(
+                client,
+                channel_entity=channel_entity,
+                channel_post_id=post_id,
+                discussion_group=group_entity,
+                discussion_root_id=root_message_id,
             )
+            reply_metadata = (
+                getattr(post_message, "replies", None)
+                or getattr(root_message, "replies", None)
+            )
+            telegram_reply_count = getattr(reply_metadata, "replies", None)
             logging.info(
                 "Channel discussion context loaded: account=%s channel_id=%s post_id=%s "
-                "comments=%s minimum=%s action=%s",
-                account_id, channel_id, post_id, len(comments), min_comments, threshold_action,
+                "telegram_replies=%s text_comments=%s sources=[%s]; comment count does not gate analysis",
+                account_id, channel_id, post_id, telegram_reply_count,
+                len(comments), comment_fetch_diagnostics,
             )
-            if threshold_action == "skip":
-                await update_state(
-                    channel_id, post_id, status="done", next_retry_at=None,
-                    last_error=f"skipped by comment threshold: {len(comments)}/{min_comments}",
-                )
-                await redis.set(lock_key, "done", ex=365 * 24 * 3600)
-                logging.info(
-                    "Channel post skipped by comment threshold: account=%s channel_id=%s post_id=%s",
-                    account_id, channel_id, post_id,
-                )
-                return
-            if threshold_action == "wait":
-                await update_state(
-                    channel_id, post_id, status="waiting",
-                    next_retry_at=_utcnow() + timedelta(seconds=max(1, wait_seconds)),
-                    last_error=f"waiting for comments: {len(comments)}/{min_comments}",
-                )
-                return
 
             async with SessionFactory() as db:
                 account = await db.get(Account, account_id)
@@ -854,7 +908,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
 
     async def handle(event):
         message = event.message
-        if not message or (not (message.message or "").strip() and not getattr(message, "photo", None)):
+        if not message or not has_channel_post_content(message.message, message):
             return
         if not event.is_channel or event.is_group:
             return
@@ -919,18 +973,51 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
 
                 for binding in bindings:
                     try:
+                        now = _utcnow()
+                        reopened_posts: list[int] = []
                         async with SessionFactory() as db:
                             known_states = list((await db.scalars(select(ChannelPostState).where(
                                 ChannelPostState.account_id == account_id,
                                 ChannelPostState.channel_id == binding.channel_id,
                             ))).all())
-                        state_by_post = {item.post_id: item for item in known_states}
-                        now = _utcnow()
+                            for previous_state in known_states:
+                                if (
+                                    previous_state.status == "done"
+                                    and is_legacy_comment_threshold_skip(previous_state.last_error)
+                                ):
+                                    # These posts were incorrectly marked terminal by the old
+                                    # audience-comment threshold. Remove the permanent Redis lock
+                                    # before reopening the DB state so they are processed once.
+                                    await redis.delete(
+                                        f"atcivperson:channel-post:{account_id}:"
+                                        f"{int(binding.channel_id)}:{int(previous_state.post_id)}"
+                                    )
+                                    previous_state.status = "queued"
+                                    previous_state.next_retry_at = None
+                                    previous_state.last_error = ""
+                                    previous_state.updated_at = now
+                                    reopened_posts.append(int(previous_state.post_id))
+                            if reopened_posts:
+                                await db.commit()
+                            state_by_post = {
+                                int(item.post_id): SimpleNamespace(
+                                    status=item.status,
+                                    next_retry_at=item.next_retry_at,
+                                    updated_at=item.updated_at,
+                                )
+                                for item in known_states
+                            }
+                        for reopened_post_id in reopened_posts:
+                            logging.warning(
+                                "Re-queued post previously skipped by the removed comment threshold: "
+                                "account=%s channel_id=%s post_id=%s",
+                                account_id, int(binding.channel_id), reopened_post_id,
+                            )
                         entity = await client.get_entity(binding.channel_id)
                         # Discover the linked discussion group even when every recent post
                         # already has a completed analysis (and would otherwise be skipped).
                         async for recent_post in client.iter_messages(entity, limit=RECOVERY_SCAN_LIMIT):
-                            if (recent_post.message or "").strip() or getattr(recent_post, "photo", None):
+                            if has_channel_post_content(recent_post.message, recent_post):
                                 try:
                                     logging.info(
                                         "Discussion discovery started: account=%s channel_id=%s post_id=%s",
@@ -973,7 +1060,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
                         spawn(poll_published_comment_replies(binding, entity))
                         async for message in client.iter_messages(entity, limit=RECOVERY_SCAN_LIMIT):
                             body = (message.message or "").strip()
-                            if not body and not getattr(message, "photo", None):
+                            if not has_channel_post_content(body, message):
                                 continue
                             previous = state_by_post.get(int(message.id))
                             if previous:
