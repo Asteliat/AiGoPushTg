@@ -31,7 +31,7 @@ async def global_ai_enabled(session: AsyncSession) -> bool:
     row = await session.get(AppSetting, "ai_global_enabled")
     return bool(row and row.value.lower() == "true")
 
-async def generate_response(session: AsyncSession, *, incoming_text: str, persona_id: int | None = None, account_id: int | None = None, chat_label: str = "Ответ ИИ", agent_id: int | None = None, proactive: bool = False, conversation_context: str = "", additional_instructions: str = "") -> GeneratedResponse:
+async def generate_response(session: AsyncSession, *, incoming_text: str, persona_id: int | None = None, account_id: int | None = None, chat_label: str = "Ответ ИИ", agent_id: int | None = None, proactive: bool = False, conversation_context: str = "", additional_instructions: str = "", trigger_mode: bool = False) -> GeneratedResponse:
     account = await session.get(Account, account_id) if account_id else None
     if account and persona_id is None:
         persona_id = account.persona_id
@@ -64,7 +64,7 @@ async def generate_response(session: AsyncSession, *, incoming_text: str, person
         chat_learning_prompt=account.learning_prompt if account else "",
         additional_instructions=additional_instructions,
     )
-    proposed = await generate_reply(agent=agent, incoming_text=incoming_text, style_instructions=style_instructions, examples=[(e.incoming_text, e.preferred_reply) for e in examples], proactive=proactive, conversation_context=conversation_context)
+    proposed = await generate_reply(agent=agent, incoming_text=incoming_text, style_instructions=style_instructions, examples=[(e.incoming_text, e.preferred_reply) for e in examples], proactive=proactive, conversation_context=conversation_context, trigger_mode=trigger_mode)
     if account:
         await session.refresh(account)
         if (
