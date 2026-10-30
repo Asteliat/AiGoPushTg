@@ -13,7 +13,7 @@ from aiogram import Bot
 from telethon import TelegramClient, events, utils
 from telethon.errors import FloodWaitError, MsgIdInvalidError
 from telethon.tl.functions.messages import GetDiscussionMessageRequest
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from app.ai.provider import AIUnavailableError, NoReplyNeeded, summarize_chat_context
 from app.services.ai_responses import generate_response, global_ai_enabled
@@ -96,19 +96,20 @@ async def main():
         """Handle one matching trigger before the ordinary mention/DM/proactive reply flow."""
         if not event.is_group and not event.is_private:
             return False
-        local_rules = list((await db.scalars(
+        configured_rules = list((await db.scalars(
             select(TriggerRule).where(
-                TriggerRule.account_id == account.id, TriggerRule.enabled.is_(True)
+                or_(TriggerRule.account_id == account.id, TriggerRule.account_id.is_(None))
             ).order_by(TriggerRule.id)
         )).all())
-        local_configured = bool(await db.scalar(
-            select(TriggerRule.id).where(TriggerRule.account_id == account.id).limit(1)
-        ))
-        global_rules = list((await db.scalars(
-            select(TriggerRule).where(
-                TriggerRule.account_id.is_(None), TriggerRule.enabled.is_(True)
-            ).order_by(TriggerRule.id)
-        )).all())
+        local_configured = any(rule.account_id == account.id for rule in configured_rules)
+        local_rules = [
+            rule for rule in configured_rules
+            if rule.account_id == account.id and rule.enabled
+        ]
+        global_rules = [
+            rule for rule in configured_rules
+            if rule.account_id is None and rule.enabled
+        ]
         selected, matched_term = select_matching_trigger(
             local_rules, global_rules, incoming, has_local_rules=local_configured
         )
