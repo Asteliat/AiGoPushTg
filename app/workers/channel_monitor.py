@@ -721,7 +721,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
             return
 
         lock_key = f"atcivperson:channel-to-chat:{account_id}:{chat_id}:{int(message.id)}"
-        if not await redis.set(lock_key, "processing", nx=True, ex=365 * 24 * 3600):
+        if not await redis.set(lock_key, "processing", nx=True, ex=30 * 60):
             return
         try:
             logging.info(
