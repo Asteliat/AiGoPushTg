@@ -11,6 +11,7 @@ import random
 
 from sqlalchemy import select
 from telethon import events, utils
+from telethon.errors import FloodWaitError
 from telethon.tl.functions.messages import GetDiscussionMessageRequest
 
 from app.ai.provider import AIUnavailableError
@@ -477,16 +478,41 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                     ChannelBinding.enabled.is_(True),
                     ChannelBinding.reply_enabled.is_(True),
                 ))
+                latest_agent = await db.get(AIAgent, latest_account.ai_agent_id) if latest_account and latest_account.ai_agent_id else None
                 if (
                     not latest_account or not latest_binding or latest_account.manual_pause
                     or not latest_account.enabled or not latest_account.ai_enabled
+                    or latest_account.learning_status in {"training", "stopping"}
+                    or not await global_ai_enabled(db)
+                    or latest_account.ai_agent_id != account.ai_agent_id
+                    or not latest_agent or not latest_agent.enabled
                 ):
                     await redis.delete(lock_key)
                     return
                 mode = latest_account.reply_mode
                 account_name = latest_account.display_name
             if mode == "automatic":
-                await event.reply(draft.proposed_text)
+                try:
+                    await event.reply(draft.proposed_text)
+                except FloodWaitError as exc:
+                    await asyncio.sleep(max(1, int(getattr(exc, "seconds", 1))) + 1)
+                    async with SessionFactory() as db:
+                        latest = await db.get(Account, account_id)
+                        binding_now = await db.scalar(select(ChannelBinding).where(
+                            ChannelBinding.account_id == account_id,
+                            ChannelBinding.channel_id == channel_id,
+                            ChannelBinding.enabled.is_(True),
+                            ChannelBinding.reply_enabled.is_(True),
+                        ))
+                        agent_now = await db.get(AIAgent, latest.ai_agent_id) if latest and latest.ai_agent_id else None
+                        if (
+                            not latest or not latest.enabled or latest.manual_pause or not latest.ai_enabled
+                            or not await global_ai_enabled(db) or not binding_now or not agent_now
+                            or not agent_now.enabled or latest.ai_agent_id != account.ai_agent_id
+                        ):
+                            await redis.delete(lock_key)
+                            return
+                    await event.reply(draft.proposed_text)
                 await send_log(
                     f"✅ Ответ в комментариях отправлен\nАккаунт: {account_name} (#{account_id})\n"
                     f"Канал: {title}\nКомментарий: {message.message[:700]}\nОтвет: {draft.proposed_text[:1200]}", category="replies"
