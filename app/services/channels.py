@@ -1,6 +1,7 @@
 """AI analysis for channel posts; stores analysis results, never publishes comments."""
 # Retry and prompt-size hardening lives in the provider layer.
 import json
+import logging
 from openai import AsyncOpenAI
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,22 +20,90 @@ def effective_channel_reply_mode(account: Account, channel: ChannelBinding) -> s
     return "automatic" if value == "automatic" else "manual"
 
 
+def build_channel_analysis_user_text(
+    post_text: str,
+    comments: list[str],
+    *,
+    image_not_analyzed: bool = False,
+) -> str:
+    """Build a provider-independent text payload for channel post analysis."""
+    rendered_comments = "\n".join(
+        f"- {str(item)[:700]}" for item in comments[:20]
+    ) or "Комментариев пока нет."
+    image_note = (
+        "\n\nВ публикации есть изображение, но выбранная модель не приняла изображение "
+        "для анализа. Используй только текст публикации и комментарии; не делай выводов "
+        "о содержимом изображения."
+        if image_not_analyzed else ""
+    )
+    return (
+        f"ПУБЛИКАЦИЯ:\\n{post_text[:6000]}{image_note}"
+        f"\\n\\nКОММЕНТАРИИ:\\n{rendered_comments}"
+    )
+
+
 def build_channel_analysis_user_content(
     post_text: str,
     comments: list[str],
     image_data_uri: str | None = None,
-) -> list[dict]:
-    """Build multimodal input while keeping audience comments as context only."""
-    rendered_comments = "\n".join(
-        f"- {str(item)[:700]}" for item in comments[:20]
-    ) or "Комментариев пока нет."
-    content = [{
-        "type": "text",
-        "text": f"ПУБЛИКАЦИЯ:\n{post_text[:6000]}\n\nКОММЕНТАРИИ:\n{rendered_comments}",
-    }]
-    if image_data_uri:
-        content.append({"type": "image_url", "image_url": {"url": image_data_uri}})
-    return content
+) -> str | list[dict]:
+    """Use a plain string for text models and content parts only when an image exists."""
+    rendered_text = build_channel_analysis_user_text(post_text, comments)
+    if not image_data_uri:
+        return rendered_text
+    return [
+        {"type": "text", "text": rendered_text},
+        {"type": "image_url", "image_url": {"url": image_data_uri}},
+    ]
+
+
+def is_multimodal_content_type_error(exc: Exception) -> bool:
+    """Detect providers/models that reject an image content-parts array."""
+    status = getattr(exc, "status_code", None)
+    message = str(exc).lower()
+    return (
+        status == 400
+        and "messages[1].content" in message
+        and "string" in message
+    )
+
+
+async def request_channel_analysis_completion(
+    client,
+    *,
+    model: str,
+    prompt: str,
+    user_content: str | list[dict],
+    image_fallback_text: str | None = None,
+):
+    """Retry image requests as text when a configured model rejects multimodal input."""
+    messages = [
+        {"role": "system", "content": prompt},
+        {"role": "user", "content": user_content},
+    ]
+    try:
+        return await chat_completion_with_retry(
+            client,
+            model=model,
+            temperature=0.3,
+            max_tokens=900,
+            messages=messages,
+        )
+    except Exception as exc:
+        if image_fallback_text is None or not is_multimodal_content_type_error(exc):
+            raise
+        logging.warning(
+            "Channel AI model %s rejected image content; retrying post analysis without image",
+            model,
+        )
+        messages[1]["content"] = image_fallback_text
+        return await chat_completion_with_retry(
+            client,
+            model=model,
+            temperature=0.3,
+            max_tokens=900,
+            messages=messages,
+        )
 
 
 def effective_channel_chat_replies_enabled(account: Account, channel: ChannelBinding) -> bool:
@@ -119,19 +188,21 @@ async def analyze_channel_post(
         f"Стиль: {style[:3000]}"
     )
     try:
-        result = await chat_completion_with_retry(client,
+        user_content = build_channel_analysis_user_content(
+            post_text, comments, image_data_uri
+        )
+        image_fallback_text = (
+            build_channel_analysis_user_text(
+                post_text, comments, image_not_analyzed=True
+            )
+            if image_data_uri else None
+        )
+        result = await request_channel_analysis_completion(
+            client,
             model=agent.model,
-            temperature=0.3,
-            max_tokens=900,
-            messages=[
-                {"role": "system", "content": prompt},
-                {
-                    "role": "user",
-                    "content": build_channel_analysis_user_content(
-                        post_text, comments, image_data_uri
-                    ),
-                },
-            ],
+            prompt=prompt,
+            user_content=user_content,
+            image_fallback_text=image_fallback_text,
         )
     except Exception as exc:
         raise AIUnavailableError(f"Ошибка анализа канала: {type(exc).__name__}: {str(exc)[:220]}") from exc
