@@ -91,18 +91,20 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
         found.reverse()
         return found
 
-    async def find_published_comment_ancestor(chat_id: int, message, immediate_parent=None):
+    async def find_published_comment_ancestor(chat_id: int, message, immediate_parent=None, published_by_id=None):
         """Return the saved channel analysis only when a reply chain reaches our own comment."""
-        async with SessionFactory() as db:
-            rows = list((await db.scalars(select(ChannelAnalysis).where(
-                ChannelAnalysis.account_id == account_id,
-                ChannelAnalysis.discussion_group_id == int(chat_id),
-                ChannelAnalysis.publication_status == "published",
-                ChannelAnalysis.published_comment_id.is_not(None),
-            ))).all())
-        if not rows:
+        if published_by_id is None:
+            async with SessionFactory() as db:
+                rows = list((await db.scalars(select(ChannelAnalysis).where(
+                    ChannelAnalysis.account_id == account_id,
+                    ChannelAnalysis.discussion_group_id == int(chat_id),
+                    ChannelAnalysis.publication_status == "published",
+                    ChannelAnalysis.published_comment_id.is_not(None),
+                ))).all())
+            published_by_id = {int(row.published_comment_id): row for row in rows}
+        if not published_by_id:
             return None
-        by_comment_id = {int(row.published_comment_id): row for row in rows}
+        by_comment_id = published_by_id
         header = getattr(message, "reply_to", None)
         parent_id = int(getattr(header, "reply_to_msg_id", 0) or 0)
         parent = immediate_parent
@@ -143,6 +145,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
                     ).order_by(ChannelAnalysis.created_at.desc()).limit(PUBLISHED_REPLY_POLL_LIMIT)
                 )).all())
 
+            published_by_id = {int(row.published_comment_id): row for row in published_rows}
             for analysis in published_rows:
                 group_peer_id = int(analysis.discussion_group_id)
                 group_entity = discussion_entities.get(group_peer_id)
@@ -191,6 +194,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
                         is_channel=False,
                         get_reply_message=get_reply_message,
                         get_sender=get_sender,
+                        published_by_id=published_by_id,
                         reply=reply,
                     )
                     await handle_reply_to_our_channel_comment(event)
@@ -688,7 +692,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
         except Exception:
             pass
 
-        analysis = await find_published_comment_ancestor(chat_id, message, immediate_parent)
+        analysis = await find_published_comment_ancestor(chat_id, message, immediate_parent, getattr(event, "published_by_id", None))
         if not analysis:
             return
 
