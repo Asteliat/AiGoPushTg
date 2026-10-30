@@ -1231,7 +1231,13 @@ async def acc_view(c, account_id: int | None = None):
         if not a: await c.answer("Аккаунт не найден",show_alert=True); return
         agent=await db.get(AIAgent,a.ai_agent_id) if a.ai_agent_id else None
         persona=await db.get(Persona,a.persona_id) if a.persona_id else None
-        chats=len((await db.scalars(select(ChatBinding).where(ChatBinding.account_id==aid,ChatBinding.enabled.is_(True)))).all())
+        active_chat_ids = list((await db.scalars(select(ChatBinding.chat_id).where(
+            ChatBinding.account_id == aid, ChatBinding.enabled.is_(True)
+        ))).all())
+        discussion_ids = set((await db.scalars(select(ChannelBinding.discussion_group_id).where(
+            ChannelBinding.account_id == aid, ChannelBinding.discussion_group_id.is_not(None)
+        ))).all())
+        chats = sum(1 for chat_id in active_chat_ids if chat_id not in discussion_ids)
     learning = a.learning_status in {"training", "stopping"}
     if learning and a.learning_ends_at:
         deadline = a.learning_ends_at.strftime("%d.%m.%Y %H:%M UTC")
@@ -1522,7 +1528,13 @@ async def acc_learning_menu(c, account_id: int | None = None):
     aid = account_id if account_id is not None else int(c.data.split(":")[2])
     async with SessionFactory() as db:
         account = await db.get(Account, aid)
-        chat_count = len((await db.scalars(select(ChatBinding).where(ChatBinding.account_id == aid, ChatBinding.enabled.is_(True)))).all())
+        active_chat_ids = list((await db.scalars(select(ChatBinding.chat_id).where(
+            ChatBinding.account_id == aid, ChatBinding.enabled.is_(True)
+        ))).all())
+        discussion_ids = set((await db.scalars(select(ChannelBinding.discussion_group_id).where(
+            ChannelBinding.account_id == aid, ChannelBinding.discussion_group_id.is_not(None)
+        ))).all())
+        chat_count = sum(1 for chat_id in active_chat_ids if chat_id not in discussion_ids)
         enabled_agent = await db.scalar(select(AIAgent.id).where(AIAgent.enabled.is_(True)))
         ai_on = await global_ai_enabled(db)
     if not account:
@@ -1572,6 +1584,10 @@ async def acc_learning_start(c):
         chats = list((await db.scalars(select(ChatBinding).where(
             ChatBinding.account_id == aid, ChatBinding.enabled.is_(True)
         ))).all())
+        discussion_ids = set((await db.scalars(select(ChannelBinding.discussion_group_id).where(
+            ChannelBinding.account_id == aid, ChannelBinding.discussion_group_id.is_not(None)
+        ))).all())
+        chats = [binding for binding in chats if int(binding.chat_id) not in discussion_ids]
         if not account or not account.enabled:
             await c.answer("Аккаунт не найден или выключен", show_alert=True); return
         if account.manual_pause:
