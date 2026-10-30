@@ -253,7 +253,7 @@ async def main():
                 wait_seconds = max(1, int(getattr(exc, "seconds", 1))) + 1
                 logging.warning("Telegram FloodWait for account %s: retry in %ss", aid, wait_seconds)
                 await asyncio.sleep(wait_seconds)
-                if not await automatic_send_allowed(aid, int(event.chat_id), int(expected_agent_id or 0)):
+                if not await automatic_send_allowed(aid, int(event.chat_id), int(expected_agent_id or 0), allow_unbound=allow_unbound):
                     return
                 try:
                     sent_message = await (event.client.send_message(event.chat_id, draft.proposed_text) if proactive else event.reply(draft.proposed_text))
