@@ -18,7 +18,7 @@ from app.services.ai_responses import generate_response, global_ai_enabled
 from app.workers.channel_monitor import install_channel_monitor
 from app.settings import get_settings
 from app.storage.db import SessionFactory
-from app.storage.models import Account, AIAgent, AppSetting, ChatBinding
+from app.storage.models import Account, AIAgent, AppSetting, ChatBinding, ChannelBinding
 from app.services.notifications import enqueue_notification, dispatch_pending_notifications
 from app.services.chat_bindings import discovered_binding_values
 from app.telegram_gateway.proxy import telethon_proxy
@@ -128,6 +128,15 @@ async def main():
             speaker = f"Участник {sender_id}"
 
         async with SessionFactory() as db:
+            if event.is_group and not allow_unbound:
+                linked_discussion = await db.scalar(select(ChannelBinding.id).where(
+                    ChannelBinding.account_id == aid,
+                    ChannelBinding.discussion_group_id == int(event.chat_id),
+                ).limit(1))
+                # Discussion-group messages are not ordinary Chats input. Only the
+                # validated reply-chain router may pass them into this pipeline.
+                if linked_discussion:
+                    return
             current = await db.get(Account, aid)
             if (
                 not current or not current.enabled or current.manual_pause
@@ -353,6 +362,13 @@ async def main():
                         ChatBinding.enabled.is_(True),
                     )
                 )).all())
+                discussion_ids = set((await db.scalars(
+                    select(ChannelBinding.discussion_group_id).where(
+                        ChannelBinding.account_id == aid,
+                        ChannelBinding.discussion_group_id.is_not(None),
+                    )
+                )).all())
+                bindings = [binding for binding in bindings if int(binding.chat_id) not in discussion_ids]
             if not bindings:
                 async with SessionFactory() as db:
                     account = await db.get(Account, aid)
@@ -432,6 +448,11 @@ async def main():
                     current_chat_ids = set((await db.scalars(select(ChatBinding.chat_id).where(
                         ChatBinding.account_id == aid, ChatBinding.enabled.is_(True)
                     ))).all())
+                    discussion_ids = set((await db.scalars(select(ChannelBinding.discussion_group_id).where(
+                        ChannelBinding.account_id == aid,
+                        ChannelBinding.discussion_group_id.is_not(None),
+                    ))).all())
+                    current_chat_ids -= discussion_ids
                     if current_chat_ids != set(chat_ids):
                         break
                     expires = account.learning_ends_at
