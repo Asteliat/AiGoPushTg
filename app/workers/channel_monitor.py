@@ -8,6 +8,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 import random
+from types import SimpleNamespace
 
 from sqlalchemy import select
 from telethon import events, utils
@@ -24,6 +25,8 @@ from app.storage.models import Account, AIAgent, ChannelAnalysis, ChannelBinding
 SCAN_INTERVAL_SECONDS = 60
 RECOVERY_SCAN_LIMIT = 500
 PROCESSING_STALE_MINUTES = 20
+PUBLISHED_REPLY_POLL_LIMIT = 100
+PUBLISHED_REPLY_COMMENT_LIMIT = 100
 
 # Keep channel diagnostics visible even when the application root log level is WARNING.
 logging.getLogger(__name__).setLevel(logging.INFO)
@@ -39,6 +42,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
     active_channel_learning: set[int] = set()
     discussion_channels: dict[int, int] = {}
     discussion_entities: dict[int, object] = {}
+    active_reply_polls: set[int] = set()
 
     def spawn(coro):
         task = asyncio.create_task(coro)
@@ -86,6 +90,92 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
                     break
         found.reverse()
         return found
+
+    async def poll_published_comment_replies(binding, channel_entity) -> None:
+        """Recover only replies addressed to a comment previously published by this account."""
+        binding_id = int(binding.id)
+        if binding_id in active_reply_polls or not binding.reply_enabled:
+            return
+        active_reply_polls.add(binding_id)
+        try:
+            async with SessionFactory() as db:
+                published_rows = list((await db.scalars(
+                    select(ChannelAnalysis).where(
+                        ChannelAnalysis.account_id == account_id,
+                        ChannelAnalysis.channel_id == int(binding.channel_id),
+                        ChannelAnalysis.publication_status == "published",
+                        ChannelAnalysis.published_comment_id.is_not(None),
+                        ChannelAnalysis.discussion_group_id.is_not(None),
+                    ).order_by(ChannelAnalysis.created_at.desc()).limit(PUBLISHED_REPLY_POLL_LIMIT)
+                )).all())
+
+            for analysis in published_rows:
+                group_peer_id = int(analysis.discussion_group_id)
+                group_entity = discussion_entities.get(group_peer_id)
+                if group_entity is None:
+                    try:
+                        group_entity = await client.get_entity(group_peer_id)
+                        discussion_entities[group_peer_id] = group_entity
+                    except Exception:
+                        logging.exception(
+                            "Could not resolve discussion group while polling own-comment replies: "
+                            "account=%s group_id=%s", account_id, group_peer_id,
+                        )
+                        continue
+
+                async for comment in client.iter_messages(
+                    channel_entity,
+                    reply_to=int(analysis.post_id),
+                    limit=PUBLISHED_REPLY_COMMENT_LIMIT,
+                ):
+                    if comment.out or not (comment.message or "").strip():
+                        continue
+                    reply_header = getattr(comment, "reply_to", None)
+                    if int(getattr(reply_header, "reply_to_msg_id", 0) or 0) != int(analysis.published_comment_id):
+                        continue
+
+                    async def get_reply_message(parent_id=int(analysis.published_comment_id)):
+                        return await client.get_messages(group_entity, ids=parent_id)
+
+                    async def get_sender(comment=comment):
+                        if not comment.sender_id:
+                            return None
+                        return await client.get_entity(comment.sender_id)
+
+                    async def reply(text, comment=comment):
+                        return await client.send_message(
+                            group_entity, text, reply_to=int(comment.id)
+                        )
+
+                    event = SimpleNamespace(
+                        message=comment,
+                        chat_id=group_peer_id,
+                        chat=group_entity,
+                        client=client,
+                        sender_id=int(comment.sender_id or 0),
+                        is_group=True,
+                        is_private=False,
+                        is_channel=False,
+                        get_reply_message=get_reply_message,
+                        get_sender=get_sender,
+                        reply=reply,
+                    )
+                    await handle_reply_to_our_channel_comment(event)
+        except asyncio.CancelledError:
+            raise
+        except FloodWaitError as exc:
+            logging.warning(
+                "Published-comment reply polling FloodWait: account=%s channel_id=%s wait=%ss",
+                account_id, int(binding.channel_id), int(getattr(exc, "seconds", 0)),
+            )
+        except Exception:
+            logging.exception(
+                "Published-comment reply polling failed: account=%s channel_id=%s",
+                account_id, int(binding.channel_id),
+            )
+        finally:
+            active_reply_polls.discard(binding_id)
+
 
     async def process_post(channel_entity, channel_id: int, post_id: int, post_text: str, channel_title: str):
         key = (channel_id, post_id)
@@ -582,7 +672,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
             return
 
         lock_key = f"atcivperson:channel-to-chat:{account_id}:{chat_id}:{int(message.id)}"
-        if not await redis.set(lock_key, "processing", nx=True, ex=30 * 60):
+        if not await redis.set(lock_key, "processing", nx=True, ex=365 * 24 * 3600):
             return
         try:
             logging.info(
@@ -591,7 +681,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
                 account_id, channel_title, chat_id, parent_id, int(message.id),
             )
             await route_chat_reply(event, channel_title, chat_context)
-            await redis.set(lock_key, "done", ex=30 * 24 * 3600)
+            await redis.set(lock_key, "done", ex=365 * 24 * 3600)
         except asyncio.CancelledError:
             await redis.delete(lock_key)
             raise
@@ -698,6 +788,8 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
                                         type(exc).__name__, exc,
                                     )
                                 break
+                        if binding.reply_enabled:
+                            spawn(poll_published_comment_replies(binding, entity))
                         async for message in client.iter_messages(entity, limit=RECOVERY_SCAN_LIMIT):
                             body = (message.message or "").strip()
                             if not body:
