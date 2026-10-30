@@ -37,13 +37,27 @@ async def main():
     learning_tasks: dict[int,asyncio.Task]={}
     last_discovery: dict[int,datetime] = {}
 
-    async def send_log(text: str) -> None:
-        if not bot or not cfg.log_chat_id:
+    async def send_log(text: str, category: str = "main") -> None:
+        if not bot:
             return
-        try:
-            await bot.send_message(cfg.log_chat_id, text[:3900])
-        except Exception:
-            logging.exception("Could not send worker notification to LOG_CHAT_ID=%s", cfg.log_chat_id)
+        async with SessionFactory() as db:
+            setting = await db.get(AppSetting, f"log_chat_ids_{category}")
+            destinations = []
+            if setting and setting.value:
+                for raw in setting.value.replace(";", ",").split(","):
+                    try:
+                        chat_id = int(raw.strip())
+                    except (TypeError, ValueError):
+                        continue
+                    if chat_id and chat_id not in destinations:
+                        destinations.append(chat_id)
+        if setting is None and category == "main" and cfg.log_chat_id:
+            destinations = [cfg.log_chat_id]
+        for chat_id in destinations:
+            try:
+                await bot.send_message(chat_id, text[:3900])
+            except Exception:
+                logging.exception("Could not send %s notification to chat %s", category, chat_id)
 
     async def remember_message(aid: int, chat_id: int, sender_id: int, item: dict) -> None:
         chat_key = f"atcivperson:memory:{aid}:{chat_id}:chat"
@@ -167,11 +181,11 @@ async def main():
                 return
             except AIUnavailableError as exc:
                 logging.warning("AI generation failed for account %s: %s", aid, exc)
-                await send_log(f"⚠️ Ошибка генерации ИИ\nАккаунт: {current.display_name} (#{aid})\nЧат: {label}\nОшибка: {str(exc)[:900]}")
+                await send_log(f"⚠️ Ошибка генерации ИИ\nАккаунт: {current.display_name} (#{aid})\nЧат: {label}\nОшибка: {str(exc)[:900]}", category="errors")
                 return
             except Exception as exc:
                 logging.exception("Could not generate response for account %s", aid)
-                await send_log(f"⚠️ Не удалось создать ответ\nАккаунт: {current.display_name} (#{aid})\nЧат: {label}\nОшибка: {type(exc).__name__}: {str(exc)[:700]}")
+                await send_log(f"⚠️ Не удалось создать ответ\nАккаунт: {current.display_name} (#{aid})\nЧат: {label}\nОшибка: {type(exc).__name__}: {str(exc)[:700]}", category="errors")
                 return
             mode = current.reply_mode
             account_name = current.display_name
@@ -198,7 +212,7 @@ async def main():
                 await remember_message(aid, int(event.chat_id), int(current.telegram_user_id or 0), sent_item)
             except Exception as exc:
                 logging.exception("Automatic reply failed for account %s in chat %s", aid, event.chat_id)
-                await send_log(f"⚠️ Не удалось отправить ответ\nАккаунт: {account_name} (#{aid})\nЧат: {label}\nОшибка: {type(exc).__name__}: {str(exc)[:700]}")
+                await send_log(f"⚠️ Не удалось отправить ответ\nАккаунт: {account_name} (#{aid})\nЧат: {label}\nОшибка: {type(exc).__name__}: {str(exc)[:700]}", category="errors")
 
         if sent:
             text = f"✅ Ответ отправлен\nАккаунт: {account_name} (#{aid})\nЧат: {label}\nОтвет: {draft.proposed_text[:1800]}"
@@ -206,7 +220,7 @@ async def main():
             text = f"⚠️ Ответ не отправлен\nАккаунт: {account_name} (#{aid})\nЧат: {label}\nТекст не сохранён; повторите обработку после проверки настроек."
         else:
             text = f"💬 Ответ подготовлен\nАккаунт: {account_name} (#{aid})\nЧат: {label}\nВходящее: {incoming[:900]}\nОтвет ИИ: {draft.proposed_text[:1400]}\nРучной режим: в чат ничего не отправлено; текст не сохраняется."
-        await send_log(text)
+        await send_log(text, category="replies")
 
     async def finalize_learning_buffer(aid: int, key: str, sample_limit: int) -> None:
         raw_items = await redis.lrange(key, 0, -1)
@@ -258,7 +272,8 @@ async def main():
             await redis.delete(key)
         await send_log(
             f"🧠 Обучение аккаунта #{aid} завершено. "
-            f"{'Краткий контекст сохранён для черновиков.' if summary_saved else 'Сводка не сохранена: нет подходящих сообщений или доступного ИИ-агента.'}"
+            f"{'Краткий контекст сохранён для черновиков.' if summary_saved else 'Сводка не сохранена: нет подходящих сообщений или доступного ИИ-агента.'}",
+            category="learning",
         )
 
     async def run_learning(aid: int, client: TelegramClient) -> None:
@@ -410,7 +425,8 @@ async def main():
             await redis.delete(key)
             await send_log(
                 f"🧠 Обучение аккаунта #{aid} завершено. "
-                f"{'Краткий контекст сохранён для черновиков.' if summary_saved else 'Сводка не сохранена: нет подходящих сообщений или доступного ИИ-агента.'}"
+                f"{'Краткий контекст сохранён для черновиков.' if summary_saved else 'Сводка не сохранена: нет подходящих сообщений или доступного ИИ-агента.'}",
+                category="learning",
             )
         except asyncio.CancelledError:
             if handler:
@@ -496,6 +512,7 @@ async def main():
             watched[account.id]=labels
             client.add_event_handler(lambda event, aid=account.id, labels=labels: on_message(event,aid=aid,labels=labels),events.NewMessage(incoming=True))
             install_channel_monitor(client, account.id, redis, send_log)
+            await send_log(f"🟢 Аккаунт подключён: {account.display_name} (#{account.id}). Отслеживается чатов: {len(labels)}.", category="main")
             clients[account.id]=client
             tasks[account.id]=asyncio.create_task(client.run_until_disconnected())
             account_snapshot[account.id]=account

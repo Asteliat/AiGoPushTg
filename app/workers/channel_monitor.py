@@ -137,7 +137,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                         )
                         # Analysis may have been committed just before a crash or a
                         # notification failure. Re-send the stored result, never re-run AI.
-                        await send_log(notification)
+                        await send_log(notification, category="channels")
                         state.status = "done"
                         state.next_retry_at = None
                         state.last_error = ""
@@ -267,7 +267,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                     f"Вариант текстового ответа (не опубликован):\n{result.suggested_response[:1800]}"
                 )
             # Mark the durable state complete only after the operator notification succeeds.
-            await send_log(notification)
+            await send_log(notification, category="channels")
             await update_state(channel_id, post_id, status="done", next_retry_at=None, last_error="")
             await redis.set(lock_key, "done", ex=365 * 24 * 3600)
         except AIUnavailableError as exc:
@@ -279,7 +279,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
             )
             await send_log(
                 f"⚠️ Не удалось проанализировать публикацию #{post_id} канала "
-                f"{channel_title}: {str(exc)[:500]}. Повторная попытка будет позже."
+                f"{channel_title}: {str(exc)[:500]}. Повторная попытка будет позже.", category="errors"
             )
         except Exception as exc:
             logging.exception("Channel post processing failed for account %s", account_id)
@@ -287,6 +287,11 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                 channel_id, post_id, status="retry",
                 next_retry_at=_utcnow() + timedelta(minutes=5),
                 last_error=f"{type(exc).__name__}: {str(exc)[:400]}",
+            )
+            await send_log(
+                f"⚠️ Ошибка обработки публикации #{post_id} канала {channel_title}: "
+                f"{type(exc).__name__}: {str(exc)[:400]}",
+                category="errors",
             )
         finally:
             try:
@@ -452,14 +457,14 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                 await event.reply(draft.proposed_text)
                 await send_log(
                     f"✅ Ответ в комментариях отправлен\nАккаунт: {account_name} (#{account_id})\n"
-                    f"Канал: {title}\nКомментарий: {message.message[:700]}\nОтвет: {draft.proposed_text[:1200]}"
+                    f"Канал: {title}\nКомментарий: {message.message[:700]}\nОтвет: {draft.proposed_text[:1200]}", category="replies"
                 )
             else:
                 await send_log(
                     f"💬 Подготовлен ответ в комментариях\nАккаунт: {account_name} (#{account_id})\n"
                     f"Канал: {title}\nКомментарий: {message.message[:700]}\n"
                     f"Ответ ИИ: {draft.proposed_text[:1400]}\n"
-                    "Ручной режим: ответ не опубликован."
+                    "Ручной режим: ответ не опубликован.", category="replies"
                 )
             await redis.set(lock_key, "done", ex=30 * 24 * 3600)
         except asyncio.CancelledError:
@@ -470,7 +475,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
             logging.exception("Channel comment reply failed for account %s channel %s", account_id, channel_id)
             await send_log(
                 f"⚠️ Не удалось ответить в комментариях\nАккаунт: #{account_id} · канал {channel_id}\n"
-                f"Ошибка: {type(exc).__name__}: {str(exc)[:500]}"
+                f"Ошибка: {type(exc).__name__}: {str(exc)[:500]}", category="errors"
             )
 
     async def handle(event):

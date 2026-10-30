@@ -118,7 +118,7 @@ async def analyze_channel_post(
 
 
 async def learn_channel_style(client, *, account: Account, channel: ChannelBinding) -> str:
-    """Summarize up to 200 recent text posts and their linked discussion comments."""
+    """Summarize up to 200 recent text posts and up to 100 comments per post."""
     from openai import AsyncOpenAI
     from telethon.tl.functions.messages import GetDiscussionMessageRequest
 
@@ -151,11 +151,11 @@ async def learn_channel_style(client, *, account: Account, channel: ChannelBindi
             ), None)
             if group and root:
                 comments = []
-                async for item in client.iter_messages(group, reply_to=int(root.id), limit=10):
+                async for item in client.iter_messages(group, reply_to=int(root.id), limit=200):
                     text = (item.message or "").strip()
                     if text and not item.out:
                         comments.append(text[:500])
-                        if len(comments) >= 5:
+                        if len(comments) >= 100:
                             break
                 for comment in reversed(comments):
                     samples.append({"kind": "КОММЕНТАРИЙ", "text": comment})
