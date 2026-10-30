@@ -547,6 +547,14 @@ async def main():
                     continue
                 discovered.append((int(dialog.id), title[:255]))
             async with SessionFactory() as db:
+                discussion_ids = set((await db.scalars(
+                    select(ChannelBinding.discussion_group_id).where(
+                        ChannelBinding.account_id == aid,
+                        ChannelBinding.discussion_group_id.is_not(None),
+                    )
+                )).all())
+            discovered = [item for item in discovered if item[0] not in discussion_ids]
+            async with SessionFactory() as db:
                 current_bindings = list((await db.scalars(
                     select(ChatBinding).where(ChatBinding.account_id == aid)
                 )).all())
