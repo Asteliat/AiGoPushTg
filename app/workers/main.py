@@ -3,6 +3,7 @@ import asyncio
 import heapq
 import json
 import logging
+import os
 import re
 import random
 import secrets
@@ -570,6 +571,15 @@ async def main():
             await set_connection_status(account.id, "error")
             schedule_reconnect(account.id)
             return
+        session_file = str(account.session_path)
+        if not session_file.endswith(".session"):
+            session_file += ".session"
+        if os.path.isfile(session_file):
+            try:
+                os.chmod(session_file, 0o600)
+                os.chmod(os.path.dirname(session_file) or ".", 0o700)
+            except OSError:
+                logging.exception("Could not harden session file permissions for account %s", account.id)
         lease_key = f"atcivperson:telegram-session:{account.id}"
         lease_token = secrets.token_urlsafe(24)
         if not await redis.set(lease_key, lease_token, nx=True, ex=90):
