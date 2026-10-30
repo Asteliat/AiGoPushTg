@@ -11,7 +11,11 @@ from app.storage.models import Account, AIAgent, ChannelAnalysis, ChannelBinding
 
 def effective_channel_reply_mode(account: Account, channel: ChannelBinding) -> str:
     """Resolve channel publication mode without consulting the Chats reply mode."""
-    value = channel.reply_mode_override if channel.reply_mode_override is not None else account.channel_reply_mode
+    value = (
+        channel.reply_mode_override
+        if channel.reply_mode_override is not None
+        else account.channel_reply_mode
+    )
     return "automatic" if value == "automatic" else "manual"
 
 
@@ -117,7 +121,7 @@ async def analyze_channel_post(
                 {
                     "role": "user",
                     "content": (
-                        [{"type": "text", "text": f"ПУБЛИКАЦИЯ:\\n{post_text[:6000]}\\n\\nКОММЕНТАРИИ:\\n{rendered_comments}"}]
+                        [{"type": "text", "text": f"ПУБЛИКАЦИЯ:\n{post_text[:6000]}\n\nКОММЕНТАРИИ:\n{rendered_comments}"}]
                         + ([{"type": "image_url", "image_url": {"url": image_data_uri}}] if image_data_uri else [])
                     ),
                 },
