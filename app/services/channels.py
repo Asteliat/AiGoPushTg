@@ -59,6 +59,7 @@ async def analyze_channel_post(
     post_id: int,
     post_text: str,
     comments: list[str],
+    image_data_uri: str | None = None,
 ) -> ChannelAnalysis:
     """Classify discussion relevance and prepare a response suggestion without sending it."""
     if not account.ai_enabled:
@@ -113,7 +114,13 @@ async def analyze_channel_post(
             max_tokens=900,
             messages=[
                 {"role": "system", "content": prompt},
-                {"role": "user", "content": f"ПУБЛИКАЦИЯ:\n{post_text[:6000]}\n\nКОММЕНТАРИИ:\n{rendered_comments}"},
+                {
+                    "role": "user",
+                    "content": (
+                        [{"type": "text", "text": f"ПУБЛИКАЦИЯ:\\n{post_text[:6000]}\\n\\nКОММЕНТАРИИ:\\n{rendered_comments}"}]
+                        + ([{"type": "image_url", "image_url": {"url": image_data_uri}}] if image_data_uri else [])
+                    ),
+                },
             ],
         )
     except Exception as exc:
