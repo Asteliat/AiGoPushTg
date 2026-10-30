@@ -161,6 +161,50 @@ async def edit(c, text, keyboard):
     await c.answer()
 def back_home(): return kb([[('🏠 Главное меню','nav:home')]])
 
+def cancel_return_for(callback_data: str) -> str:
+    parts = callback_data.split(":")
+    if callback_data.startswith("channel:edit:") and len(parts) >= 5:
+        return f"channel:{'gsettings' if parts[2] == 'g' else 'csettings'}:{parts[3]}"
+    if callback_data.startswith("acc:context:edit:"): return f"acc:learnprompt:{parts[3]}"
+    if callback_data.startswith("acc:personaoverride:"): return f"acc:view:{parts[2]}"
+    if callback_data.startswith("acc:proxyset:"): return f"acc:proxysettings:{parts[2]}"
+    if callback_data.startswith(("chat:search:", "chat:joinlink:")): return f"acc:view:{parts[2]}"
+    if callback_data.startswith("logs:add:"): return f"logs:category:{parts[2]}"
+    if callback_data.startswith(("runtime:input:", "runtime:apply:")): return "runtime:menu"
+    if callback_data.startswith(("agent:rt:input:", "agent:channelrt:input:")): return f"agent:runtime:menu:{parts[-1]}"
+    if callback_data.startswith("agent:"): return "agent:menu"
+    if callback_data.startswith("persona:"): return "persona:menu"
+    if callback_data.startswith("example:"): return "example:menu"
+    if callback_data.startswith("channel:"): return "channel:menu"
+    if callback_data.startswith("acc:"): return f"acc:view:{parts[-1]}" if parts[-1].isdigit() else "acc:list"
+    return callback_data
+
+
+async def restore_previous_screen(c, callback_data):
+    if not callback_data:
+        await edit(c, await home_text(), MAIN)
+        return
+    parts = callback_data.split(":")
+    if callback_data.startswith("acc:view:"): await acc_view(c, int(parts[2]))
+    elif callback_data == "acc:list": await acc_list(c)
+    elif callback_data.startswith("acc:learnprompt:"): await acc_learning_prompt(c)
+    elif callback_data.startswith("acc:learn:"): await acc_learning_menu(c)
+    elif callback_data.startswith("acc:proxysettings:"): await acc_proxy_settings(c)
+    elif callback_data.startswith("channel:account:"): await channel_account_screen(c, int(parts[2]))
+    elif callback_data.startswith("channel:gsettings:"): await channel_settings_screen(c, "global", int(parts[2]))
+    elif callback_data.startswith("channel:csettings:"): await channel_settings_screen(c, "channel", int(parts[2]))
+    elif callback_data.startswith("chat:account:"): await chat_account_screen(c, int(parts[2]), int(parts[3]) if len(parts)>3 else 0)
+    elif callback_data == "agent:menu": await agents_cb(c)
+    elif callback_data.startswith("agent:runtime:menu:"): await agent_runtime_menu(c, int(parts[-1]))
+    elif callback_data == "persona:menu": await persona_menu(c)
+    elif callback_data == "example:menu": await example_menu(c)
+    elif callback_data == "logs:menu": await logs_menu(c)
+    elif callback_data.startswith("logs:category:"): await logs_category(c)
+    elif callback_data == "runtime:menu": await runtime_settings_menu(c)
+    elif callback_data == "channel:menu": await channels_legacy_redirect(c)
+    else: await edit(c, "Действие отменено. Вернитесь в предыдущий раздел:", kb([[("↩️ Назад", callback_data)]]))
+
+
 @router.message(CommandStart())
 async def start(m: Message, state: FSMContext):
     if await check_msg(m):
