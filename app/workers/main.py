@@ -20,6 +20,7 @@ from app.settings import get_settings
 from app.storage.db import SessionFactory
 from app.storage.models import Account, AIAgent, AppSetting, ChatBinding
 from app.services.notifications import enqueue_notification, dispatch_pending_notifications
+from app.services.chat_bindings import discovered_binding_values
 from app.telegram_gateway.proxy import telethon_proxy
 
 async def heartbeat(redis):
@@ -511,8 +512,8 @@ async def main():
                         binding.title = title
                     else:
                         db.add(ChatBinding(
-                            account_id=aid, chat_id=chat_id, title=title,
-                            enabled=False, auto_discovered=True,
+                            account_id=aid, chat_id=chat_id,
+                            **discovered_binding_values(title),
                         ))
                 await db.commit()
             logging.info("Discovered %d eligible dialogs for account %s", len(discovered), aid)
