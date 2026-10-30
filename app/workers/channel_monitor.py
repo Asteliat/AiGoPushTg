@@ -8,6 +8,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 import random
+from types import SimpleNamespace
 
 from sqlalchemy import select
 from telethon import events, utils
@@ -23,6 +24,8 @@ from app.storage.models import Account, AIAgent, ChannelAnalysis, ChannelBinding
 
 SCAN_INTERVAL_SECONDS = 60
 RECOVERY_SCAN_LIMIT = 500
+COMMENT_POLL_POST_LIMIT = 20
+COMMENT_POLL_COMMENT_LIMIT = 100
 PROCESSING_STALE_MINUTES = 20
 
 # Keep channel diagnostics visible even when the application root log level is WARNING.
@@ -38,6 +41,8 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
     background_tasks: set[asyncio.Task] = set()
     active_channel_learning: set[int] = set()
     discussion_channels: dict[int, int] = {}
+    discussion_entities: dict[int, object] = {}
+    active_comment_polls: set[int] = set()
 
     def spawn(coro):
         task = asyncio.create_task(coro)
@@ -63,7 +68,9 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
         for old_group_id, mapped_channel_id in list(discussion_channels.items()):
             if mapped_channel_id == channel_id and old_group_id != group_peer_id:
                 discussion_channels.pop(old_group_id, None)
+                discussion_entities.pop(old_group_id, None)
         discussion_channels[group_peer_id] = int(channel_id)
+        discussion_entities[group_peer_id] = group
         async with SessionFactory() as db:
             binding = await db.scalar(select(ChannelBinding).where(
                 ChannelBinding.account_id == account_id,
@@ -83,6 +90,93 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                     break
         found.reverse()
         return found
+
+    async def poll_channel_comments(binding, channel_entity) -> None:
+        """Poll public channel comment threads; NewMessage alone cannot see every thread."""
+        binding_id = int(binding.id)
+        if binding_id in active_comment_polls or not binding.reply_enabled:
+            return
+        active_comment_polls.add(binding_id)
+        try:
+            group_peer_id = next(
+                (
+                    peer_id for peer_id, mapped_channel_id in discussion_channels.items()
+                    if mapped_channel_id == int(binding.channel_id)
+                ),
+                int(binding.discussion_group_id or 0),
+            )
+            if not group_peer_id:
+                return
+            group_entity = discussion_entities.get(group_peer_id)
+            if group_entity is None:
+                group_entity = await client.get_entity(group_peer_id)
+                discussion_entities[group_peer_id] = group_entity
+
+            # Establish a durable baseline once, so enabling polling does not trigger
+            # replies to the entire historical comment archive. Redis AOF preserves it.
+            baseline_key = f"atcivperson:channel-comment-poll-start:{account_id}:{binding.channel_id}"
+            await redis.set(
+                baseline_key, str(_utcnow().timestamp()), nx=True, ex=365 * 24 * 3600
+            )
+            baseline_raw = await redis.get(baseline_key)
+            baseline = datetime.fromtimestamp(float(baseline_raw), timezone.utc)
+
+            async for post in client.iter_messages(channel_entity, limit=COMMENT_POLL_POST_LIMIT):
+                if not (post.message or "").strip():
+                    continue
+                recent_comments = []
+                async for comment in client.iter_messages(
+                    channel_entity,
+                    reply_to=int(post.id),
+                    limit=COMMENT_POLL_COMMENT_LIMIT,
+                ):
+                    if comment.out or not (comment.message or "").strip() or not comment.reply_to:
+                        continue
+                    comment_date = comment.date
+                    if comment_date is None:
+                        continue
+                    if comment_date.tzinfo is None:
+                        comment_date = comment_date.replace(tzinfo=timezone.utc)
+                    if comment_date >= baseline:
+                        recent_comments.append(comment)
+
+                # Process oldest first; per-comment Redis locks are shared with live
+                # NewMessage handling and prevent duplicate replies from both paths.
+                for comment in reversed(recent_comments):
+                    async def get_sender(comment=comment):
+                        if not comment.sender_id:
+                            return None
+                        return await client.get_entity(comment.sender_id)
+
+                    async def reply(text, comment=comment):
+                        return await client.send_message(
+                            group_entity, text, reply_to=int(comment.id)
+                        )
+
+                    event = SimpleNamespace(
+                        message=comment,
+                        chat_id=group_peer_id,
+                        chat=group_entity,
+                        is_group=True,
+                        is_channel=False,
+                        get_sender=get_sender,
+                        reply=reply,
+                    )
+                    await handle_discussion_comment(event)
+        except asyncio.CancelledError:
+            raise
+        except FloodWaitError as exc:
+            logging.warning(
+                "Channel comment polling FloodWait: account=%s channel_id=%s wait=%ss",
+                account_id, int(binding.channel_id), int(getattr(exc, "seconds", 0)),
+            )
+        except Exception:
+            logging.exception(
+                "Channel comment polling failed: account=%s channel_id=%s",
+                account_id, int(binding.channel_id),
+            )
+        finally:
+            active_comment_polls.discard(binding_id)
 
     async def process_post(channel_entity, channel_id: int, post_id: int, post_text: str, channel_title: str):
         key = (channel_id, post_id)
@@ -264,7 +358,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                 "group_id=%s root_message_id=%s",
                 account_id, channel_id, post_id, group_peer_id, int(root_message.id),
             )
-            comments = await fetch_comments(group_entity, int(root_message.id))
+            comments = await fetch_comments(channel_entity, post_id)
             logging.info(
                 "Discussion comments fetched: account=%s channel_id=%s post_id=%s "
                 "group_id=%s root_message_id=%s comments_count=%s minimum=%s",
@@ -699,6 +793,8 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                                         type(exc).__name__, exc,
                                     )
                                 break
+                        if binding.reply_enabled:
+                            spawn(poll_channel_comments(binding, entity))
                         async for message in client.iter_messages(entity, limit=RECOVERY_SCAN_LIMIT):
                             body = (message.message or "").strip()
                             if not body:
