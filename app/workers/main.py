@@ -637,7 +637,16 @@ async def main():
                     ChatBinding.enabled.is_(True),
                 )
             )).all())
-        return {binding.chat_id: binding.title for binding in current_bindings}
+            discussion_ids = set((await db.scalars(
+                select(ChannelBinding.discussion_group_id).where(
+                    ChannelBinding.account_id == aid,
+                    ChannelBinding.discussion_group_id.is_not(None),
+                )
+            )).all())
+        return {
+            binding.chat_id: binding.title for binding in current_bindings
+            if int(binding.chat_id) not in discussion_ids
+        }
 
     def schedule_reconnect(aid: int) -> None:
         failures = reconnect_failures.get(aid, 0) + 1
