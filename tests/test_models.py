@@ -76,3 +76,10 @@ def test_channel_discussion_chat_replies_inherit_global_setting_and_allow_overri
     channel.chat_replies_enabled_override = False
     account.channel_chat_replies_enabled = True
     assert effective_channel_chat_replies_enabled(account, channel) is False
+
+
+def test_legacy_comment_threshold_columns_remain_for_database_compatibility() -> None:
+    account_columns = set(Account.__table__.columns.keys())
+    channel_columns = set(ChannelBinding.__table__.columns.keys())
+    assert {"channel_wait_seconds", "channel_min_comments", "channel_insufficient_action"} <= account_columns
+    assert {"comment_wait_seconds", "comment_wait_seconds_override", "min_comments_override", "insufficient_action_override"} <= channel_columns
