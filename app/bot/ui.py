@@ -241,7 +241,7 @@ async def logs_menu_text():
         for category in LOG_CATEGORIES:
             setting = await db.get(AppSetting, f"log_chat_ids_{category}")
             ids = log_ids_from_value(setting.value if setting else "")
-            if category == "main" and not ids and cfg.log_chat_id:
+            if category == "main" and setting is None and cfg.log_chat_id:
                 ids = [cfg.log_chat_id]
             rows[category] = ids
     lines = ["🧾 Настройка логов", "", "Для каждого типа событий можно задать один или несколько чатов/групп. Добавляйте ID чата или супергруппы, куда бот сможет отправлять сообщения.", ""]
@@ -268,7 +268,7 @@ async def logs_category(c: CallbackQuery):
     async with SessionFactory() as db:
         setting = await db.get(AppSetting, f"log_chat_ids_{category}")
         ids = log_ids_from_value(setting.value if setting else "")
-    if category == "main" and not ids and cfg.log_chat_id:
+    if category == "main" and setting is None and cfg.log_chat_id:
         ids = [cfg.log_chat_id]
     lines = [LOG_CATEGORIES[category], "", "Чаты для этой категории:"]
     lines += [f"• {chat_id}" for chat_id in ids] if ids else ["• пока не добавлены"]
@@ -309,6 +309,8 @@ async def logs_add_save(m: Message, state: FSMContext):
         key = f"log_chat_ids_{category}"
         setting = await db.get(AppSetting, key)
         ids = log_ids_from_value(setting.value if setting else "")
+        if category == "main" and setting is None and cfg.log_chat_id:
+            ids = [cfg.log_chat_id]
         if chat_id not in ids: ids.append(chat_id)
         value = ",".join(str(item) for item in ids)
         if setting: setting.value = value
@@ -328,7 +330,10 @@ async def logs_remove(c: CallbackQuery):
         setting = await db.get(AppSetting, key)
         ids = log_ids_from_value(setting.value if setting else "")
         ids = [item for item in ids if item != chat_id]
-        if setting: setting.value = ",".join(str(item) for item in ids)
+        if setting:
+            setting.value = ",".join(str(item) for item in ids)
+        else:
+            db.add(AppSetting(key=key, value=""))
         await db.commit()
     await logs_category(c)
 
