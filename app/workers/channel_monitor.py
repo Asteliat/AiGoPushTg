@@ -17,7 +17,12 @@ from telethon.errors import FloodWaitError
 from telethon.tl.functions.messages import GetDiscussionMessageRequest
 
 from app.ai.provider import AIUnavailableError
-from app.services.channels import analyze_channel_post, channel_comment_threshold_action, effective_channel_reply_mode, learn_channel_style
+from app.services.channels import (
+    analyze_channel_post,
+    channel_comment_threshold_action,
+    effective_channel_reply_mode,
+    learn_channel_style,
+)
 from app.services.ai_responses import global_ai_enabled
 from app.storage.db import SessionFactory
 from app.storage.models import Account, AIAgent, ChannelAnalysis, ChannelBinding, ChannelPostState
@@ -252,6 +257,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
 
     async def process_post(channel_entity, channel_id: int, post_id: int, post_text: str, channel_title: str, post_message=None):
         key = (channel_id, post_id)
+        post_text = post_text or ""
         if key in active_posts or (not post_text.strip() and not getattr(post_message, "photo", None)):
             return
         stored_post_text = post_text.strip() or "[Фотография без текстового описания]"
@@ -793,7 +799,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
             account_id, channel_id, int(message.id), len(message.message or ""),
         )
         spawn(process_post(
-            event.chat, channel_id, int(message.id), message.message,
+            event.chat, channel_id, int(message.id), message.message or "",
             getattr(event.chat, "title", "") or "Канал", post_message=message,
         ))
 
