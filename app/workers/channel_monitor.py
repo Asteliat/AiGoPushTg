@@ -377,6 +377,9 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                 account_name = account.display_name
 
             comments = await fetch_comments(event.chat, post_id)
+            if insufficient_action == "skip_empty" and not comments:
+                await redis.set(lock_key, "skipped", ex=30 * 24 * 3600)
+                return
             if len(comments) < min_comments:
                 if insufficient_action == "skip":
                     await redis.set(lock_key, "skipped", ex=30 * 24 * 3600)
@@ -384,6 +387,9 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                 if wait_seconds:
                     await asyncio.sleep(wait_seconds)
                 comments = await fetch_comments(event.chat, post_id)
+                if insufficient_action == "skip_empty" and not comments:
+                    await redis.set(lock_key, "skipped", ex=30 * 24 * 3600)
+                    return
                 if len(comments) < min_comments:
                     # A later incoming comment will trigger a fresh attempt.
                     await redis.delete(lock_key)
