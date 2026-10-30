@@ -138,7 +138,14 @@ async def main():
         aid = int(account.id)
         lock_key = f"atcivperson:trigger-lock:{aid}"
         lock_token = secrets.token_urlsafe(18)
-        locked = bool(await redis.set(lock_key, lock_token, nx=True, ex=300))
+        try:
+            locked = bool(await redis.set(lock_key, lock_token, nx=True, ex=300))
+        except Exception as exc:
+            record.status = "failed"
+            record.error = f"Redis lock error: {type(exc).__name__}: {str(exc)[:400]}"
+            await db.commit()
+            logging.exception("Could not acquire trigger lock for account %s", aid)
+            return True
         if not locked:
             record.status = "skipped_busy"
             await db.commit()
@@ -173,8 +180,7 @@ async def main():
                     event.chat_id, limit=15, max_id=int(event.message.id), from_user=sender_id
                 ):
                     body = (message.message or "").strip()
-                    if body:
-                        previous.append(body[:700])
+                    previous.append(body[:700] if body else "[Участник отправил сообщение без текста]")
             except Exception:
                 logging.exception(
                     "Could not fetch trigger participant history: account=%s chat=%s sender=%s",
