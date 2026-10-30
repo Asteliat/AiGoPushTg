@@ -14,7 +14,7 @@ from app.ai.provider import AIUnavailableError, NoReplyNeeded, summarize_chat_co
 from app.services.ai_responses import generate_response, global_ai_enabled
 from app.workers.channel_monitor import install_channel_monitor
 from app.settings import get_settings
-from app.storage.db import SessionFactory, init_db
+from app.storage.db import SessionFactory
 from app.storage.models import Account, AIAgent, AppSetting, ChatBinding
 from app.telegram_gateway.proxy import telethon_proxy
 
@@ -27,7 +27,6 @@ async def main():
     from redis.asyncio import Redis
     cfg=get_settings()
     logging.basicConfig(level=cfg.log_level.upper())
-    await init_db()
     redis=Redis.from_url(cfg.redis_url,decode_responses=True)
     bot=Bot(token=cfg.bot_token) if cfg.bot_token else None
     clients: dict[int,TelegramClient]={}
