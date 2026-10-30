@@ -8,8 +8,8 @@ import shlex
 def parse_trigger_terms(raw: str) -> list[str]:
     """Parse comma-separated phrases or space-separated words; quote multiword terms."""
     source = raw or ""
-    if re.search(r"[,;\\n]", source):
-        candidates = [" ".join(item.split()).strip() for item in re.split(r"[,;\\n]+", source)]
+    if re.search(r"[,;\n]", source):
+        candidates = [" ".join(item.split()).strip() for item in re.split(r"[,;\n]+", source)]
     else:
         try:
             candidates = shlex.split(source)
