@@ -940,7 +940,7 @@ async def start_phone_login_prompt(bot, uid: int, state: FSMContext, proxy_confi
         "session_path": None, "ui_data": ui_data, "success": False,
     }
     await state.clear()
-    await state.update_data(ui_chat_id=ui_data.get("ui_chat_id"), ui_message_id=ui_data.get("ui_message_id"))
+    await state.update_data(ui_chat_id=ui_data.get("ui_chat_id"), ui_message_id=ui_data.get("ui_message_id"), return_callback=ui_data.get("return_callback"))
     await state.set_state(Flow.phone_number)
     text = "📱 Вход по номеру телефона\n\nВведите номер в международном формате, например +79991234567. Сообщение будет удалено по возможности."
     if not await edit_anchor(bot, ui_data, text, CANCEL):
