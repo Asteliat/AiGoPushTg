@@ -2486,9 +2486,20 @@ async def channel_settings_screen(c, scope, object_id):
         prefix = "g" if scope == "global" else "c"
         rows.append([(f"✏️ {label}", f"channel:edit:{prefix}:{object_id}:{field}")])
     action = account.channel_insufficient_action if binding is None else (binding.insufficient_action_override or account.channel_insufficient_action)
-    lines.append(f"Если комментариев меньше минимума: {'ждать' if action == 'wait' else 'пропустить'}")
+    action_labels = {
+        "wait": "Ждать до появления нужного числа комментариев",
+        "skip": "Пропускать, если комментариев меньше минимума",
+        "skip_empty": "Не отвечать, если комментариев нет",
+    }
+    lines.append(f"Если комментариев меньше минимума: {action_labels.get(action, action_labels['wait'])}")
     prefix = "g" if scope == "global" else "c"
-    rows.append([("⏳ Ждать до появления комментариев" if action == "skip" else "⏭ Пропускать без ожидания", f"channel:action:{prefix}:{object_id}")])
+    next_action = {"wait": "skip", "skip": "skip_empty", "skip_empty": "wait"}.get(action, "wait")
+    next_labels = {
+        "wait": "⏳ Ждать до появления нужного числа комментариев",
+        "skip": "⏭ Пропускать, если комментариев мало",
+        "skip_empty": "🚫 Не отвечать, если комментариев нет",
+    }
+    rows.append([(next_labels[next_action], f"channel:action:{prefix}:{object_id}")])
     if scope == "channel":
         learning_state = "идёт" if binding.learning_status == "training" else "ошибка — запустите повторно" if binding.learning_status == "error" else "завершено" if binding.learning_completed_at else "не запускалось"
         lines.append(f"Автообучение: {learning_state}")
@@ -2590,7 +2601,8 @@ async def channel_action_toggle(c):
             if not account:
                 await c.answer("Аккаунт не найден.", show_alert=True)
                 return
-            account.channel_insufficient_action = "skip" if account.channel_insufficient_action == "wait" else "wait"
+            current = account.channel_insufficient_action
+            account.channel_insufficient_action = {"wait": "skip", "skip": "skip_empty", "skip_empty": "wait"}.get(current, "wait")
         else:
             binding = await db.get(ChannelBinding, object_id)
             if not binding:
@@ -2598,7 +2610,7 @@ async def channel_action_toggle(c):
                 return
             account = await db.get(Account, binding.account_id)
             current = binding.insufficient_action_override or account.channel_insufficient_action
-            binding.insufficient_action_override = "skip" if current == "wait" else "wait"
+            binding.insufficient_action_override = {"wait": "skip", "skip": "skip_empty", "skip_empty": "wait"}.get(current, "wait")
         await db.commit()
     await channel_settings_screen(c, "global" if scope == "g" else "channel", object_id)
 

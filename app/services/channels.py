@@ -8,6 +8,17 @@ from app.ai.provider import AIUnavailableError
 from app.storage.models import Account, AIAgent, ChannelAnalysis, ChannelBinding, Persona
 
 
+def channel_comment_threshold_action(action: str, comment_count: int, minimum: int) -> str:
+    """Return skip, wait, or continue for the configured discussion comment policy."""
+    if action == "skip_empty" and comment_count == 0:
+        return "skip"
+    if comment_count >= minimum:
+        return "continue"
+    if action == "skip":
+        return "skip"
+    return "wait"
+
+
 async def analyze_channel_post(
     session: AsyncSession,
     *,
