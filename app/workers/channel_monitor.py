@@ -14,7 +14,7 @@ from telethon import events, utils
 from telethon.tl.functions.messages import GetDiscussionMessageRequest
 
 from app.ai.provider import AIUnavailableError
-from app.services.channels import analyze_channel_post
+from app.services.channels import analyze_channel_post, channel_comment_threshold_action
 from app.services.ai_responses import generate_response, global_ai_enabled
 from app.storage.db import SessionFactory
 from app.storage.models import Account, AIAgent, ChannelAnalysis, ChannelBinding, ChannelPostState
@@ -377,20 +377,19 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                 account_name = account.display_name
 
             comments = await fetch_comments(event.chat, post_id)
-            if insufficient_action == "skip_empty" and not comments:
+            threshold_action = channel_comment_threshold_action(insufficient_action, len(comments), min_comments)
+            if threshold_action == "skip":
                 await redis.set(lock_key, "skipped", ex=30 * 24 * 3600)
                 return
-            if len(comments) < min_comments:
-                if insufficient_action == "skip":
-                    await redis.set(lock_key, "skipped", ex=30 * 24 * 3600)
-                    return
+            if threshold_action == "wait":
                 if wait_seconds:
                     await asyncio.sleep(wait_seconds)
                 comments = await fetch_comments(event.chat, post_id)
-                if insufficient_action == "skip_empty" and not comments:
+                threshold_action = channel_comment_threshold_action(insufficient_action, len(comments), min_comments)
+                if threshold_action == "skip":
                     await redis.set(lock_key, "skipped", ex=30 * 24 * 3600)
                     return
-                if len(comments) < min_comments:
+                if threshold_action == "wait":
                     # A later incoming comment will trigger a fresh attempt.
                     await redis.delete(lock_key)
                     return
