@@ -507,6 +507,8 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                         agent_now = await db.get(AIAgent, latest.ai_agent_id) if latest and latest.ai_agent_id else None
                         if (
                             not latest or not latest.enabled or latest.manual_pause or not latest.ai_enabled
+                            or latest.learning_status in {"training", "stopping"}
+                            or latest.reply_mode != "automatic"
                             or not await global_ai_enabled(db) or not binding_now or not agent_now
                             or not agent_now.enabled or latest.ai_agent_id != account.ai_agent_id
                         ):
