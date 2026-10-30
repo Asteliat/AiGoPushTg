@@ -2565,8 +2565,6 @@ CHANNEL_SETTING_FIELDS = {
     "post_instructions": ("⚙️ Постов", "channel_post_instructions", "post_instructions_override", "text"),
     "comments_instructions": ("⚙️ Комментариев", "channel_comments_instructions", "comments_instructions_override", "text"),
     "restrictions_instructions": ("⚙️ Ограничений", "channel_restrictions_instructions", "restrictions_instructions_override", "text"),
-    "wait_seconds": ("⏱ Ожидание", "channel_wait_seconds", "comment_wait_seconds_override", "seconds"),
-    "min_comments": ("💬 Минимум комментариев", "channel_min_comments", "min_comments_override", "min_comments"),
     "reply_probability": ("🎯 Вероятность ответа", "channel_reply_probability", "reply_probability_override", "percent"),
     "reply_cooldown_seconds": ("⏳ Пауза между ответами", "channel_reply_cooldown_seconds", "reply_cooldown_seconds_override", "seconds"),
     "reply_mode": ("🎚 Режим публикации", "channel_reply_mode", "reply_mode_override", "mode"),
@@ -2586,8 +2584,6 @@ def channel_setting_text(field, value):
         return f"{label}: {format_duration(value)} ({value} сек.)"
     if kind == "percent":
         return f"{label}: {value}%"
-    if kind == "min_comments":
-        return f"{label}: {value}"
     return label
 
 @router.callback_query(F.data == "channel:menu")
@@ -2735,7 +2731,12 @@ async def channel_settings_screen(c, scope, object_id):
         await c.answer("Настройки не найдены.", show_alert=True)
         return
     title = "Глобальные настройки" if scope == "global" else f"Настройки канала · {binding.title}"
-    lines = [f"⚙️ {title}", "Общие значения этого аккаунта применяются ко всем его каналам. Индивидуальные настройки канала могут их переопределить.", ""]
+    lines = [
+        f"⚙️ {title}",
+        "Общие значения этого аккаунта применяются ко всем его каналам. Индивидуальные настройки канала могут их переопределить.",
+        "Каждый непустой пост обрабатывается сразу. Комментарии аудитории — только дополнительный контекст, их количество не блокирует анализ. Пустые посты без текста и фото пропускаются.",
+        "",
+    ]
     rows = []
     prefix = "g" if scope == "global" else "c"
     mode = effective_channel_reply_mode(account, binding) if binding is not None else (
@@ -2773,12 +2774,10 @@ async def channel_settings_screen(c, scope, object_id):
         "post_instructions": "Как ИИ должен учитывать содержание публикаций.",
         "comments_instructions": "На что обращать внимание в обсуждении.",
         "restrictions_instructions": "Каких тем и действий избегать.",
-        "wait_seconds": "Сколько ждать, пока появится нужное число комментариев.",
-        "min_comments": "Минимум комментариев перед анализом и ответом.",
         "reply_probability": "Вероятность публикации одного ответа на исходный пост после анализа обсуждения.",
         "reply_cooldown_seconds": "Минимальная пауза между публикациями ответов в этом канале.",
     }
-    for field in ("post_instructions", "comments_instructions", "restrictions_instructions", "wait_seconds", "min_comments", "reply_probability", "reply_cooldown_seconds"):
+    for field in ("post_instructions", "comments_instructions", "restrictions_instructions", "reply_probability", "reply_cooldown_seconds"):
         label, _, _, kind = CHANNEL_SETTING_FIELDS[field]
         value = channel_setting_value(account, binding, field)
         if kind == "text":
@@ -2793,21 +2792,6 @@ async def channel_settings_screen(c, scope, object_id):
         lines.append(f"  {explanations[field]}")
         prefix = "g" if scope == "global" else "c"
         rows.append([(f"✏️ {label}", f"channel:edit:{prefix}:{object_id}:{field}")])
-    action = account.channel_insufficient_action if binding is None else (binding.insufficient_action_override or account.channel_insufficient_action)
-    action_labels = {
-        "wait": "Ждать до появления нужного числа комментариев",
-        "skip": "Пропускать, если комментариев меньше минимума",
-        "skip_empty": "Не отвечать, если комментариев нет",
-    }
-    lines.append(f"Если комментариев меньше минимума: {action_labels.get(action, action_labels['wait'])}")
-    prefix = "g" if scope == "global" else "c"
-    next_action = {"wait": "skip", "skip": "skip_empty", "skip_empty": "wait"}.get(action, "wait")
-    next_labels = {
-        "wait": "⏳ Ждать до появления нужного числа комментариев",
-        "skip": "⏭ Пропускать, если комментариев мало",
-        "skip_empty": "🚫 Не отвечать, если комментариев нет",
-    }
-    rows.append([(next_labels[next_action], f"channel:action:{prefix}:{object_id}")])
     if scope == "channel":
         learning_state = "идёт" if binding.learning_status == "training" else "ошибка — запустите повторно" if binding.learning_status == "error" else "завершено" if binding.learning_completed_at else "не запускалось"
         lines.append(f"Автообучение: {learning_state}")
@@ -2838,7 +2822,7 @@ async def channel_setting_edit(c, state: FSMContext):
         await c.answer("Неизвестная настройка.", show_alert=True)
         return
     label, _, _, kind = CHANNEL_SETTING_FIELDS[field]
-    minimum, maximum = (1, 10) if kind == "min_comments" else (0, 100) if kind == "percent" else (0, 2147483647) if kind == "seconds" else (0, 4000)
+    minimum, maximum = (0, 100) if kind == "percent" else (0, 2147483647) if kind == "seconds" else (0, 4000)
     await state.clear()
     await state.update_data(channel_scope=scope, channel_object_id=int(object_raw), channel_field=field, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data))
     await state.set_state(Flow.channel_setting_value)
@@ -2873,7 +2857,7 @@ async def channel_setting_save(m: Message, state: FSMContext):
             await prompt_message(m, state, "Введите целое число.")
             return
         value = int(raw)
-        minimum, maximum = (1, 10) if kind == "min_comments" else (0, 100) if kind == "percent" else (0, 2147483647)
+        minimum, maximum = (0, 100) if kind == "percent" else (0, 2147483647)
         if not minimum <= value <= maximum:
             await prompt_message(m, state, f"Допустимый диапазон: {minimum}–{maximum}.")
             return
@@ -2891,8 +2875,6 @@ async def channel_setting_save(m: Message, state: FSMContext):
                 await finish_prompt(m, state, "Канал не найден.")
                 return
             setattr(binding, channel_attr, value)
-            if field == "wait_seconds":
-                binding.comment_wait_seconds = value
         await db.commit()
     destination = f"channel:gsettings:{object_id}" if scope == "g" else f"channel:csettings:{object_id}"
     shown = format_duration(value) if kind == "seconds" else f"{value}%" if kind == "percent" else str(value)
@@ -3035,27 +3017,14 @@ async def channel_chat_replies_toggle(c):
 
 
 @router.callback_query(F.data.startswith("channel:action:"))
-async def channel_action_toggle(c):
+async def channel_legacy_action(c):
     if not await check_cb(c): return
     _, _, scope, object_raw = c.data.split(":")
+    if scope not in {"g", "c"}:
+        await c.answer("Неизвестная настройка.", show_alert=True)
+        return
     object_id = int(object_raw)
-    async with SessionFactory() as db:
-        if scope == "g":
-            account = await db.get(Account, object_id)
-            if not account:
-                await c.answer("Аккаунт не найден.", show_alert=True)
-                return
-            current = account.channel_insufficient_action
-            account.channel_insufficient_action = {"wait": "skip", "skip": "skip_empty", "skip_empty": "wait"}.get(current, "wait")
-        else:
-            binding = await db.get(ChannelBinding, object_id)
-            if not binding:
-                await c.answer("Канал не найден.", show_alert=True)
-                return
-            account = await db.get(Account, binding.account_id)
-            current = binding.insufficient_action_override or account.channel_insufficient_action
-            binding.insufficient_action_override = {"wait": "skip", "skip": "skip_empty", "skip_empty": "wait"}.get(current, "wait")
-        await db.commit()
+    await c.answer("Ожидание комментариев больше не используется. Посты анализируются независимо от их количества.")
     await channel_settings_screen(c, "global" if scope == "g" else "channel", object_id)
 
 @router.callback_query(F.data.startswith("channel:inherit:"))
