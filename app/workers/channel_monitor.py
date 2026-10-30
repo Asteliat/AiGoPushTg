@@ -194,7 +194,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                 await db.commit()
 
             try:
-                    discussion = await client(GetDiscussionMessageRequest(peer=channel_entity, msg_id=post_id))
+                discussion = await client(GetDiscussionMessageRequest(peer=channel_entity, msg_id=post_id))
                 logging.info(
                     "Discussion lookup result: account=%s channel_id=%s post_id=%s chats=%s messages=%s",
                     account_id, channel_id, post_id,
