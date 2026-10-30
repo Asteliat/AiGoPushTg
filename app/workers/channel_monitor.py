@@ -736,7 +736,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
             active_channel_learning.discard(binding_id)
 
     async def handle_reply_to_our_channel_comment(event):
-        """Route only replies whose reply-chain descends from our own published comment."""
+        """Route replies to account-authored messages in linked channel discussions into Chats."""
         message = event.message
         if (
             not event.is_group or not message or message.out
@@ -793,6 +793,8 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
                 return
             if binding.discussion_group_id is not None and int(binding.discussion_group_id) != chat_id:
                 return
+            if analysis and analysis.discussion_group_id is not None and int(analysis.discussion_group_id) != chat_id:
+                return
             if not effective_channel_chat_replies_enabled(account, binding):
                 logging.info(
                     "Channel discussion reply ignored by Chats-reply setting: "
@@ -817,11 +819,14 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
                 + f"Сообщение аккаунта, с которого начался диалог:\n{own_message_text}"
             )
 
+        root_message_id = (
+            int(analysis.published_comment_id) if analysis else int(own_message.id)
+        )
         if route_chat_reply is None:
             logging.warning(
-                "A reply to our channel comment was detected but no chat router is configured: "
-                "account=%s group_id=%s comment_id=%s",
-                account_id, chat_id, int(analysis.published_comment_id),
+                "A reply to our channel message was detected but no chat router is configured: "
+                "account=%s group_id=%s root_message_id=%s",
+                account_id, chat_id, root_message_id,
             )
             return
 
@@ -831,8 +836,8 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
         try:
             logging.info(
                 "Routing reply-chain to our channel comment into Chats pipeline: "
-                "account=%s channel=%s group_id=%s root_comment_id=%s message_id=%s",
-                account_id, channel_title, chat_id, int(analysis.published_comment_id), int(message.id),
+                "account=%s channel=%s group_id=%s root_message_id=%s message_id=%s",
+                account_id, channel_title, chat_id, root_message_id, int(message.id),
             )
             await route_chat_reply(event, channel_title, chat_context)
             await redis.set(lock_key, "done", ex=365 * 24 * 3600)
@@ -842,7 +847,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
         except Exception:
             await redis.delete(lock_key)
             logging.exception(
-                "Could not route channel-comment reply into Chats pipeline: account=%s group_id=%s message_id=%s",
+                "Could not route channel-discussion reply into Chats pipeline: account=%s group_id=%s message_id=%s",
                 account_id, chat_id, int(message.id),
             )
 
