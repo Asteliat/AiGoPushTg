@@ -162,7 +162,10 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
                     reply_to=int(analysis.post_id),
                     limit=PUBLISHED_REPLY_COMMENT_LIMIT,
                 ):
-                    if comment.out or not (comment.message or "").strip():
+                    if (
+                        comment.out or not (comment.message or "").strip()
+                        or not getattr(comment, "reply_to", None)
+                    ):
                         continue
                     async def get_reply_message(parent_id=int(getattr(comment.reply_to, "reply_to_msg_id", 0) or 0)):
                         return await client.get_messages(group_entity, ids=parent_id)
