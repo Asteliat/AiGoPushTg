@@ -2624,7 +2624,7 @@ async def channel_open(c, *, answer_callback=True):
         await c.answer("Канал не найден. Обновите список каналов.", show_alert=True)
         return
     state = "🟢 Отвечать в комментариях включено" if binding.reply_enabled else "🔴 Отвечать в комментариях выключено"
-    await edit(c, f"📡 {binding.title}\nАккаунт: #{aid}\n\n{state}\n\nЗдесь можно включить ответы и отдельно настроить поведение ИИ для этого канала.", kb([
+    await edit(c, f"📡 {binding.title}\nАккаунт: #{aid}\n\n{state}\n\nИИ анализирует публикацию и комментарии как контекст аудитории, а затем при необходимости оставляет один комментарий-ответ на исходный пост. На отдельные комментарии пользователей канал-автоматизация не отвечает.", kb([
         [("🔴 Выключить ответы" if binding.reply_enabled else "🟢 Включить ответы", f"channel:reply:{binding.id}")],
         [("⚙️ Настроить", f"channel:csettings:{binding.id}")],
         [("🧾 История анализа", f"channel:history:{aid}")],
@@ -2687,8 +2687,8 @@ async def channel_settings_screen(c, scope, object_id):
         "restrictions_instructions": "Каких тем и действий избегать.",
         "wait_seconds": "Сколько ждать, пока появится нужное число комментариев.",
         "min_comments": "Минимум комментариев перед анализом и ответом.",
-        "reply_probability": "Шанс ответа на подходящий комментарий.",
-        "reply_cooldown_seconds": "Минимальная пауза между ответами в этом канале.",
+        "reply_probability": "Вероятность публикации одного ответа на исходный пост после анализа обсуждения.",
+        "reply_cooldown_seconds": "Минимальная пауза между публикациями ответов в этом канале.",
     }
     for field in ("post_instructions", "comments_instructions", "restrictions_instructions", "wait_seconds", "min_comments", "reply_probability", "reply_cooldown_seconds"):
         label, _, _, kind = CHANNEL_SETTING_FIELDS[field]
@@ -2911,11 +2911,25 @@ async def channel_analysis_view(c):
         await c.answer("Результат анализа не найден.", show_alert=True)
         return
     topic = "по теме" if row.on_topic else "не по теме"
+    publication_labels = {
+        "published": "Комментарий опубликован под исходным постом",
+        "manual": "Подготовлен черновик · ручной режим",
+        "skipped_ai": "ИИ решил, что комментарий не нужен",
+        "skipped_probability": "Пропущено по вероятности ответа",
+        "skipped_cooldown": "Пропущено из-за паузы между ответами",
+        "legacy": "Старый анализ · публикация не выполнялась",
+        "pending": "Ожидает обработки",
+        "approved": "Ожидает публикации",
+        "publishing": "Публикуется",
+    }
+    decision = "ответ нужен" if row.should_reply else "ответ не требуется"
     text = (
         f"📡 {row.channel_title} · пост #{row.post_id}\n"
-        f"Комментариев: {row.comments_count} · обсуждение: {topic}\n\n"
+        f"Комментариев: {row.comments_count} · обсуждение: {topic}\n"
+        f"Решение ИИ: {decision}\n"
+        f"Статус: {publication_labels.get(row.publication_status, row.publication_status)}\n\n"
         f"Сводка ИИ:\n{row.comments_summary[:1800]}\n\n"
-        f"Вариант ответа:\n{row.suggested_response[:1800]}"
+        f"Вариант комментария к публикации:\n{row.suggested_response[:1800] or 'ИИ не предложил публиковать комментарий.'}"
     )
     await edit(c, text, kb([
         [("⬅️ История анализа", f"channel:history:{row.account_id}")],
