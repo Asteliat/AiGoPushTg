@@ -80,6 +80,25 @@ async def main():
             for item in items if str(item.get("text", "")).strip()
         )[-7000:]
 
+    async def automatic_send_allowed(aid: int, chat_id: int, expected_agent_id: int) -> bool:
+        async with SessionFactory() as db:
+            account = await db.get(Account, aid)
+            if (
+                not account or not account.enabled or account.manual_pause
+                or not account.ai_enabled
+                or account.learning_status in {"training", "stopping"}
+                or account.ai_agent_id != expected_agent_id
+                or not await global_ai_enabled(db)
+            ):
+                return False
+            binding = await db.scalar(select(ChatBinding).where(
+                ChatBinding.account_id == aid,
+                ChatBinding.chat_id == chat_id,
+                ChatBinding.enabled.is_(True),
+            ))
+            agent = await db.get(AIAgent, account.ai_agent_id) if account.ai_agent_id else None
+            return bool(binding and agent and agent.enabled)
+
     async def on_message(event, *, aid, labels):
         label = labels.get(event.chat_id)
         if label is None or not event.message or not event.message.message:
@@ -189,9 +208,13 @@ async def main():
                 return
             mode = latest.reply_mode
             account_name = latest.display_name
+            expected_agent_id = latest.ai_agent_id
 
         sent = False
         if mode == "automatic":
+            if not await automatic_send_allowed(aid, int(event.chat_id), int(expected_agent_id or 0)):
+                logging.info("Automatic reply cancelled because account/chat/AI settings changed during generation (account %s, chat %s)", aid, event.chat_id)
+                return
             try:
                 sent_message = await (event.client.send_message(event.chat_id, draft.proposed_text) if proactive else event.reply(draft.proposed_text))
                 sent = True
