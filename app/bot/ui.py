@@ -285,7 +285,7 @@ async def cancel_cb(c: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "tool:menu")
 async def tools_menu(c: CallbackQuery):
     if not await check_cb(c): return
-    await edit(c, "🧰 Инструменты\\n\\nДополнительные функции для управления обработкой сообщений аккаунтами.", kb([
+    await edit(c, "🧰 Инструменты\n\nДополнительные функции для управления обработкой сообщений аккаунтами.", kb([
         [("🎯 Глобальные триггеры", "trigger:global")],
         [("⬅️ Главное меню", "nav:home")],
     ]))
@@ -335,8 +335,8 @@ async def trigger_screen(c: CallbackQuery, scope: str, account_id: int | None = 
         if scope == "global":
             apply_text = " · все аккаунты" if rule.apply_mode == "all" else " · без локальных"
         lines.append(
-            f"{state} #{rule.id} · {trigger_rule_title(rule)}{apply_text}\\n"
-            f"Пауза триггера: {format_trigger_duration(rule.cooldown_seconds)}\\n"
+            f"{state} #{rule.id} · {trigger_rule_title(rule)}{apply_text}\n"
+            f"Пауза триггера: {format_trigger_duration(rule.cooldown_seconds)}\n"
             f"Пауза между сообщениями: {format_trigger_duration(rule.message_cooldown_seconds)}"
         )
         rows.append([(f"{state} {trigger_rule_title(rule)}", f"trigger:view:{rule.id}")])
@@ -345,7 +345,7 @@ async def trigger_screen(c: CallbackQuery, scope: str, account_id: int | None = 
     else:
         rows.append([("➕ Добавить глобальный триггер", "trigger:global:add")])
     rows.append([("⬅️ Назад", trigger_back_callback(scope, account_id))])
-    await edit(c, "\\n".join(lines), kb(rows))
+    await edit(c, "\n".join(lines), kb(rows))
 
 
 @router.callback_query(F.data == "trigger:global:add")
@@ -362,7 +362,7 @@ async def trigger_global_add(c: CallbackQuery):
 async def trigger_global_all_confirm(c: CallbackQuery):
     if not await check_cb(c): return
     await edit(c,
-        "⚠️ Подтвердите добавление глобального триггера для всех аккаунтов.\\n\\n"
+        "⚠️ Подтвердите добавление глобального триггера для всех аккаунтов.\n\n"
         "Глобальное правило станет доступно каждому аккаунту. При совпадении локального триггера "
         "аккаунта локальное правило всё равно будет иметь приоритет. Продолжить?",
         kb([
@@ -381,9 +381,9 @@ async def trigger_add_start(c: CallbackQuery, state: FSMContext, scope: str, acc
     )
     await state.set_state(Flow.trigger_terms)
     await edit(c,
-        "Отправьте слова или фразы для одного триггера.\\n\\n"
+        "Отправьте слова или фразы для одного триггера.\n\n"
         "Можно указать несколько вариантов через запятую или с новой строки. "
-        "Например: впн, VPN, Випиэн\\n"
+        "Например: впн, VPN, Випиэн\n"
         "Другой триггер создаётся отдельно: например «коровы, продажа коров, амбары».",
         CANCEL,
     )
@@ -416,10 +416,10 @@ async def trigger_terms_received(m: Message, state: FSMContext):
         await prompt_message(m, state, "Добавьте от 1 до 30 слов или фраз, разделяя их запятыми или переносами строк.")
         return
     await delete_msg(m)
-    await state.update_data(trigger_terms="\\n".join(terms))
+    await state.update_data(trigger_terms="\n".join(terms))
     await state.set_state(Flow.trigger_response)
     await prompt_message(m, state,
-        "Теперь отправьте инструкцию для ИИ по этому триггеру.\\n\\n"
+        "Теперь отправьте инструкцию для ИИ по этому триггеру.\n\n"
         "Она будет добавляться к персоне, примерам, правилам аккаунта и контексту автообучения. "
         "Можно отправить /skip, чтобы использовать стандартную инструкцию."
     )
@@ -437,7 +437,7 @@ async def trigger_response_received(m: Message, state: FSMContext):
     await state.update_data(trigger_response=value)
     await state.set_state(Flow.trigger_cooldown)
     await prompt_message(m, state,
-        "Введите паузу до следующего ответа по этому триггеру в секундах.\\n"
+        "Введите паузу до следующего ответа по этому триггеру в секундах.\n"
         "Например, 900 = 00:00:15:00 (15 минут). Можно указать 0, чтобы отключить."
     )
 
@@ -458,7 +458,7 @@ async def trigger_cooldown_received(m: Message, state: FSMContext):
     if not await check_msg(m) or not await private(m): return
     await trigger_seconds_received(
         m, state, field="trigger_cooldown_seconds", next_state=Flow.trigger_message_cooldown,
-        next_prompt="Введите паузу между ответами на любые триггеры этого аккаунта в секундах.\\n"
+        next_prompt="Введите паузу между ответами на любые триггеры этого аккаунта в секундах.\n"
         "Например, 60 = 00:00:01:00. Укажите 0, если общая пауза не нужна.",
     )
 
@@ -505,15 +505,15 @@ async def trigger_rule_screen(c: CallbackQuery, rule_id: int):
         title = "Глобальный триггер" if scope == "global" else f"Триггер аккаунта #{account_id}"
         apply_mode = "для всех аккаунтов" if rule.apply_mode == "all" else "только для аккаунтов без локальных триггеров"
         text = (
-            f"🎯 {title} · #{rule.id}\\n\\n"
-            f"Искомые слова/фразы:\\n{', '.join(terms)}\\n\\n"
-            f"Инструкция для ИИ:\\n{rule.response_instructions or 'Стандартная инструкция'}\\n\\n"
-            f"Пауза этого триггера: {format_trigger_duration(rule.cooldown_seconds)}\\n"
-            f"Пауза между сообщениями: {format_trigger_duration(rule.message_cooldown_seconds)}\\n"
+            f"🎯 {title} · #{rule.id}\n\n"
+            f"Искомые слова/фразы:\n{', '.join(terms)}\n\n"
+            f"Инструкция для ИИ:\n{rule.response_instructions or 'Стандартная инструкция'}\n\n"
+            f"Пауза этого триггера: {format_trigger_duration(rule.cooldown_seconds)}\n"
+            f"Пауза между сообщениями: {format_trigger_duration(rule.message_cooldown_seconds)}\n"
             f"Статус: {'включён' if rule.enabled else 'выключен'}"
         )
         if scope == "global":
-            text += f"\\nПрименение: {apply_mode}"
+            text += f"\nПрименение: {apply_mode}"
     back = f"trigger:account:{account_id}" if scope == "account" else "trigger:global"
     rows = [
         [("✏️ Изменить слова", f"trigger:edit:terms:{rule_id}")],
@@ -571,7 +571,7 @@ async def trigger_edit_value_received(m: Message, state: FSMContext):
         if not terms or len(terms) > 30:
             await prompt_message(m, state, "Нужно указать от 1 до 30 слов/фраз через запятую или с новой строки.")
             return
-        value = "\\n".join(terms)
+        value = "\n".join(terms)
     elif field == "response":
         value = "" if raw == "/clear" else raw
         if len(value) > 3500:
