@@ -541,6 +541,9 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                         ChannelBinding.enabled.is_(True),
                     ))).all())
                 for binding in bindings:
+                    if binding.learning_status == "training" and binding.id not in active_channel_learning:
+                        active_channel_learning.add(binding.id)
+                        spawn(process_channel_learning(binding.id))
                     try:
                         async with SessionFactory() as db:
                             known_states = list((await db.scalars(select(ChannelPostState).where(
