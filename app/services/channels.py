@@ -5,7 +5,7 @@ from openai import AsyncOpenAI
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ai.provider import AIUnavailableError
+from app.ai.provider import AIUnavailableError, chat_completion_with_retry
 from app.storage.models import Account, AIAgent, ChannelAnalysis, ChannelBinding, Persona
 
 
@@ -99,7 +99,7 @@ async def analyze_channel_post(
         f"Стиль: {style[:3000]}"
     )
     try:
-        result = await client.chat.completions.create(
+        result = await chat_completion_with_retry(client,
             model=agent.model,
             temperature=0.3,
             max_tokens=900,
@@ -157,6 +157,8 @@ async def learn_channel_style(client, *, account: Account, channel: ChannelBindi
     entity = await client.get_entity(channel.channel_id)
     samples: list[dict] = []
     async for post in client.iter_messages(entity, limit=200):
+        if len(samples) >= 400:
+            break
         post_text = (post.message or "").strip()
         # Photo/video-only posts have no text to learn from and are intentionally skipped.
         if not post_text:
@@ -191,10 +193,10 @@ async def learn_channel_style(client, *, account: Account, channel: ChannelBindi
     )
     notes: list[str] = []
     try:
-        for offset in range(0, len(samples), 50):
-            batch = samples[offset:offset + 50]
+        for offset in range(0, min(len(samples), 400), 20):
+            batch = samples[offset:offset + 20]
             rendered = "\n".join(f"[{x['kind']}] {x['text']}" for x in batch)
-            response = await ai.chat.completions.create(
+            response = await chat_completion_with_retry(ai,
                 model=agent_values["model"], temperature=0.2, max_tokens=650,
                 messages=[
                     {"role": "system", "content": (
@@ -213,7 +215,7 @@ async def learn_channel_style(client, *, account: Account, channel: ChannelBindi
                 notes.append(part.strip()[:3000])
         if not notes:
             raise AIUnavailableError("ИИ не смог сформировать выводы по материалам канала.")
-        final = await ai.chat.completions.create(
+        final = await chat_completion_with_retry(ai,
             model=agent_values["model"], temperature=0.2, max_tokens=900,
             messages=[
                 {"role": "system", "content": (
@@ -223,7 +225,7 @@ async def learn_channel_style(client, *, account: Account, channel: ChannelBindi
                     "не включай персональные данные и не имитируй конкретного участника. "
                     "Верни только готовую инструкцию на русском, до 3000 символов."
                 )},
-                {"role": "user", "content": "\n\n".join(notes)},
+                {"role": "user", "content": "\n\n".join(notes)[:12000]},
             ],
         )
     except AIUnavailableError:
