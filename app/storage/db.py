@@ -75,6 +75,7 @@ async def init_db() -> None:
             "ALTER TABLE ai_agents ADD COLUMN IF NOT EXISTS channel_reply_probability_override INTEGER NULL",
             "ALTER TABLE ai_agents ADD COLUMN IF NOT EXISTS channel_reply_cooldown_seconds_override INTEGER NULL",
             "ALTER TABLE channel_analyses ADD COLUMN IF NOT EXISTS should_reply BOOLEAN NOT NULL DEFAULT FALSE",
+            "ALTER TABLE channel_analyses ALTER COLUMN should_reply SET DEFAULT TRUE",
             "ALTER TABLE channel_analyses ADD COLUMN IF NOT EXISTS publication_status VARCHAR(20) NOT NULL DEFAULT 'legacy'",
             "ALTER TABLE channel_analyses ALTER COLUMN publication_status SET DEFAULT 'pending'",
             "ALTER TABLE channel_analyses ADD COLUMN IF NOT EXISTS discussion_group_id BIGINT NULL",
