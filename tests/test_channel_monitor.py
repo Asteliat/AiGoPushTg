@@ -119,3 +119,86 @@ def test_legacy_posts_skipped_only_by_comment_threshold_are_reopened():
     assert is_legacy_comment_threshold_skip("skipped: 0 comments, minimum 2")
     assert not is_legacy_comment_threshold_skip("waiting for comments: 0/2")
     assert not is_legacy_comment_threshold_skip("skipped by AI: no reply")
+
+
+from app.services.channels import (
+    build_channel_analysis_user_content,
+    build_channel_analysis_user_text,
+    is_multimodal_content_type_error,
+    request_channel_analysis_completion,
+)
+
+
+def test_text_only_channel_analysis_uses_string_content():
+    content = build_channel_analysis_user_content("Проверка поста", ["Комментарий"])
+    assert isinstance(content, str)
+    assert "Проверка поста" in content
+    assert "Комментарий" in content
+
+
+def test_image_channel_analysis_uses_multimodal_parts():
+    content = build_channel_analysis_user_content(
+        "Пост с фото", [], "data:image/jpeg;base64,abc"
+    )
+    assert isinstance(content, list)
+    assert content[0]["type"] == "text"
+    assert content[1]["type"] == "image_url"
+
+
+def test_image_fallback_explicitly_avoids_claiming_image_was_analyzed():
+    content = build_channel_analysis_user_text(
+        "Пост с фото", [], image_not_analyzed=True
+    )
+    assert isinstance(content, str)
+    assert "не приняла изображение" in content
+    assert "не делай выводов о содержимом изображения" in content
+
+
+class FakeBadRequestError(Exception):
+    status_code = 400
+
+
+def test_multimodal_content_rejection_is_detected_only_for_content_schema_error():
+    assert is_multimodal_content_type_error(
+        FakeBadRequestError("messages[1].content must be a string")
+    )
+    assert not is_multimodal_content_type_error(
+        FakeBadRequestError("model does not exist")
+    )
+
+
+@pytest.mark.asyncio
+async def test_channel_ai_retries_image_request_as_text_on_content_type_error(monkeypatch):
+    import app.services.channels as channels
+
+    calls = []
+
+    async def fake_chat_completion(client, **kwargs):
+        calls.append(kwargs["messages"][1]["content"])
+        if len(calls) == 1:
+            raise FakeBadRequestError("messages[1].content must be a string")
+        return SimpleNamespace(choices=[SimpleNamespace(
+            message=SimpleNamespace(content='{"on_topic":true,"should_reply":false,"summary":"ok","response":""}')
+        )])
+
+    monkeypatch.setattr(channels, "chat_completion_with_retry", fake_chat_completion)
+
+    multimodal = build_channel_analysis_user_content(
+        "Пост", [], "data:image/jpeg;base64,abc"
+    )
+    fallback = build_channel_analysis_user_text(
+        "Пост", [], image_not_analyzed=True
+    )
+    result = await request_channel_analysis_completion(
+        object(),
+        model="llama-text-model",
+        prompt="system",
+        user_content=multimodal,
+        image_fallback_text=fallback,
+    )
+
+    assert len(calls) == 2
+    assert isinstance(calls[0], list)
+    assert isinstance(calls[1], str)
+    assert "не делай выводов" in calls[1]
+    assert result.choices[0].message.content.startswith("{")
