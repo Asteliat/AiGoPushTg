@@ -16,7 +16,7 @@ from telethon.tl.types import ChatInviteAlready
 from app.telegram_gateway.discovery import search_public_groups, search_web_groups, find_invite_links_in_dialogs
 from app.services.ai_responses import global_ai_enabled
 from app.services.chat_bindings import discovered_binding_values
-from app.services.channels import effective_channel_reply_mode
+from app.services.channels import effective_channel_chat_replies_enabled, effective_channel_reply_mode
 from app.settings import get_settings
 from app.storage.db import SessionFactory
 from app.storage.models import Account, AIAgent, AppSetting, ChatBinding, ChannelBinding, ChannelAnalysis, Example, Persona
@@ -2745,6 +2745,34 @@ async def channel_settings_screen(c, scope, object_id):
     mode_source = "собственная настройка" if binding is not None and binding.reply_mode_override is not None else "глобальная настройка"
     lines.append(f"Режим публикации: {mode_label} ({mode_source})")
     rows.append([(f"🔄 Переключить режим публикации · {mode_label}", f"channel:mode:{prefix}:{object_id}")])
+
+    chat_replies_enabled = (
+        bool(account.channel_chat_replies_enabled)
+        if binding is None
+        else effective_channel_chat_replies_enabled(account, binding)
+    )
+    chat_replies_source = (
+        "глобальная настройка аккаунта"
+        if binding is None or binding.chat_replies_enabled_override is None
+        else "индивидуальная настройка канала"
+    )
+    chat_replies_icon = "🟢" if chat_replies_enabled else "🔴"
+    chat_replies_label = "включены" if chat_replies_enabled else "выключены"
+    lines.extend([
+        f"Ответы коммент {chat_replies_icon}: {chat_replies_label} ({chat_replies_source})",
+        "Настройка управляет дальнейшим общением в обсуждениях каналов: если пользователь отвечает на сообщение, отправленное аккаунтом (например, на комментарий под публикацией или ответ аккаунта собеседнику), бот передаёт это сообщение в обычную систему «Чаты». При отключении такое общение не продолжается.",
+        "За ответы в комментариях канала отвечают настройки раздела «Чаты» — режим, ИИ-агент, персона, правила, примеры и автообучение.",
+    ])
+    rows.append([(
+        f"Ответы коммент {chat_replies_icon} · {chat_replies_label.capitalize()}",
+        f"channel:chatreplies:{prefix}:{object_id}",
+    )])
+    if binding is not None and binding.chat_replies_enabled_override is not None:
+        rows.append([(
+            "↩️ Наследовать глобальную настройку ответов коммент",
+            f"channel:chatreplies:inherit:{object_id}",
+        )])
+
     explanations = {
         "post_instructions": "Как ИИ должен учитывать содержание публикаций.",
         "comments_instructions": "На что обращать внимание в обсуждении.",
@@ -2902,6 +2930,51 @@ async def channel_mode_toggle(c):
     await channel_settings_screen(c, "global" if scope == "g" else "channel", object_id)
 
 
+@router.callback_query(F.data.startswith("channel:chatreplies:inherit:"))
+async def channel_chat_replies_inherit(c):
+    if not await check_cb(c): return
+    binding_id = int(c.data.split(":")[3])
+    async with SessionFactory() as db:
+        binding = await db.get(ChannelBinding, binding_id)
+        if not binding:
+            await c.answer("Канал не найден.", show_alert=True)
+            return
+        binding.chat_replies_enabled_override = None
+        await db.commit()
+    await channel_settings_screen(c, "channel", binding_id)
+
+
+@router.callback_query(F.data.startswith("channel:chatreplies:"))
+async def channel_chat_replies_toggle(c):
+    if not await check_cb(c): return
+    _, _, scope, object_raw = c.data.split(":")
+    if scope not in {"g", "c"}:
+        await c.answer("Неизвестная настройка.", show_alert=True)
+        return
+    object_id = int(object_raw)
+    async with SessionFactory() as db:
+        if scope == "g":
+            account = await db.get(Account, object_id)
+            if not account:
+                await c.answer("Аккаунт не найден.", show_alert=True)
+                return
+            account.channel_chat_replies_enabled = not bool(account.channel_chat_replies_enabled)
+        else:
+            binding = await db.get(ChannelBinding, object_id)
+            if not binding:
+                await c.answer("Канал не найден.", show_alert=True)
+                return
+            account = await db.get(Account, binding.account_id)
+            if not account:
+                await c.answer("Аккаунт не найден.", show_alert=True)
+                return
+            binding.chat_replies_enabled_override = not effective_channel_chat_replies_enabled(
+                account, binding
+            )
+        await db.commit()
+    await channel_settings_screen(c, "global" if scope == "g" else "channel", object_id)
+
+
 @router.callback_query(F.data.startswith("channel:action:"))
 async def channel_action_toggle(c):
     if not await check_cb(c): return
@@ -2944,6 +3017,7 @@ async def channel_inherit(c):
         binding.reply_probability_override = None
         binding.reply_cooldown_seconds_override = None
         binding.reply_mode_override = None
+        binding.chat_replies_enabled_override = None
         await db.commit()
     await channel_settings_screen(c, "channel", binding_id)
 
