@@ -24,6 +24,7 @@ async def init_db() -> None:
         statements = [
             "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS reply_mode VARCHAR(20) NOT NULL DEFAULT 'manual'",
             "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS channel_reply_mode VARCHAR(20) NOT NULL DEFAULT 'manual'",
+            "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS channel_chat_replies_enabled BOOLEAN NOT NULL DEFAULT TRUE",
             "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS ai_enabled BOOLEAN NOT NULL DEFAULT FALSE",
             "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS ai_agent_id INTEGER NULL REFERENCES ai_agents(id) ON DELETE SET NULL",
             "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS persona_id INTEGER NULL REFERENCES personas(id) ON DELETE SET NULL",
@@ -56,6 +57,7 @@ async def init_db() -> None:
             "ALTER TABLE channel_bindings ADD COLUMN IF NOT EXISTS discussion_group_id BIGINT NULL",
             "ALTER TABLE channel_bindings ADD COLUMN IF NOT EXISTS reply_enabled BOOLEAN NOT NULL DEFAULT FALSE",
             "ALTER TABLE channel_bindings ADD COLUMN IF NOT EXISTS reply_mode_override VARCHAR(20) NULL",
+            "ALTER TABLE channel_bindings ADD COLUMN IF NOT EXISTS chat_replies_enabled_override BOOLEAN NULL",
             "ALTER TABLE channel_bindings ADD COLUMN IF NOT EXISTS post_instructions_override TEXT NULL",
             "ALTER TABLE channel_bindings ADD COLUMN IF NOT EXISTS comments_instructions_override TEXT NULL",
             "ALTER TABLE channel_bindings ADD COLUMN IF NOT EXISTS restrictions_instructions_override TEXT NULL",
