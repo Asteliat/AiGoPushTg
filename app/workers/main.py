@@ -94,6 +94,7 @@ async def main():
             if (
                 not account or not account.enabled or account.manual_pause
                 or not account.ai_enabled
+                or account.reply_mode != "automatic"
                 or account.learning_status in {"training", "stopping"}
                 or account.ai_agent_id != expected_agent_id
                 or not await global_ai_enabled(db)
