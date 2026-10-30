@@ -288,6 +288,11 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                 next_retry_at=_utcnow() + timedelta(minutes=5),
                 last_error=f"{type(exc).__name__}: {str(exc)[:400]}",
             )
+            await send_log(
+                f"⚠️ Ошибка обработки публикации #{post_id} канала {channel_title}: "
+                f"{type(exc).__name__}: {str(exc)[:400]}",
+                category="errors",
+            )
         finally:
             try:
                 if lock_acquired:
