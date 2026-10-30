@@ -16,9 +16,9 @@ async def get_session() -> AsyncIterator[AsyncSession]:
 async def init_db() -> None:
     from app.storage import models  # noqa: F401
     async with engine.begin() as connection:
+        # Serialize schema upgrades even when a trusted CLI tool starts concurrently.
+        await connection.exec_driver_sql("SELECT pg_advisory_xact_lock(741928461)")
         await connection.run_sync(Base.metadata.create_all)
-        # Drafts were explicitly removed from the product; drop the legacy table if present.
-        await connection.exec_driver_sql("DROP TABLE IF EXISTS drafts")
         # Safe additive migration for installations created by earlier versions.
         statements = [
             "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS reply_mode VARCHAR(20) NOT NULL DEFAULT 'manual'",
@@ -64,6 +64,12 @@ async def init_db() -> None:
             "ALTER TABLE channel_bindings ADD COLUMN IF NOT EXISTS learning_prompt TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE channel_bindings ADD COLUMN IF NOT EXISTS learning_status VARCHAR(20) NOT NULL DEFAULT 'idle'",
             "ALTER TABLE channel_bindings ADD COLUMN IF NOT EXISTS learning_completed_at TIMESTAMPTZ NULL",
+            "ALTER TABLE channel_bindings ADD COLUMN IF NOT EXISTS learning_started_at TIMESTAMPTZ NULL",
+            "CREATE INDEX IF NOT EXISTS ix_chat_bindings_account_enabled ON chat_bindings (account_id, enabled)",
+            "CREATE INDEX IF NOT EXISTS ix_channel_bindings_account_enabled ON channel_bindings (account_id, enabled)",
+            "CREATE INDEX IF NOT EXISTS ix_channel_post_states_due ON channel_post_states (status, next_retry_at)",
+            "CREATE INDEX IF NOT EXISTS ix_channel_analyses_account_created ON channel_analyses (account_id, created_at DESC)",
+            "CREATE INDEX IF NOT EXISTS ix_notification_outbox_due ON notification_outbox (status, next_retry_at, created_at)",
             "ALTER TABLE ai_agents ADD COLUMN IF NOT EXISTS channel_reply_probability_override INTEGER NULL",
             "ALTER TABLE ai_agents ADD COLUMN IF NOT EXISTS channel_reply_cooldown_seconds_override INTEGER NULL",
         ]
