@@ -1,4 +1,5 @@
 from app.storage.models import Account, AIAgent, ChannelAnalysis, ChannelBinding, ChatBinding, Example
+from app.services.channels import channel_comment_threshold_action
 
 def test_account_has_learning_controls() -> None:
     assert {"learning_status", "learning_started_at", "learning_ends_at", "learning_completed_at", "learning_limit", "learning_prompt"} <= set(Account.__table__.columns.keys())
@@ -47,3 +48,16 @@ def test_agents_have_channel_reply_overrides() -> None:
         "channel_reply_probability_override",
         "channel_reply_cooldown_seconds_override",
     } <= set(AIAgent.__table__.columns.keys())
+
+
+def test_channel_no_comments_policy_skips_empty_discussions() -> None:
+    assert channel_comment_threshold_action("skip_empty", 0, 2) == "skip"
+    assert channel_comment_threshold_action("skip_empty", 1, 2) == "wait"
+    assert channel_comment_threshold_action("skip_empty", 2, 2) == "continue"
+
+
+def test_channel_comment_threshold_wait_and_skip_modes() -> None:
+    assert channel_comment_threshold_action("wait", 0, 2) == "wait"
+    assert channel_comment_threshold_action("skip", 0, 2) == "skip"
+    assert channel_comment_threshold_action("skip", 1, 2) == "skip"
+    assert channel_comment_threshold_action("skip", 2, 2) == "continue"
