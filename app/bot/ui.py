@@ -2758,14 +2758,10 @@ async def channel_settings_screen(c, scope, object_id):
     )
     chat_replies_icon = "🟢" if chat_replies_enabled else "🔴"
     chat_replies_label = "включены" if chat_replies_enabled else "выключены"
-    lines.extend([
-        f"Ответы коммент {chat_replies_icon}: {chat_replies_label} ({chat_replies_source})",
-        "Настройка управляет дальнейшим общением в обсуждениях каналов: если пользователь отвечает на сообщение, отправленное аккаунтом (например, на комментарий под публикацией или ответ аккаунта собеседнику), бот передаёт это сообщение в обычную систему «Чаты». При отключении такое общение не продолжается.",
-        "За ответы в комментариях канала отвечают настройки раздела «Чаты» — режим, ИИ-агент, персона, правила, примеры и автообучение.",
-    ])
+    lines.append(f"Ответы коммент {chat_replies_icon}: {chat_replies_label} ({chat_replies_source})")
     rows.append([(
-        f"Ответы коммент {chat_replies_icon} · {chat_replies_label.capitalize()}",
-        f"channel:chatreplies:{prefix}:{object_id}",
+        f"Ответы коммент {chat_replies_icon}",
+        f"channel:chatreplies:info:{prefix}:{object_id}",
     )])
     if binding is not None and binding.chat_replies_enabled_override is not None:
         rows.append([(
@@ -2941,13 +2937,76 @@ async def channel_chat_replies_inherit(c):
             return
         binding.chat_replies_enabled_override = None
         await db.commit()
-    await channel_settings_screen(c, "channel", binding_id)
+    await channel_chat_replies_screen(c, "channel", binding_id)
 
 
-@router.callback_query(F.data.startswith("channel:chatreplies:"))
+async def channel_chat_replies_screen(c, scope, object_id):
+    async with SessionFactory() as db:
+        if scope == "g":
+            account = await db.get(Account, object_id)
+            binding = None
+        else:
+            binding = await db.get(ChannelBinding, object_id)
+            account = await db.get(Account, binding.account_id) if binding else None
+    if not account or (scope == "c" and not binding):
+        await c.answer("Настройка не найдена.", show_alert=True)
+        return
+
+    enabled = (
+        bool(account.channel_chat_replies_enabled)
+        if binding is None
+        else effective_channel_chat_replies_enabled(account, binding)
+    )
+    icon = "🟢" if enabled else "🔴"
+    status = "включены" if enabled else "выключены"
+    source = (
+        "глобальная настройка аккаунта"
+        if binding is None or binding.chat_replies_enabled_override is None
+        else "индивидуальная настройка канала"
+    )
+    subject = "в обсуждениях всех каналов аккаунта" if binding is None else f"в обсуждении канала «{binding.title}»"
+    description = (
+        f"Ответы коммент {icon}\n"
+        f"Сейчас {status} · {source}.\n\n"
+        f"Эта настройка управляет дальнейшим общением {subject}. "
+        "Если пользователь отвечает на сообщение, отправленное аккаунтом, "
+        "бот может продолжить с ним диалог через систему «Чаты». Это относится "
+        "и к комментарию аккаунта под публикацией, и к ответу аккаунта другому участнику. "
+        "При отключении входящие ответы на сообщения аккаунта не передаются в «Чаты», "
+        "и бот не продолжает такой диалог.\n\n"
+        "За ответы и дальнейшее общение в комментариях канала отвечают настройки «Чаты»: "
+        "режим ответов, ИИ-агент, персона, правила, примеры и автообучение.\n\n"
+        "Эта настройка не отключает анализ публикаций и не влияет на отдельную функцию "
+        "публикации одного комментария к исходному посту."
+    )
+    rows = [[(
+        "🔴 Отключить ответы коммент" if enabled else "🟢 Включить ответы коммент",
+        f"channel:chatreplies:toggle:{'g' if scope == 'g' else 'c'}:{object_id}",
+    )]]
+    if binding is not None and binding.chat_replies_enabled_override is not None:
+        rows.append([(
+            "↩️ Наследовать глобальную настройку",
+            f"channel:chatreplies:inherit:{object_id}",
+        )])
+    back = f"channel:gsettings:{account.id}" if binding is None else f"channel:csettings:{binding.id}"
+    rows.append([("⬅️ К настройкам", back)])
+    await edit(c, description, kb(rows))
+
+
+@router.callback_query(F.data.startswith("channel:chatreplies:info:"))
+async def channel_chat_replies_info(c):
+    if not await check_cb(c): return
+    _, _, _, scope, object_raw = c.data.split(":")
+    if scope not in {"g", "c"}:
+        await c.answer("Неизвестная настройка.", show_alert=True)
+        return
+    await channel_chat_replies_screen(c, scope, int(object_raw))
+
+
+@router.callback_query(F.data.startswith("channel:chatreplies:toggle:"))
 async def channel_chat_replies_toggle(c):
     if not await check_cb(c): return
-    _, _, scope, object_raw = c.data.split(":")
+    _, _, _, scope, object_raw = c.data.split(":")
     if scope not in {"g", "c"}:
         await c.answer("Неизвестная настройка.", show_alert=True)
         return
@@ -2972,7 +3031,7 @@ async def channel_chat_replies_toggle(c):
                 account, binding
             )
         await db.commit()
-    await channel_settings_screen(c, "global" if scope == "g" else "channel", object_id)
+    await channel_chat_replies_screen(c, scope, object_id)
 
 
 @router.callback_query(F.data.startswith("channel:action:"))
