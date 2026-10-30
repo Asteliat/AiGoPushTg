@@ -11,12 +11,12 @@ from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 from aiogram import Bot
 from telethon import TelegramClient, events, utils
-from telethon.errors import FloodWaitError
+from telethon.errors import FloodWaitError, MsgIdInvalidError
 from telethon.tl.functions.messages import GetDiscussionMessageRequest
 from sqlalchemy import select
 from app.ai.provider import AIUnavailableError, NoReplyNeeded, summarize_chat_context
 from app.services.ai_responses import generate_response, global_ai_enabled
-from app.workers.channel_monitor import install_channel_monitor
+from app.workers.channel_monitor import has_channel_post_content, install_channel_monitor
 from app.settings import get_settings
 from app.storage.db import SessionFactory
 from app.storage.models import Account, AIAgent, AppSetting, ChatBinding, ChannelBinding
@@ -33,6 +33,7 @@ async def main():
     from redis.asyncio import Redis
     cfg=get_settings()
     logging.basicConfig(level=cfg.log_level.upper())
+    worker_instance_id = f"{os.getenv('HOSTNAME') or 'worker'}:{os.getpid()}"
     redis=Redis.from_url(cfg.redis_url,decode_responses=True)
     bot=Bot(token=cfg.bot_token) if cfg.bot_token else None
     clients: dict[int,TelegramClient]={}
@@ -559,28 +560,37 @@ async def main():
                 try:
                     channel_entity = await client.get_entity(channel_binding.channel_id)
                     async for channel_post in client.iter_messages(channel_entity, limit=5):
-                        if not (channel_post.message or "").strip() and not getattr(channel_post, "photo", None):
+                        if not has_channel_post_content(channel_post.message, channel_post):
                             continue
-                        discussion = await client(GetDiscussionMessageRequest(
-                            peer=channel_entity, msg_id=int(channel_post.id)
-                        ))
+                        try:
+                            discussion = await client(GetDiscussionMessageRequest(
+                                peer=channel_entity, msg_id=int(channel_post.id)
+                            ))
+                        except MsgIdInvalidError:
+                            logging.debug(
+                                "No discussion thread on recent channel post; checking an older one: "
+                                "account=%s channel_id=%s post_id=%s",
+                                aid, int(channel_binding.channel_id), int(channel_post.id),
+                            )
+                            continue
                         group = next((
                             chat for chat in getattr(discussion, "chats", [])
                             if getattr(chat, "megagroup", False)
                         ), None)
-                        if group:
-                            group_peer_id = int(utils.get_peer_id(group))
-                            async with SessionFactory() as db:
-                                current_binding = await db.get(ChannelBinding, channel_binding.id)
-                                if current_binding:
-                                    current_binding.discussion_group_id = group_peer_id
-                                    await db.commit()
-                            logging.info(
-                                "Linked channel discussion discovered before chat sync: "
-                                "account=%s channel_id=%s group_id=%s",
-                                aid, int(channel_binding.channel_id), group_peer_id,
-                            )
-                            break
+                        if not group:
+                            continue
+                        group_peer_id = int(utils.get_peer_id(group))
+                        async with SessionFactory() as db:
+                            current_binding = await db.get(ChannelBinding, channel_binding.id)
+                            if current_binding:
+                                current_binding.discussion_group_id = group_peer_id
+                                await db.commit()
+                        logging.info(
+                            "Linked channel discussion discovered before chat sync: "
+                            "account=%s channel_id=%s post_id=%s group_id=%s",
+                            aid, int(channel_binding.channel_id), int(channel_post.id), group_peer_id,
+                        )
+                        break
                 except FloodWaitError as exc:
                     logging.warning(
                         "FloodWait while resolving linked discussion before chat sync: "
@@ -592,7 +602,6 @@ async def main():
                         "Could not resolve linked discussion before chat sync: account=%s channel_id=%s",
                         aid, int(channel_binding.channel_id),
                     )
-
             async for dialog in client.iter_dialogs():
                 entity = dialog.entity
                 if (
@@ -686,7 +695,10 @@ async def main():
                 logging.exception("Could not renew Telegram session lease for account %s", aid)
                 continue
             if not renewed:
-                logging.error("Telegram session lease lost for account %s; disconnecting", aid)
+                logging.error(
+                    "Telegram session lease lost for account %s on worker %s; disconnecting",
+                    aid, worker_instance_id,
+                )
                 if client.is_connected():
                     await client.disconnect()
                 return
@@ -695,6 +707,7 @@ async def main():
         task = session_lease_tasks.pop(aid, None)
         if task and not task.done():
             task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
         token = session_lease_tokens.pop(aid, None)
         if token:
             key = f"atcivperson:telegram-session:{aid}"
@@ -717,29 +730,92 @@ async def main():
                 os.chmod(session_file, 0o600)
             except OSError:
                 logging.exception("Could not harden session file permissions for account %s", account.id)
+
         lease_key = f"atcivperson:telegram-session:{account.id}"
-        lease_token = secrets.token_urlsafe(24)
-        if not await redis.set(lease_key, lease_token, nx=True, ex=90):
-            logging.warning("Telegram session for account %s is already owned by another Worker", account.id)
-            schedule_reconnect(account.id)
-            return
-        await set_connection_status(account.id, "connecting")
-        client=TelegramClient(account.session_path,cfg.telegram_api_id,cfg.telegram_api_hash,proxy=telethon_proxy(account.proxy_config_encrypted),connection_retries=5,retry_delay=2,auto_reconnect=True)
-        lease_task = asyncio.create_task(maintain_session_lease(account.id, lease_token, client))
-        try:
-            await client.connect()
-            if not await client.is_user_authorized():
-                logging.error("Account %s session is unauthorized",account.id)
-                await set_connection_status(account.id, "unauthorized")
-                await client.disconnect()
-                lease_task.cancel()
-                await redis.eval("if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end", 1, lease_key, lease_token)
+        lease_token = f"{worker_instance_id}|{secrets.token_urlsafe(24)}"
+        lease_acquired = bool(await redis.set(lease_key, lease_token, nx=True, ex=90))
+        if not lease_acquired:
+            current_lease = await redis.get(lease_key)
+            owner_text = str(current_lease or "")
+            owner_id = owner_text.split("|", 1)[0] if "|" in owner_text else "unknown/legacy-worker"
+            lease_ttl = await redis.ttl(lease_key)
+
+            # A failed connection in this same process must never strand its own lease.
+            # Clear it only with compare-and-delete, and only when no local client owns it.
+            if owner_id == worker_instance_id and account.id not in clients and current_lease:
+                removed = await redis.eval(
+                    "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+                    1, lease_key, current_lease,
+                )
+                if removed:
+                    logging.warning(
+                        "Cleared stale self-owned Telegram session lease: account=%s worker=%s",
+                        account.id, worker_instance_id,
+                    )
+                    lease_acquired = bool(await redis.set(
+                        lease_key, lease_token, nx=True, ex=90
+                    ))
+
+            if not lease_acquired:
+                logging.warning(
+                    "Telegram session for account %s is owned by another Worker: "
+                    "owner=%s lease_ttl=%ss this_worker=%s",
+                    account.id, owner_id, lease_ttl, worker_instance_id,
+                )
                 schedule_reconnect(account.id)
                 return
+
+        client = None
+        lease_task = None
+
+        async def release_connecting_lease():
+            if lease_task:
+                lease_task.cancel()
+                await asyncio.gather(lease_task, return_exceptions=True)
+            try:
+                await redis.eval(
+                    "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+                    1, lease_key, lease_token,
+                )
+            except Exception:
+                logging.exception(
+                    "Could not release Telegram session lease for account %s on worker %s",
+                    account.id, worker_instance_id,
+                )
+
+        try:
+            await set_connection_status(account.id, "connecting")
+            client = TelegramClient(
+                account.session_path,
+                cfg.telegram_api_id,
+                cfg.telegram_api_hash,
+                proxy=telethon_proxy(account.proxy_config_encrypted),
+                connection_retries=5,
+                retry_delay=2,
+                auto_reconnect=True,
+            )
+            lease_task = asyncio.create_task(
+                maintain_session_lease(account.id, lease_token, client)
+            )
+            await client.connect()
+            if not await client.is_user_authorized():
+                logging.error("Account %s session is unauthorized", account.id)
+                await set_connection_status(account.id, "unauthorized")
+                if client.is_connected():
+                    await client.disconnect()
+                await release_connecting_lease()
+                schedule_reconnect(account.id)
+                return
+
             labels = await sync_account_dialogs(client, account.id)
             await set_connection_status(account.id, "connected")
-            watched[account.id]=labels
-            client.add_event_handler(lambda event, aid=account.id, labels=labels: on_message(event,aid=aid,labels=labels),events.NewMessage(incoming=True))
+            watched[account.id] = labels
+            client.add_event_handler(
+                lambda event, aid=account.id, labels=labels: on_message(
+                    event, aid=aid, labels=labels
+                ),
+                events.NewMessage(incoming=True),
+            )
 
             async def route_discussion_reply(event, channel_title, extra_context):
                 await on_message(
@@ -752,27 +828,49 @@ async def main():
                     force_addressed=True,
                 )
 
-            install_channel_monitor(client, account.id, redis, send_log, route_chat_reply=route_discussion_reply)
-            await send_log(f"🟢 Аккаунт подключён: {account.display_name} (#{account.id}). Отслеживается чатов: {len(labels)}.", category="main")
-            clients[account.id]=client
-            tasks[account.id]=asyncio.create_task(client.run_until_disconnected())
+            install_channel_monitor(
+                client, account.id, redis, send_log,
+                route_chat_reply=route_discussion_reply,
+            )
+            await send_log(
+                f"🟢 Аккаунт подключён: {account.display_name} (#{account.id}). "
+                f"Отслеживается чатов: {len(labels)}.",
+                category="main",
+            )
+            clients[account.id] = client
+            tasks[account.id] = asyncio.create_task(client.run_until_disconnected())
             session_lease_tasks[account.id] = lease_task
             session_lease_tokens[account.id] = lease_token
-            account_snapshot[account.id]=account
+            account_snapshot[account.id] = account
             reconnect_failures.pop(account.id, None)
             reconnect_after.pop(account.id, None)
-            logging.info("Connected account %s; watching %d eligible chats",account.id,len(labels))
+            logging.info(
+                "Connected account %s; watching %d eligible chats; worker=%s",
+                account.id, len(labels), worker_instance_id,
+            )
+        except asyncio.CancelledError:
+            if client and client.is_connected():
+                try:
+                    await client.disconnect()
+                except Exception:
+                    logging.exception("Could not disconnect cancelled account %s", account.id)
+            await release_connecting_lease()
+            raise
         except Exception:
-            logging.exception("Could not connect account %s",account.id)
-            await set_connection_status(account.id, "error")
+            logging.exception(
+                "Could not connect account %s on worker %s", account.id, worker_instance_id
+            )
             schedule_reconnect(account.id)
-            lease_task.cancel()
+            if client and client.is_connected():
+                try:
+                    await client.disconnect()
+                except Exception:
+                    logging.exception("Could not disconnect failed account %s", account.id)
+            await release_connecting_lease()
             try:
-                await redis.eval("if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end", 1, lease_key, lease_token)
+                await set_connection_status(account.id, "error")
             except Exception:
-                logging.exception("Could not release failed Telegram session lease for account %s", account.id)
-            if client.is_connected():
-                await client.disconnect()
+                logging.exception("Could not set error connection status for account %s", account.id)
 
     async def manager():
         while True:
