@@ -39,6 +39,7 @@ class Account(Base):
     channel_post_instructions: Mapped[str] = mapped_column(Text, default="", server_default="", nullable=False)
     channel_comments_instructions: Mapped[str] = mapped_column(Text, default="", server_default="", nullable=False)
     channel_restrictions_instructions: Mapped[str] = mapped_column(Text, default="", server_default="", nullable=False)
+    # Deprecated compatibility columns: audience-comment count no longer gates channel posts.
     channel_wait_seconds: Mapped[int] = mapped_column(Integer, default=300, server_default="300", nullable=False)
     channel_min_comments: Mapped[int] = mapped_column(Integer, default=2, server_default="2", nullable=False)
     channel_insufficient_action: Mapped[str] = mapped_column(String(10), default="wait", server_default="wait", nullable=False)
@@ -104,6 +105,7 @@ class ChannelBinding(Base):
     discussion_group_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     title: Mapped[str] = mapped_column(String(255), default="")
     enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
+    # Deprecated compatibility fields: retained for existing databases, not read by channel processing.
     comment_wait_seconds: Mapped[int] = mapped_column(Integer, default=300, server_default="300", nullable=False)
     reply_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
     reply_mode_override: Mapped[str | None] = mapped_column(String(20), nullable=True)
