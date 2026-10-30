@@ -565,6 +565,13 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
             if not analysis:
                 return
             channel_title = analysis.channel_title or f"канал {analysis.channel_id}"
+            chat_context = (
+                f"Контекст исходного обсуждения канала «{channel_title}». "
+                "Используй его только чтобы понять, на что отвечает собеседник. "
+                "Дальше веди обычный диалог по настройкам раздела «Чаты».\n"
+                f"Исходная публикация:\n{analysis.post_text[:2500]}\n\n"
+                f"Комментарий аккаунта, на который ответил пользователь:\n{analysis.suggested_response[:1500]}"
+            )
 
         if route_chat_reply is None:
             logging.warning(
@@ -583,7 +590,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
                 "account=%s channel=%s group_id=%s parent_comment_id=%s message_id=%s",
                 account_id, channel_title, chat_id, parent_id, int(message.id),
             )
-            await route_chat_reply(event, channel_title)
+            await route_chat_reply(event, channel_title, chat_context)
             await redis.set(lock_key, "done", ex=30 * 24 * 3600)
         except asyncio.CancelledError:
             await redis.delete(lock_key)
