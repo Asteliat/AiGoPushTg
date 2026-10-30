@@ -145,9 +145,13 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
                     ).order_by(ChannelAnalysis.created_at.desc()).limit(PUBLISHED_REPLY_POLL_LIMIT)
                 )).all())
 
-            published_by_id = {int(row.published_comment_id): row for row in published_rows}
             for analysis in published_rows:
                 group_peer_id = int(analysis.discussion_group_id)
+                published_by_id = {
+                    int(row.published_comment_id): row
+                    for row in published_rows
+                    if int(row.discussion_group_id) == group_peer_id
+                }
                 group_entity = discussion_entities.get(group_peer_id)
                 if group_entity is None:
                     try:
