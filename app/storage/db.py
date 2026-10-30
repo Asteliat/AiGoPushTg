@@ -23,6 +23,7 @@ async def init_db() -> None:
         # Safe additive migration for installations created by earlier versions.
         statements = [
             "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS reply_mode VARCHAR(20) NOT NULL DEFAULT 'manual'",
+            "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS channel_reply_mode VARCHAR(20) NOT NULL DEFAULT 'manual'",
             "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS ai_enabled BOOLEAN NOT NULL DEFAULT FALSE",
             "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS ai_agent_id INTEGER NULL REFERENCES ai_agents(id) ON DELETE SET NULL",
             "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS persona_id INTEGER NULL REFERENCES personas(id) ON DELETE SET NULL",
@@ -54,6 +55,7 @@ async def init_db() -> None:
             "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS channel_reply_cooldown_seconds INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE channel_bindings ADD COLUMN IF NOT EXISTS discussion_group_id BIGINT NULL",
             "ALTER TABLE channel_bindings ADD COLUMN IF NOT EXISTS reply_enabled BOOLEAN NOT NULL DEFAULT FALSE",
+            "ALTER TABLE channel_bindings ADD COLUMN IF NOT EXISTS reply_mode_override VARCHAR(20) NULL",
             "ALTER TABLE channel_bindings ADD COLUMN IF NOT EXISTS post_instructions_override TEXT NULL",
             "ALTER TABLE channel_bindings ADD COLUMN IF NOT EXISTS comments_instructions_override TEXT NULL",
             "ALTER TABLE channel_bindings ADD COLUMN IF NOT EXISTS restrictions_instructions_override TEXT NULL",
@@ -85,6 +87,15 @@ async def init_db() -> None:
         ]
         for statement in statements:
             await connection.exec_driver_sql(statement)
+        # Preserve the previous account-wide mode for existing channel automations once;
+        # future chat mode changes must not silently alter channel publication behavior.
+        await connection.exec_driver_sql(
+            "WITH first_channel_mode AS ("
+            "INSERT INTO schema_migrations(version) VALUES (2) "
+            "ON CONFLICT (version) DO NOTHING RETURNING version"
+            ") UPDATE accounts SET channel_reply_mode = reply_mode "
+            "WHERE EXISTS (SELECT 1 FROM first_channel_mode)"
+        )
         # One-time compatibility migration: preserve the historical default for bindings
         # that existed before discovery was introduced, without re-enabling them on deploy.
         # One-time compatibility migration without a procedural SQL block.
