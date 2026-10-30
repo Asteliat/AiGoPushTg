@@ -11,3 +11,4 @@ data/
 sessions/
 *.session
 *.session-journal
+backups/
