@@ -88,7 +88,7 @@ async def main():
             for item in items if str(item.get("text", "")).strip()
         )[-7000:]
 
-    async def automatic_send_allowed(aid: int, chat_id: int, expected_agent_id: int) -> bool:
+    async def automatic_send_allowed(aid: int, chat_id: int, expected_agent_id: int, *, allow_unbound: bool = False) -> bool:
         async with SessionFactory() as db:
             account = await db.get(Account, aid)
             if (
@@ -100,17 +100,19 @@ async def main():
                 or not await global_ai_enabled(db)
             ):
                 return False
-            binding = await db.scalar(select(ChatBinding).where(
-                ChatBinding.account_id == aid,
-                ChatBinding.chat_id == chat_id,
-                ChatBinding.enabled.is_(True),
-            ))
+            binding = None
+            if not allow_unbound:
+                binding = await db.scalar(select(ChatBinding).where(
+                    ChatBinding.account_id == aid,
+                    ChatBinding.chat_id == chat_id,
+                    ChatBinding.enabled.is_(True),
+                ))
             agent = await db.get(AIAgent, account.ai_agent_id) if account.ai_agent_id else None
-            return bool(binding and agent and agent.enabled)
+            return bool(agent and agent.enabled and (allow_unbound or binding))
 
-    async def on_message(event, *, aid, labels):
-        label = labels.get(event.chat_id)
-        if label is None or not event.message or not event.message.message:
+    async def on_message(event, *, aid, labels, allow_unbound: bool = False, forced_label: str | None = None):
+        label = forced_label or labels.get(event.chat_id)
+        if (label is None and not allow_unbound) or not event.message or not event.message.message:
             return
         incoming = event.message.message.strip()
         if not incoming or event.message.out:
@@ -129,9 +131,29 @@ async def main():
             current = await db.get(Account, aid)
             if (
                 not current or not current.enabled or current.manual_pause
-                or current.learning_status in {"training", "stopping"}
                 or not current.ai_enabled or not await global_ai_enabled(db)
             ):
+                return
+            if current.learning_status in {"training", "stopping"}:
+                # Discussion-group replies routed from a published channel comment
+                # are part of the account's Chats learning context, without requiring
+                # that linked discussion group to be added to chat_bindings.
+                if allow_unbound and current.learning_status == "training" and current.learning_started_at:
+                    started = current.learning_started_at
+                    if started.tzinfo is None:
+                        started = started.replace(tzinfo=timezone.utc)
+                    learning_key = f"atcivperson:learning:{aid}:{int(started.timestamp())}"
+                    learning_item = {
+                        "chat_id": int(event.chat_id),
+                        "message_id": int(event.message.id),
+                        "chat": label or "обсуждение канала",
+                        "text": incoming[:450],
+                        "outgoing": False,
+                        "date": event.message.date.isoformat() if event.message.date else datetime.now(timezone.utc).isoformat(),
+                    }
+                    await redis.lpush(learning_key, json.dumps(learning_item, ensure_ascii=False))
+                    await redis.ltrim(learning_key, 0, min(1000, max(500, int(current.learning_limit or 500))) - 1)
+                    await redis.expire(learning_key, 7 * 24 * 3600)
                 return
             if not current.ai_agent_id:
                 logging.info("Account %s has AI enabled but no agent assigned", aid)
@@ -221,7 +243,7 @@ async def main():
 
         sent = False
         if mode == "automatic":
-            if not await automatic_send_allowed(aid, int(event.chat_id), int(expected_agent_id or 0)):
+            if not await automatic_send_allowed(aid, int(event.chat_id), int(expected_agent_id or 0), allow_unbound=allow_unbound):
                 logging.info("Automatic reply cancelled because account/chat/AI settings changed during generation (account %s, chat %s)", aid, event.chat_id)
                 return
             try:
@@ -611,7 +633,17 @@ async def main():
             await set_connection_status(account.id, "connected")
             watched[account.id]=labels
             client.add_event_handler(lambda event, aid=account.id, labels=labels: on_message(event,aid=aid,labels=labels),events.NewMessage(incoming=True))
-            install_channel_monitor(client, account.id, redis, send_log)
+
+            async def route_discussion_reply(event, channel_title):
+                await on_message(
+                    event,
+                    aid=account.id,
+                    labels=watched.get(account.id, {}),
+                    allow_unbound=True,
+                    forced_label=f"Обсуждение канала · {channel_title}",
+                )
+
+            install_channel_monitor(client, account.id, redis, send_log, route_chat_reply=route_discussion_reply)
             await send_log(f"🟢 Аккаунт подключён: {account.display_name} (#{account.id}). Отслеживается чатов: {len(labels)}.", category="main")
             clients[account.id]=client
             tasks[account.id]=asyncio.create_task(client.run_until_disconnected())
