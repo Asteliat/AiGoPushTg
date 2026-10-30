@@ -83,7 +83,7 @@ def kb(rows):
 MAIN = kb([
     [("👤 Аккаунты", "acc:list"), ("🤖 ИИ-агенты", "agent:menu")],
     [("🎭 Персоны", "persona:menu"), ("💡 Примеры", "example:menu")],
-    [("💬 Чаты", "chat:menu"), ("📡 Каналы", "channel:menu")],
+    [("📡 Каналы", "channel:menu")],
     [("⚙️ Настройки", "nav:settings")],
 ])
 CANCEL = kb([[("❌ Отмена", "nav:cancel")]])
@@ -204,7 +204,7 @@ async def settings_cb(c: CallbackQuery):
         "🤖 ИИ-агенты — провайдеры, API-ключи, модели, глобальный ИИ и назначение агента аккаунтам.\n"
         "🎭 Персоны — общие стили ответов; изменения применяются ко всем назначенным аккаунтам.\n"
         "💡 Примеры — образцы входящих сообщений и желаемых ответов для стиля.\n"
-        "💬 Чаты — выбрать, какие существующие диалоги аккаунтов доступны для обработки.\n"
+
         "📡 Каналы — отдельный список каналов и анализ обсуждений.\n"
         "Ответы в ручном режиме показываются в уведомлении и не сохраняются.\n\n"
         "В карточке аккаунта: «Пауза» временно останавливает работу; «ИИ» включает генерацию; «Режим» выбирает ручную или автоматическую отправку; «Агент» и «Персона» задают модель и стиль; «Прокси» меняет сетевое подключение; «Автообучение» обновляет контекст.\n\n"
@@ -1173,6 +1173,7 @@ async def acc_view(c, account_id: int | None = None):
         [("✏️ Индивидуальные правила",f"acc:personaoverride:{aid}")],
         [("💡 Примеры аккаунта",f"example:account:{aid}")],
         [("💬 Чаты аккаунта",f"chat:account:{aid}")],
+        [("🔎 Поиск публичных групп",f"chat:search:{aid}"),("🧭 Поиск ссылок",f"chat:discover:{aid}")],
         [("🔗 Вступить в чат по ссылке",f"chat:joinlink:{aid}")],
         [((("⏳ Завершается обучение" if a.learning_status == "stopping" else "⏹ Закончить обучение") if learning else "🧠 Автообучение"), (f"learn:stop:{aid}" if learning else f"acc:learn:{aid}"))],
         [("🧠 Контекст обучения",f"acc:learnprompt:{aid}")],
@@ -1984,7 +1985,7 @@ def _candidate_keyboard(aid: int, candidates: list[dict], offset: int = 0):
         navigation.append(("➡️ Ещё результаты", f"chat:page:{aid}:{offset + 12}"))
     if navigation:
         rows.append(navigation)
-    rows += [[("⬅️ К чатам", "chat:menu"), ("🏠 Главное меню", "nav:home")]]
+    rows += [[("⬅️ К аккаунту", f"acc:view:{aid}"), ("🏠 Главное меню", "nav:home")]]
     return kb(rows)
 
 
@@ -2319,30 +2320,12 @@ async def chat_join_confirm(c):
     await edit(c, f"✅ Группа «{title}» добавлена в чаты аккаунта #{aid}.\n\nЧат включён для работы и обучения. Если нужно, его можно выключить в разделе «Чаты аккаунта».", kb([[("💬 Чаты аккаунта", f"chat:account:{aid}:0")], [("👤 К аккаунту", f"acc:view:{aid}")], [("🏠 Главное меню", "nav:home")]]))
 
 
-# Chats
-@router.message(F.text=="💬 Чаты")
-async def chats(m):
-    if not await check_msg(m): return
-    await chats_screen(m)
-async def chats_screen(m):
-    async with SessionFactory() as db:
-        aa=list((await db.scalars(select(Account).order_by(Account.id))).all())
-        bs=list((await db.scalars(select(ChatBinding).order_by(ChatBinding.account_id,ChatBinding.id))).all())
-    buttons=[[(f"Загрузить чаты · #{a.id} {a.display_name[:22]}",f"chat:account:{a.id}")] for a in aa]
-    buttons += [[(f"🔎 Поиск групп · #{a.id}",f"chat:search:{a.id}"),(f"🧭 Найти ссылки · #{a.id}",f"chat:discover:{a.id}")] for a in aa]
-    buttons += [[(f"{'🟢' if b.enabled else '⚪'} #{b.account_id} · {b.title[:30]}",f"chat:toggle:{b.id}")] for b in bs[:20]]
-    buttons += [[("⬅️ Главное меню","nav:home")]]
-    await m.answer("💬 Чаты\nВыберите аккаунт, чтобы загрузить его чаты, найти публичные группы или просканировать ссылки в сообщениях. Вступление всегда подтверждается вручную." if aa else "Сначала подключите аккаунт в разделе «👤 Аккаунты».",reply_markup=kb(buttons))
-@router.callback_query(F.data=="chat:menu")
-async def chats_cb(c):
+# Chat management is accessed from each account card. Keep the old callback as a safe redirect.
+@router.callback_query(F.data == "chat:menu")
+async def chats_legacy_redirect(c):
     if not await check_cb(c): return
-    async with SessionFactory() as db:
-        aa=list((await db.scalars(select(Account).order_by(Account.id))).all()); bs=list((await db.scalars(select(ChatBinding).order_by(ChatBinding.account_id,ChatBinding.id))).all())
-    buttons=[[(f"Загрузить чаты · #{a.id} {a.display_name[:22]}",f"chat:account:{a.id}")] for a in aa]
-    buttons += [[(f"🔎 Поиск групп · #{a.id}",f"chat:search:{a.id}"),(f"🧭 Найти ссылки · #{a.id}",f"chat:discover:{a.id}")] for a in aa]
-    buttons += [[(f"{'🟢' if b.enabled else '⚪'} #{b.account_id} · {b.title[:30]}",f"chat:toggle:{b.id}")] for b in bs[:20]]
-    buttons += [[("⬅️ Главное меню","nav:home")]]
-    await edit(c,"💬 Чаты · выберите аккаунт или переключите выбранный чат.",kb(buttons))
+    await edit(c, "Управление чатами теперь находится внутри карточки аккаунта.", kb([[("👤 К аккаунтам", "acc:list")], [("🏠 Главное меню", "nav:home")]]))
+
 @router.callback_query(F.data.startswith("chat:account:"))
 async def chat_account(c):
     if not await check_cb(c): return
@@ -2388,7 +2371,7 @@ async def chat_account(c):
     if page > 0: nav.append(("⬅️ Назад", f"chat:account:{aid}:{page-1}"))
     if page < max_page: nav.append(("➡️ Далее", f"chat:account:{aid}:{page+1}"))
     if nav: buttons.append(nav)
-    buttons += [[("📋 Выбранные чаты",f"chat:refresh:{aid}:{page}")], [("⬅️ К чатам","chat:menu"),("🏠 Главное меню","nav:home")]]
+    buttons += [[("📋 Выбранные чаты",f"chat:refresh:{aid}:{page}")], [("🔎 Поиск групп",f"chat:search:{aid}"),("🧭 Поиск ссылок",f"chat:discover:{aid}")], [("⬅️ К аккаунту",f"acc:view:{aid}"),("🏠 Главное меню","nav:home")]]
     await edit(c,f"Чаты аккаунта #{aid}\nСтраница {page+1} из {max_page+1} · Всего доступно: {len(dialogs)}\n🟢 включён для работы и обучения · ▫️ исключён.",kb(buttons))
 
 @router.callback_query(F.data.startswith("chat:select:"))
@@ -2423,7 +2406,7 @@ async def chat_refresh(c):
     await chat_account_refresh(c, aid, page)
 async def chat_account_refresh(c,aid,page=0):
     async with SessionFactory() as db: bs=list((await db.scalars(select(ChatBinding).where(ChatBinding.account_id==aid).order_by(ChatBinding.id))).all())
-    await edit(c,f"Выбранные чаты аккаунта #{aid}. 🟢 включён · ⚪ исключён.",kb([[(f"{'🟢' if b.enabled else '⚪'} {b.title[:36]}",f"chat:toggle:{b.id}")] for b in bs[:40]]+[[("↻ Загрузить список чатов",f"chat:account:{aid}:{page}")],[("⬅️ К чатам","chat:menu"),("🏠 Главное меню","nav:home")]]))
+    await edit(c,f"Выбранные чаты аккаунта #{aid}. 🟢 включён · ⚪ исключён.",kb([[(f"{'🟢' if b.enabled else '⚪'} {b.title[:36]}",f"chat:toggle:{b.id}")] for b in bs[:40]]+[[("↻ Загрузить список чатов",f"chat:account:{aid}:{page}")],[("🔎 Поиск групп",f"chat:search:{aid}"),("🧭 Поиск ссылок",f"chat:discover:{aid}")],[("⬅️ К аккаунту",f"acc:view:{aid}"),("🏠 Главное меню","nav:home")]]))
 @router.callback_query(F.data.startswith("chat:toggle:"))
 async def chat_toggle(c):
     if not await check_cb(c): return
