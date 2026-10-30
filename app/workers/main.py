@@ -221,14 +221,6 @@ async def main():
             try:
                 sent_message = await (event.client.send_message(event.chat_id, draft.proposed_text) if proactive else event.reply(draft.proposed_text))
                 sent = True
-                sent_item = {
-                    "message_id": int(getattr(sent_message, "id", 0)),
-                    "sender_id": int(current.telegram_user_id or 0),
-                    "speaker": account_name[:80],
-                    "text": draft.proposed_text[:700],
-                    "date": datetime.now(timezone.utc).isoformat(),
-                }
-                await remember_message(aid, int(event.chat_id), int(current.telegram_user_id or 0), sent_item)
             except FloodWaitError as exc:
                 wait_seconds = max(1, int(getattr(exc, "seconds", 1))) + 1
                 logging.warning("Telegram FloodWait for account %s: retry in %ss", aid, wait_seconds)
@@ -244,6 +236,15 @@ async def main():
             except Exception as exc:
                 logging.exception("Automatic reply failed for account %s in chat %s", aid, event.chat_id)
                 await send_log(f"⚠️ Не удалось отправить ответ\nАккаунт: {account_name} (#{aid})\nЧат: {label}\nОшибка: {type(exc).__name__}: {str(exc)[:700]}", category="errors")
+            if sent:
+                sent_item = {
+                    "message_id": int(getattr(sent_message, "id", 0)),
+                    "sender_id": int(current.telegram_user_id or 0),
+                    "speaker": account_name[:80],
+                    "text": draft.proposed_text[:700],
+                    "date": datetime.now(timezone.utc).isoformat(),
+                }
+                await remember_message(aid, int(event.chat_id), int(current.telegram_user_id or 0), sent_item)
 
         if sent:
             text = f"✅ Ответ отправлен\nАккаунт: {account_name} (#{aid})\nЧат: {label}\nОтвет: {draft.proposed_text[:1800]}"
