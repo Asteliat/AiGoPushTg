@@ -179,3 +179,20 @@ class AppSetting(Base):
 
     key: Mapped[str] = mapped_column(String(80), primary_key=True)
     value: Mapped[str] = mapped_column(Text, default="")
+
+
+class OutboxNotification(Base):
+    """Durable Telegram notification queue; delivery is retried until acknowledged."""
+    __tablename__ = "notification_outbox"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    category: Mapped[str] = mapped_column(String(40), default="main", nullable=False)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    thread_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="pending", server_default="pending", nullable=False, index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    last_error: Mapped[str] = mapped_column(Text, default="", server_default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
