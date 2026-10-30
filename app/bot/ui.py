@@ -192,19 +192,23 @@ async def restore_previous_screen(c, callback_data):
     parts = callback_data.split(":")
     if callback_data.startswith("acc:view:"): await acc_view(c, int(parts[2]))
     elif callback_data == "acc:list": await acc_list(c)
-    elif callback_data.startswith("acc:learnprompt:"): await acc_learning_prompt(c)
-    elif callback_data.startswith("acc:learn:"): await acc_learning_menu(c)
-    elif callback_data.startswith("acc:proxysettings:"): await acc_proxy_settings(c)
+    elif callback_data.startswith("acc:learnprompt:"): await acc_learning_prompt(c, int(parts[2]))
+    elif callback_data.startswith("acc:learn:"): await acc_learning_menu(c, int(parts[2]))
+    elif callback_data.startswith("acc:proxysettings:"): await acc_proxy_settings(c, int(parts[2]))
     elif callback_data.startswith("channel:account:"): await channel_account_screen(c, int(parts[2]))
     elif callback_data.startswith("channel:gsettings:"): await channel_settings_screen(c, "global", int(parts[2]))
     elif callback_data.startswith("channel:csettings:"): await channel_settings_screen(c, "channel", int(parts[2]))
     elif callback_data.startswith("chat:account:"): await chat_account_screen(c, int(parts[2]), int(parts[3]) if len(parts)>3 else 0)
+    elif callback_data.startswith("agent:view:"): await agent_view(c, int(parts[2]))
     elif callback_data == "agent:menu": await agents_cb(c)
     elif callback_data.startswith("agent:runtime:menu:"): await agent_runtime_menu(c, int(parts[-1]))
+    elif callback_data.startswith("persona:view:"): await persona_view(c, int(parts[2]))
     elif callback_data == "persona:menu": await persona_menu(c)
+    elif callback_data.startswith("example:account:"): await account_examples(c, int(parts[2]))
+    elif callback_data.startswith("example:view:"): await example_view(c, int(parts[2]))
     elif callback_data == "example:menu": await example_menu(c)
     elif callback_data == "logs:menu": await logs_menu(c)
-    elif callback_data.startswith("logs:category:"): await logs_category(c)
+    elif callback_data.startswith("logs:category:"): await logs_category(c, parts[2])
     elif callback_data == "runtime:menu": await runtime_settings_menu(c)
     elif callback_data == "channel:menu": await channels_legacy_redirect(c)
     else: await edit(c, "Действие отменено. Вернитесь в предыдущий раздел:", kb([[("↩️ Назад", callback_data)]]))
@@ -330,9 +334,9 @@ async def logs_menu(c: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("logs:category:"))
-async def logs_category(c: CallbackQuery):
+async def logs_category(c: CallbackQuery, category_override: str | None = None):
     if not await check_cb(c): return
-    category = c.data.split(":")[2]
+    category = category_override or c.data.split(":")[2]
     if category not in LOG_CATEGORIES:
         await c.answer("Неизвестная категория.", show_alert=True); return
     async with SessionFactory() as db:
@@ -1231,9 +1235,9 @@ async def acc_view(c, account_id: int | None = None):
         [("⬅️ К аккаунтам","acc:list"),("🏠 Главное меню","nav:home")]]
     await edit(c,txt,kb(buttons))
 @router.callback_query(F.data.startswith("acc:proxysettings:"))
-async def acc_proxy_settings(c):
+async def acc_proxy_settings(c, account_id: int | None = None):
     if not await check_cb(c): return
-    aid = int(c.data.split(":")[2])
+    aid = account_id if account_id is not None else int(c.data.split(":")[2])
     async with SessionFactory() as db:
         account = await db.get(Account, aid)
     if not account: await c.answer("Аккаунт не найден", show_alert=True); return
@@ -1366,9 +1370,9 @@ async def acc_set_persona(c):
 
 
 @router.callback_query(F.data.startswith("acc:learnprompt:"))
-async def acc_learning_prompt(c):
+async def acc_learning_prompt(c, account_id: int | None = None):
     if not await check_cb(c): return
-    aid = int(c.data.split(":")[2])
+    aid = account_id if account_id is not None else int(c.data.split(":")[2])
     async with SessionFactory() as db:
         account = await db.get(Account, aid)
     if not account:
@@ -1490,9 +1494,9 @@ async def acc_persona_override_save(m: Message, state: FSMContext):
     ]))
 
 @router.callback_query(F.data.startswith("acc:learn:"))
-async def acc_learning_menu(c):
+async def acc_learning_menu(c, account_id: int | None = None):
     if not await check_cb(c): return
-    aid = int(c.data.split(":")[2])
+    aid = account_id if account_id is not None else int(c.data.split(":")[2])
     async with SessionFactory() as db:
         account = await db.get(Account, aid)
         chat_count = len((await db.scalars(select(ChatBinding).where(ChatBinding.account_id == aid, ChatBinding.enabled.is_(True)))).all())
