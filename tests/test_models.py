@@ -83,6 +83,7 @@ def test_channel_publication_mode_is_independent_from_chat_mode() -> None:
 def test_channel_discussion_chat_replies_inherit_global_setting_and_allow_override() -> None:
     account = Account(telegram_user_id=1, session_path="/tmp/account.session")
     channel = ChannelBinding(account_id=1, channel_id=100)
+    account.channel_chat_replies_enabled = True
     assert effective_channel_chat_replies_enabled(account, channel) is True
     account.channel_chat_replies_enabled = False
     assert effective_channel_chat_replies_enabled(account, channel) is False
