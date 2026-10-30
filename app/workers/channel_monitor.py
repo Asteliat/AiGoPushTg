@@ -395,16 +395,20 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
 
     async def handle_discussion_comment(event):
         message = event.message
-        if message and not message.out and (message.message or "").strip() and event.is_group:
+        chat_id = int(event.chat_id) if event.chat_id is not None else 0
+        mapped_channel_id = discussion_channels.get(chat_id)
+        if message and not message.out and (message.message or "").strip() and (event.is_group or mapped_channel_id):
             reply_header = getattr(message, "reply_to", None)
-            chat_id = int(event.chat_id)
-            mapped_channel_id = discussion_channels.get(chat_id)
             logging.info(
-                "Discussion group message event: account=%s chat_id=%s message_id=%s "
-                "reply_to_msg_id=%s reply_to_top_id=%s mapped_channel_id=%s text_length=%s",
+                "Discussion message event: account=%s chat_id=%s message_id=%s "
+                "is_group=%s is_channel=%s chat_type=%s reply_to_msg_id=%s "
+                "reply_to_top_id=%s mapped_channel_id=%s text_length=%s",
                 account_id,
                 chat_id,
                 int(message.id),
+                bool(event.is_group),
+                bool(event.is_channel),
+                type(getattr(event, "chat", None)).__name__,
                 getattr(reply_header, "reply_to_msg_id", None),
                 getattr(reply_header, "reply_to_top_id", None),
                 mapped_channel_id,
