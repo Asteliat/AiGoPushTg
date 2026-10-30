@@ -552,7 +552,7 @@ async def main():
                 try:
                     channel_entity = await client.get_entity(channel_binding.channel_id)
                     async for channel_post in client.iter_messages(channel_entity, limit=5):
-                        if not (channel_post.message or "").strip():
+                        if not (channel_post.message or "").strip() and not getattr(channel_post, "photo", None):
                             continue
                         discussion = await client(GetDiscussionMessageRequest(
                             peer=channel_entity, msg_id=int(channel_post.id)
