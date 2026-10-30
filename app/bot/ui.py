@@ -2836,41 +2836,31 @@ async def channel_inherit(c):
 @router.callback_query(F.data.startswith("channel:learn:"))
 async def channel_learn(c):
     if not await check_cb(c): return
+    try:
+        await c.answer()
+    except Exception:
+        pass
     binding_id = int(c.data.split(":")[2])
     async with SessionFactory() as db:
         binding = await db.get(ChannelBinding, binding_id)
         account = await db.get(Account, binding.account_id) if binding else None
         if not binding or not account:
-            await c.answer("Канал или аккаунт не найден.", show_alert=True)
+            if c.message:
+                await c.message.answer("⚠️ Канал или аккаунт не найден.")
             return
         if binding.learning_status == "training":
-            await c.answer("Автообучение этого канала уже выполняется.", show_alert=True)
+            if c.message:
+                await c.message.answer("Автообучение этого канала уже выполняется.")
             return
         binding.learning_status = "training"
+        binding.learning_started_at = datetime.now(timezone.utc)
         await db.commit()
-        account_snapshot = account
-    await c.answer("Автообучение запущено.")
-    status = await c.message.answer("🧠 Изучаю до 200 последних текстовых публикаций и доступные комментарии. Это может занять несколько минут…")
-    try:
-        async with isolated_telegram_client(account_snapshot) as client:
-            if not await client.is_user_authorized():
-                raise RuntimeError("Сессия аккаунта не авторизована.")
-            prompt = await learn_channel_style(client, account=account_snapshot, channel=binding)
-        async with SessionFactory() as db:
-            current = await db.get(ChannelBinding, binding_id)
-            if current:
-                current.learning_prompt = prompt
-                current.learning_status = "idle"
-                current.learning_completed_at = datetime.now(timezone.utc)
-                await db.commit()
-        await status.edit_text("✅ Автообучение завершено. Выводы сохранены и будут учитываться при ответах в этом канале.")
-    except Exception as exc:
-        async with SessionFactory() as db:
-            current = await db.get(ChannelBinding, binding_id)
-            if current:
-                current.learning_status = "error"
-                await db.commit()
-        await status.edit_text(f"⚠️ Не удалось выполнить автообучение: {type(exc).__name__}: {str(exc)[:500]}")
+        channel_title = binding.title
+    if c.message:
+        await c.message.answer(
+            f"🧠 Автообучение канала «{channel_title}» поставлено в работу. "
+            "Задача сохранена и автоматически продолжится после перезапуска Worker."
+        )
 
 @router.callback_query(F.data.startswith("channel:history:"))
 async def channel_history(c):
