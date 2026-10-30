@@ -10,8 +10,9 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 from aiogram import Bot
-from telethon import TelegramClient, events
+from telethon import TelegramClient, events, utils
 from telethon.errors import FloodWaitError
+from telethon.tl.functions.messages import GetDiscussionMessageRequest
 from sqlalchemy import select
 from app.ai.provider import AIUnavailableError, NoReplyNeeded, summarize_chat_context
 from app.services.ai_responses import generate_response, global_ai_enabled
@@ -538,6 +539,53 @@ async def main():
     async def sync_account_dialogs(client: TelegramClient, aid: int, attempt: int = 0) -> dict[int, str]:
         discovered = []
         try:
+            # Resolve linked discussion groups before dialog discovery so they never
+            # enter the ordinary Chats list or its auto-learning sample by accident.
+            async with SessionFactory() as db:
+                unresolved_channels = list((await db.scalars(
+                    select(ChannelBinding).where(
+                        ChannelBinding.account_id == aid,
+                        ChannelBinding.discussion_group_id.is_(None),
+                    )
+                )).all())
+            for channel_binding in unresolved_channels:
+                try:
+                    channel_entity = await client.get_entity(channel_binding.channel_id)
+                    async for channel_post in client.iter_messages(channel_entity, limit=5):
+                        if not (channel_post.message or "").strip():
+                            continue
+                        discussion = await client(GetDiscussionMessageRequest(
+                            peer=channel_entity, msg_id=int(channel_post.id)
+                        ))
+                        group = next((
+                            chat for chat in getattr(discussion, "chats", [])
+                            if getattr(chat, "megagroup", False)
+                        ), None)
+                        if group:
+                            group_peer_id = int(utils.get_peer_id(group))
+                            async with SessionFactory() as db:
+                                current_binding = await db.get(ChannelBinding, channel_binding.id)
+                                if current_binding:
+                                    current_binding.discussion_group_id = group_peer_id
+                                    await db.commit()
+                            logging.info(
+                                "Linked channel discussion discovered before chat sync: "
+                                "account=%s channel_id=%s group_id=%s",
+                                aid, int(channel_binding.channel_id), group_peer_id,
+                            )
+                            break
+                except FloodWaitError as exc:
+                    logging.warning(
+                        "FloodWait while resolving linked discussion before chat sync: "
+                        "account=%s channel_id=%s wait=%ss",
+                        aid, int(channel_binding.channel_id), int(getattr(exc, "seconds", 0)),
+                    )
+                except Exception:
+                    logging.exception(
+                        "Could not resolve linked discussion before chat sync: account=%s channel_id=%s",
+                        aid, int(channel_binding.channel_id),
+                    )
+
             async for dialog in client.iter_dialogs():
                 entity = dialog.entity
                 if getattr(entity, "deleted", False) or getattr(entity, "bot", False):
