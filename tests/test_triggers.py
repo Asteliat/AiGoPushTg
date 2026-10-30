@@ -6,6 +6,11 @@ def test_trigger_terms_accept_comma_semicolon_and_newline_separators():
     assert parse_trigger_terms("впн, VPN; Випиэн\nVPN") == ["впн", "VPN", "Випиэн"]
 
 
+def test_trigger_terms_accept_space_separated_words_and_quoted_phrases():
+    assert parse_trigger_terms("впн VPN Випиэн") == ["впн", "VPN", "Випиэн"]
+    assert parse_trigger_terms('"продажа коров" амбары') == ["продажа коров", "амбары"]
+
+
 def test_trigger_matching_is_case_insensitive_and_matches_phrases_as_whole_terms():
     assert find_matching_term("Мне нужен VPN прямо сейчас", ["впн", "VPN", "Випиэн"]) == "VPN"
     assert find_matching_term("обсуждаем продажа коров сегодня", ["коровы", "продажа коров", "амбары"]) == "продажа коров"
