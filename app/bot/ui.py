@@ -151,6 +151,12 @@ async def edit(c, text, keyboard, *, answer_callback=True):
         rows = [list(row) for row in keyboard.inline_keyboard]
         rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="nav:home")])
         keyboard = InlineKeyboardMarkup(inline_keyboard=rows)
+    if answer_callback:
+        # Acknowledge immediately so slow Telegram edits never leave the spinner running.
+        try:
+            await c.answer()
+        except Exception:
+            pass
     if c.message:
         try:
             await c.message.edit_text(text, reply_markup=keyboard)
@@ -158,8 +164,6 @@ async def edit(c, text, keyboard, *, answer_callback=True):
             if "message is not modified" not in str(exc).lower():
                 try: await c.message.answer(text, reply_markup=keyboard)
                 except Exception: pass
-    if answer_callback:
-        await c.answer()
 def back_home(): return kb([[('🏠 Главное меню','nav:home')]])
 
 def cancel_return_for(callback_data: str) -> str:
