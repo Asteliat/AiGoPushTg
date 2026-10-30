@@ -25,6 +25,9 @@ SCAN_INTERVAL_SECONDS = 60
 RECOVERY_SCAN_LIMIT = 500
 PROCESSING_STALE_MINUTES = 20
 
+# Keep channel diagnostics visible even when the application root log level is WARNING.
+logging.getLogger(__name__).setLevel(logging.INFO)
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -349,30 +352,21 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
 
     async def handle_discussion_comment(event):
         message = event.message
-        if message and not message.out and (message.message or "").strip():
+        if message and not message.out and (message.message or "").strip() and event.is_group:
             reply_header = getattr(message, "reply_to", None)
             chat_id = int(event.chat_id)
             mapped_channel_id = discussion_channels.get(chat_id)
-            if reply_header is not None or (event.is_group and mapped_channel_id is not None):
-                logging.info(
-                    "Discussion comment event: account=%s chat_id=%s is_group=%s "
-                    "reply_to_msg_id=%s reply_to_top_id=%s mapped_channel_id=%s",
-                    account_id,
-                    chat_id,
-                    bool(event.is_group),
-                    getattr(reply_header, "reply_to_msg_id", None),
-                    getattr(reply_header, "reply_to_top_id", None),
-                    mapped_channel_id,
-                )
-                if event.is_group and reply_header is not None and mapped_channel_id is None:
-                    logging.warning(
-                        "Discussion comment has no channel mapping: account=%s chat_id=%s "
-                        "reply_to_msg_id=%s reply_to_top_id=%s",
-                        account_id,
-                        chat_id,
-                        getattr(reply_header, "reply_to_msg_id", None),
-                        getattr(reply_header, "reply_to_top_id", None),
-                    )
+            logging.info(
+                "Discussion group message event: account=%s chat_id=%s message_id=%s "
+                "reply_to_msg_id=%s reply_to_top_id=%s mapped_channel_id=%s text_length=%s",
+                account_id,
+                chat_id,
+                int(message.id),
+                getattr(reply_header, "reply_to_msg_id", None),
+                getattr(reply_header, "reply_to_top_id", None),
+                mapped_channel_id,
+                len(message.message or ""),
+            )
         if not event.is_group or not message or message.out or not (message.message or "").strip():
             return
         if not getattr(message, "reply_to", None):
@@ -569,6 +563,10 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
         if not event.is_channel or event.is_group:
             return
         channel_id = int(event.chat_id)
+        logging.info(
+            "Channel post event: account=%s channel_id=%s post_id=%s text_length=%s",
+            account_id, channel_id, int(message.id), len(message.message or ""),
+        )
         spawn(process_post(event.chat, channel_id, int(message.id), message.message, getattr(event.chat, "title", "") or "Канал"))
 
     async def recovery_loop():
@@ -647,6 +645,12 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                                         created_at = created_at.replace(tzinfo=timezone.utc)
                                     if msg_date < created_at:
                                         continue
+                            logging.info(
+                                "Channel recovery discovered post: account=%s channel_id=%s post_id=%s "
+                                "previous_state=%s",
+                                account_id, int(binding.channel_id), int(message.id),
+                                previous.status if previous else "missing",
+                            )
                             spawn(process_post(
                                 entity, int(binding.channel_id), int(message.id), body,
                                 binding.title or getattr(entity, "title", "") or "Канал",
