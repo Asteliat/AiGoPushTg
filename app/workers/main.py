@@ -42,22 +42,31 @@ async def main():
             return
         async with SessionFactory() as db:
             setting = await db.get(AppSetting, f"log_chat_ids_{category}")
-            destinations = []
+            destinations: list[tuple[int, int | None]] = []
             if setting and setting.value:
                 for raw in setting.value.replace(";", ",").split(","):
+                    parts = raw.strip().split(":")
                     try:
-                        chat_id = int(raw.strip())
+                        chat_id = int(parts[0])
+                        thread_id = int(parts[1]) if len(parts) == 2 else None
                     except (TypeError, ValueError):
                         continue
-                    if chat_id and chat_id not in destinations:
-                        destinations.append(chat_id)
+                    if len(parts) > 2 or chat_id == 0 or (thread_id is not None and thread_id <= 0):
+                        continue
+                    destination = (chat_id, thread_id)
+                    if destination not in destinations:
+                        destinations.append(destination)
         if setting is None and category == "main" and cfg.log_chat_id:
-            destinations = [cfg.log_chat_id]
-        for chat_id in destinations:
+            destinations = [(cfg.log_chat_id, None)]
+        for chat_id, thread_id in destinations:
             try:
-                await bot.send_message(chat_id, text[:3900])
+                kwargs = {"message_thread_id": thread_id} if thread_id is not None else {}
+                await bot.send_message(chat_id, text[:3900], **kwargs)
             except Exception:
-                logging.exception("Could not send %s notification to chat %s", category, chat_id)
+                logging.exception(
+                    "Could not send %s notification to chat %s thread %s",
+                    category, chat_id, thread_id,
+                )
 
     async def remember_message(aid: int, chat_id: int, sender_id: int, item: dict) -> None:
         chat_key = f"atcivperson:memory:{aid}:{chat_id}:chat"
