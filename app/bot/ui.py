@@ -2399,6 +2399,13 @@ async def chat_account_screen(c, aid, page=0):
         bindings = list((await db.scalars(
             select(ChatBinding).where(ChatBinding.account_id == aid).order_by(ChatBinding.title, ChatBinding.id)
         )).all())
+        discussion_ids = set((await db.scalars(
+            select(ChannelBinding.discussion_group_id).where(
+                ChannelBinding.account_id == aid,
+                ChannelBinding.discussion_group_id.is_not(None),
+            )
+        )).all())
+        bindings = [row for row in bindings if int(row.chat_id) not in discussion_ids]
     if not account:
         await c.answer("Аккаунт не найден.", show_alert=True)
         return
@@ -2458,6 +2465,13 @@ async def chat_load(c):
         await c.answer(f"Ошибка загрузки: {type(exc).__name__}: {str(exc)[:180]}", show_alert=True)
         return
     async with SessionFactory() as db:
+        discussion_ids = set((await db.scalars(
+            select(ChannelBinding.discussion_group_id).where(
+                ChannelBinding.account_id == aid,
+                ChannelBinding.discussion_group_id.is_not(None),
+            )
+        )).all())
+        dialogs = [item for item in dialogs if item[0] not in discussion_ids]
         existing = list((await db.scalars(select(ChatBinding).where(ChatBinding.account_id == aid))).all())
         by_chat = {row.chat_id: row for row in existing}
         added = 0
