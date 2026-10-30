@@ -668,6 +668,7 @@ async def main():
                         client=clients.pop(aid,None)
                         if client and client.is_connected():
                             await client.disconnect()
+                        await release_session_lease(aid)
                         watched.pop(aid,None); account_snapshot.pop(aid,None)
                         previous = all_by_id.get(aid)
                         status = "paused" if previous and previous.manual_pause else ("disconnected" if not previous or not previous.enabled else "error")
@@ -713,9 +714,10 @@ async def main():
             task.cancel()
         for task in learning_tasks.values():
             task.cancel()
-        for client in clients.values():
+        for aid, client in list(clients.items()):
             if client.is_connected():
                 await client.disconnect()
+            await release_session_lease(aid)
         if bot:
             await bot.session.close()
         await redis.aclose()
