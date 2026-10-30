@@ -143,7 +143,7 @@ async def delete_msg(m):
     except Exception: pass
 async def show_home(m):
     await m.answer(await home_text(), reply_markup=MAIN)
-async def edit(c, text, keyboard):
+async def edit(c, text, keyboard, *, answer_callback=True):
     # Every ordinary menu offers a direct route home. Input screens retain their cancel button.
     has_home = any(button.callback_data == "nav:home" for row in keyboard.inline_keyboard for button in row)
     has_cancel = any(button.callback_data == "nav:cancel" for row in keyboard.inline_keyboard for button in row)
@@ -158,7 +158,8 @@ async def edit(c, text, keyboard):
             if "message is not modified" not in str(exc).lower():
                 try: await c.message.answer(text, reply_markup=keyboard)
                 except Exception: pass
-    await c.answer()
+    if answer_callback:
+        await c.answer()
 def back_home(): return kb([[('🏠 Главное меню','nav:home')]])
 
 def cancel_return_for(callback_data: str) -> str:
@@ -2590,7 +2591,7 @@ async def channel_sync(c):
     await c.message.answer(f"✅ Загружено каналов: {len(dialogs)} · новых добавлено: {added}")
 
 @router.callback_query(F.data.startswith("channel:open:"))
-async def channel_open(c):
+async def channel_open(c, *, answer_callback=True):
     if not await check_cb(c): return
     _, _, aid, channel_id = c.data.split(":")
     aid, channel_id = int(aid), int(channel_id)
@@ -2607,21 +2608,43 @@ async def channel_open(c):
         [("⚙️ Настроить", f"channel:csettings:{binding.id}")],
         [("🧾 История анализа", f"channel:history:{aid}")],
         [("⬅️ К каналам аккаунта", f"channel:account:{aid}"), ("🏠 Главное меню", "nav:home")],
-    ]))
+    ]), answer_callback=answer_callback)
 
 @router.callback_query(F.data.startswith("channel:reply:"))
 async def channel_reply_toggle(c):
     if not await check_cb(c): return
+
+    # Stop Telegram's callback spinner immediately; the button state itself is
+    # changed only after PostgreSQL confirms the transaction.
+    try:
+        await c.answer()
+    except Exception:
+        # An expired callback must not prevent a valid database update.
+        pass
+
     binding_id = int(c.data.split(":")[2])
     async with SessionFactory() as db:
         binding = await db.get(ChannelBinding, binding_id)
         if not binding:
-            await c.answer("Канал не найден.", show_alert=True)
+            if c.message:
+                await c.message.answer("⚠️ Канал не найден. Обновите список каналов.")
             return
-        binding.reply_enabled = not binding.reply_enabled
-        binding.enabled = binding.reply_enabled
-        await db.commit()
-    await channel_open(c)
+
+        new_state = not binding.reply_enabled
+        binding.reply_enabled = new_state
+        binding.enabled = new_state
+        try:
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            if c.message:
+                await c.message.answer(
+                    "❌ Не удалось сохранить настройку. Состояние переключателя не изменено."
+                )
+            return
+
+    # Render from the committed database state without answering the callback twice.
+    await channel_open(c, answer_callback=False)
 
 async def channel_settings_screen(c, scope, object_id):
     async with SessionFactory() as db:
