@@ -427,7 +427,7 @@ async def trigger_terms_received(m: Message, state: FSMContext):
     if not await check_msg(m) or not await private(m): return
     terms = parse_trigger_terms(m.text or "")
     if not terms or len(terms) > 30:
-        await prompt_message(m, state, "Добавьте от 1 до 30 слов или фраз, разделяя их запятыми или переносами строк.")
+        await prompt_message(m, state, "Добавьте от 1 до 30 слов или фраз. Слова можно разделять пробелами, фразы — запятыми или переносами строк.")
         return
     await delete_msg(m)
     await state.update_data(trigger_terms="\n".join(terms))
@@ -566,7 +566,7 @@ async def trigger_edit_start(c: CallbackQuery, state: FSMContext):
         return_callback=back, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id)
     await state.set_state(Flow.trigger_edit_value)
     hints = {
-        "terms": "Отправьте новые слова/фразы через запятую или с новой строки.",
+        "terms": "Отправьте слова через пробел, а фразы из нескольких слов разделяйте запятыми или переносами строк.",
         "response": "Отправьте новую инструкцию ИИ. Для очистки отправьте /clear.",
         "cooldown_seconds": "Введите новую паузу этого триггера в секундах (0–31536000).",
         "message_cooldown_seconds": "Введите общую паузу между триггерами аккаунта в секундах (0–31536000).",
@@ -583,7 +583,7 @@ async def trigger_edit_value_received(m: Message, state: FSMContext):
     if field == "terms":
         terms = parse_trigger_terms(raw)
         if not terms or len(terms) > 30:
-            await prompt_message(m, state, "Нужно указать от 1 до 30 слов/фраз через запятую или с новой строки.")
+            await prompt_message(m, state, "Укажите от 1 до 30 слов/фраз: слова через пробел, фразы — через запятую или с новой строки.")
             return
         value = "\n".join(terms)
     elif field == "response":
