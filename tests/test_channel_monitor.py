@@ -134,7 +134,7 @@ def test_text_only_channel_analysis_uses_string_content():
     assert isinstance(content, str)
     assert "Проверка поста" in content
     assert "ПУБЛИКАЦИЯ:\nПроверка поста" in content
-    assert "\n\nКОММЕНТАРИИ:\nКомментарий" in content
+    assert "\n\nКОММЕНТАРИИ:\n- Комментарий" in content
 
 
 def test_image_channel_analysis_uses_multimodal_parts():
