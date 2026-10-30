@@ -18,6 +18,31 @@ def channel_comment_threshold_action(action: str, comment_count: int, minimum: i
         return "skip"
     return "wait"
 
+ 
+
+def build_channel_analysis_style(
+    *,
+    persona_style: str,
+    account_style_override: str,
+    post_instructions: str,
+    comments_instructions: str,
+    restrictions_instructions: str,
+    channel_learning_prompt: str,
+) -> str:
+    """Build channel-analysis context without the account's chat-learning summary."""
+    style = persona_style or "Кратко, уважительно, без выдуманных фактов."
+    if account_style_override.strip():
+        style += "\nДополнительные правила аккаунта: " + account_style_override[:2000]
+    if post_instructions.strip():
+        style += "\nИнструкции по публикациям: " + post_instructions[:2500]
+    if comments_instructions.strip():
+        style += "\nИнструкции по комментариям: " + comments_instructions[:2500]
+    if restrictions_instructions.strip():
+        style += "\nОграничения: " + restrictions_instructions[:2500]
+    if channel_learning_prompt.strip():
+        style += "\nВыводы автообучения этого канала: " + channel_learning_prompt[:2500]
+    return style
+
 
 async def analyze_channel_post(
     session: AsyncSession,
@@ -46,23 +71,17 @@ async def analyze_channel_post(
         return existing
 
     persona = await session.get(Persona, account.persona_id) if account.persona_id else None
-    style = persona.style_instructions if persona else "Кратко, уважительно, без выдуманных фактов."
-    if account.persona_style_override.strip():
-        style += "\nДополнительные правила аккаунта: " + account.persona_style_override[:2000]
-    if account.learning_prompt.strip():
-        style += "\nОбщий контекст: " + account.learning_prompt[:1800]
     post_instructions = channel.post_instructions_override if channel.post_instructions_override is not None else account.channel_post_instructions
     comments_instructions = channel.comments_instructions_override if channel.comments_instructions_override is not None else account.channel_comments_instructions
     restrictions_instructions = channel.restrictions_instructions_override if channel.restrictions_instructions_override is not None else account.channel_restrictions_instructions
-    if post_instructions.strip():
-        style += "\nИнструкции по публикациям: " + post_instructions[:2500]
-    if comments_instructions.strip():
-        style += "\nИнструкции по комментариям: " + comments_instructions[:2500]
-    if restrictions_instructions.strip():
-        style += "\nОграничения: " + restrictions_instructions[:2500]
-    learned = channel.learning_prompt
-    if learned.strip():
-        style += "\nВыводы автообучения этого канала: " + learned[:2500]
+    style = build_channel_analysis_style(
+        persona_style=persona.style_instructions if persona else "",
+        account_style_override=account.persona_style_override,
+        post_instructions=post_instructions,
+        comments_instructions=comments_instructions,
+        restrictions_instructions=restrictions_instructions,
+        channel_learning_prompt=channel.learning_prompt,
+    )
 
     rendered_comments = "\n".join(f"- {str(item)[:700]}" for item in comments[:20]) or "Комментариев пока нет."
     client = AsyncOpenAI(api_key=agent.api_key, base_url=agent.base_url, timeout=agent.timeout_seconds)

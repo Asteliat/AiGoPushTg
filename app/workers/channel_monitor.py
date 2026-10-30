@@ -376,7 +376,6 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                 post_instructions = binding.post_instructions_override if binding.post_instructions_override is not None else account.channel_post_instructions
                 comments_instructions = binding.comments_instructions_override if binding.comments_instructions_override is not None else account.channel_comments_instructions
                 restrictions = binding.restrictions_instructions_override if binding.restrictions_instructions_override is not None else account.channel_restrictions_instructions
-                learned = binding.learning_prompt
                 title = binding.title or f"канал {channel_id}"
                 mode = account.reply_mode
                 account_name = account.display_name
@@ -425,7 +424,6 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                 "Инструкции по публикациям: " + post_instructions if post_instructions.strip() else "",
                 "Что учитывать в комментариях: " + comments_instructions if comments_instructions.strip() else "",
                 "Ограничения: " + restrictions if restrictions.strip() else "",
-                "Выводы автообучения: " + learned if learned.strip() else "",
             ] if x)
             context = (
                 f"Канал: {title}\nПубликация: {post_text[:2500]}\n"
