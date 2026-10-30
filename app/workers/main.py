@@ -16,6 +16,7 @@ from app.workers.channel_monitor import install_channel_monitor
 from app.settings import get_settings
 from app.storage.db import SessionFactory
 from app.storage.models import Account, AIAgent, AppSetting, ChatBinding
+from app.services.notifications import enqueue_notification, dispatch_pending_notifications
 from app.telegram_gateway.proxy import telethon_proxy
 
 async def heartbeat(redis):
@@ -36,36 +37,20 @@ async def main():
     learning_tasks: dict[int,asyncio.Task]={}
     last_discovery: dict[int,datetime] = {}
 
-    async def send_log(text: str, category: str = "main") -> None:
-        if not bot:
-            return
-        async with SessionFactory() as db:
-            setting = await db.get(AppSetting, f"log_chat_ids_{category}")
-            destinations: list[tuple[int, int | None]] = []
-            if setting and setting.value:
-                for raw in setting.value.replace(";", ",").split(","):
-                    parts = raw.strip().split(":")
-                    try:
-                        chat_id = int(parts[0])
-                        thread_id = int(parts[1]) if len(parts) == 2 else None
-                    except (TypeError, ValueError):
-                        continue
-                    if len(parts) > 2 or chat_id == 0 or (thread_id is not None and thread_id <= 0):
-                        continue
-                    destination = (chat_id, thread_id)
-                    if destination not in destinations:
-                        destinations.append(destination)
-        if setting is None and category == "main" and cfg.log_chat_id:
-            destinations = [(cfg.log_chat_id, None)]
-        for chat_id, thread_id in destinations:
+    async def send_log(text: str, category: str = "main") -> bool:
+        # The outbox commit is the delivery guarantee; Telegram delivery is retried
+        # asynchronously and survives worker restarts.
+        return await enqueue_notification(bot, text, category, cfg.log_chat_id)
+
+    async def notification_dispatcher():
+        while True:
             try:
-                kwargs = {"message_thread_id": thread_id} if thread_id is not None else {}
-                await bot.send_message(chat_id, text[:3900], **kwargs)
+                await dispatch_pending_notifications(bot, limit=100)
+            except asyncio.CancelledError:
+                raise
             except Exception:
-                logging.exception(
-                    "Could not send %s notification to chat %s thread %s",
-                    category, chat_id, thread_id,
-                )
+                logging.exception("Notification outbox dispatcher failed")
+            await asyncio.sleep(5)
 
     async def remember_message(aid: int, chat_id: int, sender_id: int, item: dict) -> None:
         chat_key = f"atcivperson:memory:{aid}:{chat_id}:chat"
@@ -618,10 +603,11 @@ async def main():
 
     heartbeat_task=asyncio.create_task(heartbeat(redis))
     manager_task=asyncio.create_task(manager())
+    notification_task=asyncio.create_task(notification_dispatcher())
     try:
-        await asyncio.gather(heartbeat_task,manager_task)
+        await asyncio.gather(heartbeat_task,manager_task,notification_task)
     finally:
-        heartbeat_task.cancel(); manager_task.cancel()
+        heartbeat_task.cancel(); manager_task.cancel(); notification_task.cancel()
         for task in tasks.values():
             task.cancel()
         for task in learning_tasks.values():
