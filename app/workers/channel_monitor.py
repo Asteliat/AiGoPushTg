@@ -194,15 +194,39 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                 await db.commit()
 
             try:
-                discussion = await client(GetDiscussionMessageRequest(peer=channel_entity, msg_id=post_id))
+                    discussion = await client(GetDiscussionMessageRequest(peer=channel_entity, msg_id=post_id))
+                logging.info(
+                    "Discussion lookup result: account=%s channel_id=%s post_id=%s chats=%s messages=%s",
+                    account_id, channel_id, post_id,
+                    [
+                        {
+                            "id": int(getattr(chat, "id", 0) or 0),
+                            "peer_id": int(utils.get_peer_id(chat)),
+                            "megagroup": bool(getattr(chat, "megagroup", False)),
+                            "title": getattr(chat, "title", None),
+                        }
+                        for chat in getattr(discussion, "chats", [])
+                    ],
+                    [
+                        {
+                            "id": int(getattr(item, "id", 0) or 0),
+                            "peer_channel_id": getattr(getattr(item, "peer_id", None), "channel_id", None),
+                            "reply_to_msg_id": getattr(getattr(item, "reply_to", None), "reply_to_msg_id", None),
+                            "reply_to_top_id": getattr(getattr(item, "reply_to", None), "reply_to_top_id", None),
+                        }
+                        for item in getattr(discussion, "messages", [])
+                    ],
+                )
             except Exception as exc:
                 await update_state(
                     channel_id, post_id, status="retry",
                     next_retry_at=_utcnow() + timedelta(minutes=10),
                     last_error=f"discussion lookup: {type(exc).__name__}",
                 )
-                logging.info("Discussion lookup failed for account %s channel %s post %s: %s",
-                             account_id, channel_id, post_id, exc)
+                logging.exception(
+                    "Discussion lookup failed: account=%s channel_id=%s post_id=%s error_type=%s error=%s",
+                    account_id, channel_id, post_id, type(exc).__name__, exc,
+                )
                 return
 
             group_entity = next(
@@ -219,6 +243,13 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                 None,
             )
             if not group_entity or not root_message:
+                logging.warning(
+                    "Discussion target missing: account=%s channel_id=%s post_id=%s "
+                    "group_found=%s root_found=%s chats_count=%s messages_count=%s",
+                    account_id, channel_id, post_id, bool(group_entity), bool(root_message),
+                    len(getattr(discussion, "chats", []) or []),
+                    len(getattr(discussion, "messages", []) or []),
+                )
                 await update_state(
                     channel_id, post_id, status="retry",
                     next_retry_at=_utcnow() + timedelta(hours=1),
@@ -227,7 +258,19 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                 return
 
             await register_discussion_group(channel_id, group_entity)
+            group_peer_id = int(utils.get_peer_id(group_entity))
+            logging.info(
+                "Discussion target resolved: account=%s channel_id=%s post_id=%s "
+                "group_id=%s root_message_id=%s",
+                account_id, channel_id, post_id, group_peer_id, int(root_message.id),
+            )
             comments = await fetch_comments(group_entity, int(root_message.id))
+            logging.info(
+                "Discussion comments fetched: account=%s channel_id=%s post_id=%s "
+                "group_id=%s root_message_id=%s comments_count=%s minimum=%s",
+                account_id, channel_id, post_id, group_peer_id, int(root_message.id),
+                len(comments), min_comments,
+            )
             if len(comments) < min_comments:
                 if insufficient_action == "skip":
                     await update_state(
@@ -614,12 +657,43 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                         async for recent_post in client.iter_messages(entity, limit=RECOVERY_SCAN_LIMIT):
                             if (recent_post.message or "").strip():
                                 try:
+                                    logging.info(
+                                        "Discussion discovery started: account=%s channel_id=%s post_id=%s",
+                                        account_id, int(binding.channel_id), int(recent_post.id),
+                                    )
                                     discussion = await client(GetDiscussionMessageRequest(peer=entity, msg_id=recent_post.id))
                                     group = next((chat for chat in getattr(discussion, "chats", []) if getattr(chat, "megagroup", False)), None)
                                     if group:
                                         await register_discussion_group(int(binding.channel_id), group)
-                                except Exception:
-                                    pass
+                                        logging.info(
+                                            "Discussion discovery succeeded: account=%s channel_id=%s post_id=%s "
+                                            "group_id=%s group_peer_id=%s",
+                                            account_id, int(binding.channel_id), int(recent_post.id),
+                                            int(group.id), int(utils.get_peer_id(group)),
+                                        )
+                                    else:
+                                        logging.warning(
+                                            "Discussion discovery returned no megagroup: account=%s channel_id=%s "
+                                            "post_id=%s chats=%s messages_count=%s",
+                                            account_id, int(binding.channel_id), int(recent_post.id),
+                                            [
+                                                {
+                                                    "id": int(getattr(chat, "id", 0) or 0),
+                                                    "peer_id": int(utils.get_peer_id(chat)),
+                                                    "megagroup": bool(getattr(chat, "megagroup", False)),
+                                                    "title": getattr(chat, "title", None),
+                                                }
+                                                for chat in getattr(discussion, "chats", [])
+                                            ],
+                                            len(getattr(discussion, "messages", []) or []),
+                                        )
+                                except Exception as exc:
+                                    logging.exception(
+                                        "Discussion discovery failed: account=%s channel_id=%s post_id=%s "
+                                        "error_type=%s error=%s",
+                                        account_id, int(binding.channel_id), int(recent_post.id),
+                                        type(exc).__name__, exc,
+                                    )
                                 break
                         async for message in client.iter_messages(entity, limit=RECOVERY_SCAN_LIMIT):
                             body = (message.message or "").strip()
