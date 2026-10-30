@@ -20,6 +20,7 @@ from app.ai.provider import AIUnavailableError
 from app.services.channels import (
     analyze_channel_post,
     channel_comment_threshold_action,
+    effective_channel_chat_replies_enabled,
     effective_channel_reply_mode,
     learn_channel_style,
 )
@@ -129,7 +130,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
 
 
     async def find_published_comment_ancestor(chat_id: int, message, immediate_parent=None, published_by_id=None):
-        """Return the saved channel analysis only when a reply chain reaches our own comment."""
+        """Return the saved analysis when a reply chain descends from a published channel comment."""
         if published_by_id is None:
             async with SessionFactory() as db:
                 rows = list((await db.scalars(select(ChannelAnalysis).where(
@@ -141,14 +142,13 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
             published_by_id = {int(row.published_comment_id): row for row in rows}
         if not published_by_id:
             return None
-        by_comment_id = published_by_id
         header = getattr(message, "reply_to", None)
         parent_id = int(getattr(header, "reply_to_msg_id", 0) or 0)
         parent = immediate_parent
         for _ in range(8):
             if not parent_id:
                 return None
-            matched = by_comment_id.get(parent_id)
+            matched = published_by_id.get(parent_id)
             if matched:
                 return matched
             if parent is None:
@@ -158,6 +158,30 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
                     return None
             if not parent:
                 return None
+            parent_header = getattr(parent, "reply_to", None)
+            parent_id = int(getattr(parent_header, "reply_to_msg_id", 0) or 0)
+            parent = None
+        return None
+
+
+    async def find_account_message_ancestor(chat_id: int, message, immediate_parent, own_user_id: int):
+        """Find an account-authored message in the reply chain, including replies not stored as analyses."""
+        header = getattr(message, "reply_to", None)
+        parent_id = int(getattr(header, "reply_to_msg_id", 0) or 0)
+        parent = immediate_parent
+        for _ in range(8):
+            if not parent_id:
+                return None
+            if parent is None:
+                try:
+                    parent = await client.get_messages(chat_id, ids=parent_id)
+                except Exception:
+                    return None
+            if not parent:
+                return None
+            sender_id = int(getattr(parent, "sender_id", 0) or 0)
+            if bool(getattr(parent, "out", False)) or sender_id == int(own_user_id):
+                return parent
             parent_header = getattr(parent, "reply_to", None)
             parent_id = int(getattr(parent_header, "reply_to_msg_id", 0) or 0)
             parent = None
@@ -737,9 +761,9 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
         except Exception:
             pass
 
-        analysis = await find_published_comment_ancestor(chat_id, message, immediate_parent, getattr(event, "published_by_id", None))
-        if not analysis:
-            return
+        analysis = await find_published_comment_ancestor(
+            chat_id, message, immediate_parent, getattr(event, "published_by_id", None)
+        )
 
         async with SessionFactory() as db:
             account = await db.get(Account, account_id)
@@ -748,13 +772,49 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
                 or int(message.sender_id or 0) == int(account.telegram_user_id or 0)
             ):
                 return
-            channel_title = analysis.channel_title or f"канал {analysis.channel_id}"
+
+            own_message = None
+            if not analysis:
+                own_message = await find_account_message_ancestor(
+                    chat_id, message, immediate_parent, int(account.telegram_user_id or 0)
+                )
+                if not own_message:
+                    return
+                binding = await db.scalar(select(ChannelBinding).where(
+                    ChannelBinding.account_id == account_id,
+                    ChannelBinding.discussion_group_id == chat_id,
+                ).limit(1))
+            else:
+                binding = await db.scalar(select(ChannelBinding).where(
+                    ChannelBinding.account_id == account_id,
+                    ChannelBinding.channel_id == int(analysis.channel_id),
+                ))
+            if not binding:
+                return
+            if binding.discussion_group_id is not None and int(binding.discussion_group_id) != chat_id:
+                return
+            if not effective_channel_chat_replies_enabled(account, binding):
+                logging.info(
+                    "Channel discussion reply ignored by Chats-reply setting: "
+                    "account=%s channel_id=%s group_id=%s message_id=%s",
+                    account_id, int(binding.channel_id), chat_id, int(message.id),
+                )
+                return
+
+            channel_title = (
+                analysis.channel_title if analysis else binding.title
+            ) or f"канал {binding.channel_id}"
+            original_post = analysis.post_text[:2500] if analysis else ""
+            own_message_text = (
+                analysis.suggested_response[:1500]
+                if analysis else (getattr(own_message, "message", "") or "")[:1500]
+            )
             chat_context = (
-                f"Контекст исходного обсуждения канала «{channel_title}». "
-                "Используй его только чтобы понять, на что отвечает собеседник. "
+                f"Контекст обсуждения канала «{channel_title}». "
+                "Используй его только чтобы понять, на какое сообщение аккаунта отвечает собеседник. "
                 "Дальше веди обычный диалог по настройкам раздела «Чаты».\n"
-                f"Исходная публикация:\n{analysis.post_text[:2500]}\n\n"
-                f"Комментарий аккаунта, с которого начался диалог:\n{analysis.suggested_response[:1500]}"
+                + (f"Исходная публикация:\n{original_post}\n\n" if original_post else "")
+                + f"Сообщение аккаунта, с которого начался диалог:\n{own_message_text}"
             )
 
         if route_chat_reply is None:
