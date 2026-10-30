@@ -15,7 +15,8 @@ from telethon.tl.functions.messages import CheckChatInviteRequest, ImportChatInv
 from telethon.tl.types import ChatInviteAlready
 from app.telegram_gateway.discovery import search_public_groups, search_web_groups, find_invite_links_in_dialogs
 from app.services.ai_responses import global_ai_enabled
-from app.services.channels import learn_channel_style
+from app.services.chat_bindings import discovered_binding_values
+from app.services.channels import effective_channel_reply_mode, learn_channel_style
 from app.settings import get_settings
 from app.storage.db import SessionFactory
 from app.storage.models import Account, AIAgent, AppSetting, ChatBinding, ChannelBinding, ChannelAnalysis, Example, Persona
@@ -2480,7 +2481,7 @@ async def chat_load(c):
             if binding:
                 binding.title = title
             else:
-                db.add(ChatBinding(account_id=aid, chat_id=chat_id, title=title, enabled=True, auto_discovered=True))
+                db.add(ChatBinding(account_id=aid, chat_id=chat_id, **discovered_binding_values(title)))
                 added += 1
         await db.commit()
     await chat_account_screen(c, aid, page)
@@ -2528,6 +2529,7 @@ CHANNEL_SETTING_FIELDS = {
     "min_comments": ("💬 Минимум комментариев", "channel_min_comments", "min_comments_override", "min_comments"),
     "reply_probability": ("🎯 Вероятность ответа", "channel_reply_probability", "reply_probability_override", "percent"),
     "reply_cooldown_seconds": ("⏳ Пауза между ответами", "channel_reply_cooldown_seconds", "reply_cooldown_seconds_override", "seconds"),
+    "reply_mode": ("🎚 Режим публикации", "channel_reply_mode", "reply_mode_override", "mode"),
 }
 
 def channel_setting_value(account, binding, field):
@@ -2695,6 +2697,14 @@ async def channel_settings_screen(c, scope, object_id):
     title = "Глобальные настройки" if scope == "global" else f"Настройки канала · {binding.title}"
     lines = [f"⚙️ {title}", "Общие значения этого аккаунта применяются ко всем его каналам. Индивидуальные настройки канала могут их переопределить.", ""]
     rows = []
+    prefix = "g" if scope == "global" else "c"
+    mode = effective_channel_reply_mode(account, binding) if binding is not None else (
+        "automatic" if account.channel_reply_mode == "automatic" else "manual"
+    )
+    mode_label = "Автоматическая публикация" if mode == "automatic" else "Ручное подтверждение"
+    mode_source = "собственная настройка" if binding is not None and binding.reply_mode_override is not None else "глобальная настройка"
+    lines.append(f"Режим публикации: {mode_label} ({mode_source})")
+    rows.append([(f"🔄 Переключить режим публикации · {mode_label}", f"channel:mode:{prefix}:{object_id}")])
     explanations = {
         "post_instructions": "Как ИИ должен учитывать содержание публикаций.",
         "comments_instructions": "На что обращать внимание в обсуждении.",
@@ -2824,6 +2834,34 @@ async def channel_setting_save(m: Message, state: FSMContext):
     shown = format_duration(value) if kind == "seconds" else f"{value}%" if kind == "percent" else str(value)
     await finish_prompt(m, state, f"✅ {label}: {shown}", kb([[("⬅️ К настройкам", destination)], [("🏠 Главное меню", "nav:home")]]))
 
+@router.callback_query(F.data.startswith("channel:mode:"))
+async def channel_mode_toggle(c):
+    if not await check_cb(c): return
+    _, _, scope, object_raw = c.data.split(":")
+    if scope not in {"g", "c"}:
+        await c.answer("Неизвестный режим.", show_alert=True)
+        return
+    object_id = int(object_raw)
+    async with SessionFactory() as db:
+        if scope == "g":
+            account = await db.get(Account, object_id)
+            if not account:
+                await c.answer("Аккаунт не найден.", show_alert=True)
+                return
+            current = "automatic" if account.channel_reply_mode == "automatic" else "manual"
+            account.channel_reply_mode = "manual" if current == "automatic" else "automatic"
+        else:
+            binding = await db.get(ChannelBinding, object_id)
+            if not binding:
+                await c.answer("Канал не найден.", show_alert=True)
+                return
+            account = await db.get(Account, binding.account_id)
+            current = effective_channel_reply_mode(account, binding)
+            binding.reply_mode_override = "manual" if current == "automatic" else "automatic"
+        await db.commit()
+    await channel_settings_screen(c, "global" if scope == "g" else "channel", object_id)
+
+
 @router.callback_query(F.data.startswith("channel:action:"))
 async def channel_action_toggle(c):
     if not await check_cb(c): return
@@ -2865,6 +2903,7 @@ async def channel_inherit(c):
         binding.insufficient_action_override = None
         binding.reply_probability_override = None
         binding.reply_cooldown_seconds_override = None
+        binding.reply_mode_override = None
         await db.commit()
     await channel_settings_screen(c, "channel", binding_id)
 
