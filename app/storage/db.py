@@ -81,6 +81,7 @@ async def init_db() -> None:
             "ALTER TABLE channel_analyses ADD COLUMN IF NOT EXISTS discussion_group_id BIGINT NULL",
             "ALTER TABLE channel_analyses ADD COLUMN IF NOT EXISTS published_comment_id BIGINT NULL",
             "ALTER TABLE channel_analyses ADD COLUMN IF NOT EXISTS publication_error TEXT NOT NULL DEFAULT ''",
+            "CREATE INDEX IF NOT EXISTS ix_channel_analysis_published_comment ON channel_analyses (account_id, discussion_group_id, published_comment_id)",
         ]
         for statement in statements:
             await connection.exec_driver_sql(statement)
