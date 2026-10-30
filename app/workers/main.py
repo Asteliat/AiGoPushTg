@@ -591,6 +591,7 @@ async def main():
         lease_token = secrets.token_urlsafe(24)
         if not await redis.set(lease_key, lease_token, nx=True, ex=90):
             logging.warning("Telegram session for account %s is already owned by another Worker", account.id)
+            schedule_reconnect(account.id)
             return
         await set_connection_status(account.id, "connecting")
         client=TelegramClient(account.session_path,cfg.telegram_api_id,cfg.telegram_api_hash,proxy=telethon_proxy(account.proxy_config_encrypted),connection_retries=5,retry_delay=2,auto_reconnect=True)
