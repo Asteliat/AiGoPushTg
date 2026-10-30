@@ -45,7 +45,8 @@ def test_channel_analysis_payload_includes_photo_as_image() -> None:
     assert content[1] == {"type": "image_url", "image_url": {"url": image}}
 
 
-def test_channel_analysis_payload_without_photo_stays_text_only() -> None:
+def test_channel_analysis_payload_without_photo_stays_plain_text() -> None:
     content = build_channel_analysis_user_content("Текст поста", [])
-    assert len(content) == 1
-    assert content[0]["type"] == "text"
+    assert isinstance(content, str)
+    assert "ПУБЛИКАЦИЯ:\\nТекст поста" not in content
+    assert "ПУБЛИКАЦИЯ:\nТекст поста" in content
