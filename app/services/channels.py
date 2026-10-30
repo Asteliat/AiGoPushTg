@@ -33,17 +33,13 @@ def channel_comment_threshold_action(action: str, comment_count: int, minimum: i
 
 def build_channel_analysis_style(
     *,
-    persona_style: str,
-    account_style_override: str,
     post_instructions: str,
     comments_instructions: str,
     restrictions_instructions: str,
     channel_learning_prompt: str,
 ) -> str:
-    """Build channel-analysis context without the account's chat-learning summary."""
-    style = persona_style or "Кратко, уважительно, без выдуманных фактов."
-    if account_style_override.strip():
-        style += "\nДополнительные правила аккаунта: " + account_style_override[:2000]
+    """Build channel-only context; chat personas, examples and rules are not accepted here."""
+    style = "Кратко, уважительно, без выдуманных фактов."
     if post_instructions.strip():
         style += "\nИнструкции по публикациям: " + post_instructions[:2500]
     if comments_instructions.strip():
@@ -86,9 +82,6 @@ async def analyze_channel_post(
     comments_instructions = channel.comments_instructions_override if channel.comments_instructions_override is not None else account.channel_comments_instructions
     restrictions_instructions = channel.restrictions_instructions_override if channel.restrictions_instructions_override is not None else account.channel_restrictions_instructions
     style = build_channel_analysis_style(
-        # Channel automation deliberately does not inherit chat personas or chat rules.
-        persona_style="",
-        account_style_override="",
         post_instructions=post_instructions,
         comments_instructions=comments_instructions,
         restrictions_instructions=restrictions_instructions,
