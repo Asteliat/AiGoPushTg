@@ -1160,37 +1160,20 @@ async def acc_view(c, account_id: int | None = None):
         else:
             learning_text = "контекст сохранён вручную" if a.learning_prompt.strip() else "не запускалось"
     conn_label = {"connected": "подключён", "connecting": "подключается", "paused": "пауза", "disconnected": "отключён", "error": "ошибка подключения", "unauthorized": "сессия не авторизована"}.get(a.connection_status, a.connection_status)
-    txt=f"👤 {a.display_name} (@{a.username or 'нет username'})\nID: #{aid}\nАккаунт: {'включён' if a.enabled else 'выключен'}\nСоединение: {conn_label}\nРабота: {'⏸ на паузе' if a.manual_pause else ('активна' if a.enabled else 'отключена')}\nИИ для аккаунта: {'включён' if a.ai_enabled else 'выключен'}\nРежим ответов: {'автоматический' if a.reply_mode=='automatic' else 'ручной'}\nАгент: {agent.name if agent else 'не назначен'}\nПерсона: {persona.name if persona else 'не назначена'}\nАктивных чатов: {chats}\nОбучение: {learning_text}\nПрокси: {'настроен' if a.proxy_config_encrypted else 'нет'}\nИИ обозначен в профиле: {'да' if a.ai_identity_disclosed else 'нет'}\nИндивидуальные правила: {'заданы' if a.persona_style_override.strip() else 'нет'}"
+    txt=f"👤 {a.display_name} (@{a.username or 'нет username'})\nID: #{aid}\nАккаунт: {'включён' if a.enabled else 'выключен'}\nСоединение: {conn_label}\nРабота: {'⏸ на паузе' if a.manual_pause else ('активна' if a.enabled else 'отключена')}\nИИ для аккаунта: {'включён' if a.ai_enabled else 'выключен'}\nРежим ответов: {'автоматический' if a.reply_mode=='automatic' else 'ручной'}\nАгент: {agent.name if agent else 'не назначен'}\nПерсона: {persona.name if persona else 'не назначена'}\nАктивных чатов: {chats}\nОбучение: {learning_text}\nПрокси: {'настроен' if a.proxy_config_encrypted else 'нет'}\nИндивидуальные правила: {'заданы' if a.persona_style_override.strip() else 'нет'}"
     buttons=[
-        [(("▶️ Возобновить работу" if a.manual_pause else "⏸ Пауза работы"),f"acc:pause:{aid}")],
-        [(("⏸ Отключить аккаунт" if a.enabled else "▶️ Подключить аккаунт"),f"acc:toggle:{aid}")],
-        [(("🤖 Выключить ИИ" if a.ai_enabled else "🤖 Включить ИИ"),f"acc:ai:{aid}")],
-        [(f"Режим: {'Автомат' if a.reply_mode=='automatic' else 'Ручной'} · изменить",f"acc:mode:{aid}")],
-        [("🧠 Назначить ИИ-агента",f"acc:agents:{aid}")],
-        [("🎭 Назначить персону",f"acc:personas:{aid}")],
-        [("🌐 Настройки прокси",f"acc:proxysettings:{aid}")],
-        [(("🤖 Снять отметку об ИИ в профиле" if a.ai_identity_disclosed else "🤖 Подтвердить: ИИ указан в профиле"),f"acc:aidisclosure:{aid}")],
-        [("✏️ Индивидуальные правила",f"acc:personaoverride:{aid}")],
-        [("💡 Примеры аккаунта",f"example:account:{aid}")],
-        [("💬 Чаты аккаунта",f"chat:account:{aid}")],
-        [("🔎 Поиск публичных групп",f"chat:search:{aid}"),("🧭 Поиск ссылок",f"chat:discover:{aid}")],
-        [("🔗 Вступить в чат по ссылке",f"chat:joinlink:{aid}")],
-        [((("⏳ Завершается обучение" if a.learning_status == "stopping" else "⏹ Закончить обучение") if learning else "🧠 Автообучение"), (f"learn:stop:{aid}" if learning else f"acc:learn:{aid}"))],
-        [("🧠 Контекст обучения",f"acc:learnprompt:{aid}")],
+        [(("▶️ Возобновить" if a.manual_pause else "⏸ Пауза"),f"acc:pause:{aid}"),
+         (("▶️ Включить" if not a.enabled else "⏸ Отключить"),f"acc:toggle:{aid}")],
+        [("ИИ 🟢" if a.ai_enabled else "ИИ 🔴",f"acc:ai:{aid}"),
+         ("Автомат" if a.reply_mode=="automatic" else "Ручной",f"acc:mode:{aid}")],
+        [("🤖 ИИ Агент",f"acc:agents:{aid}"),("🎭 Персона",f"acc:personas:{aid}")],
+        [("⚙️ Прокси",f"acc:proxysettings:{aid}"),("📋 Правила",f"acc:personaoverride:{aid}")],
+        [("💡 Примеры",f"example:account:{aid}"),("💬 Чаты",f"chat:account:{aid}")],
+        [("👥 Вступление в 👥",f"chat:joinlink:{aid}"),
+         ((("⏳ Завершение" if a.learning_status == "stopping" else "⏹ Остановить") if learning else "🧠 Автообучение"),(f"learn:stop:{aid}" if learning else f"acc:learn:{aid}"))],
+        [("📡 Каналы",f"channel:account:{aid}")],
         [("⬅️ К аккаунтам","acc:list"),("🏠 Главное меню","nav:home")]]
     await edit(c,txt,kb(buttons))
-@router.callback_query(F.data.startswith("acc:aidisclosure:"))
-async def acc_ai_disclosure_toggle(c):
-    if not await check_cb(c): return
-    aid = int(c.data.split(":")[2])
-    async with SessionFactory() as db:
-        account = await db.get(Account, aid)
-        if not account:
-            await c.answer("Аккаунт не найден.", show_alert=True); return
-        account.ai_identity_disclosed = not account.ai_identity_disclosed
-        await db.commit()
-    await acc_view(c, aid)
-
 @router.callback_query(F.data.startswith("acc:proxysettings:"))
 async def acc_proxy_settings(c):
     if not await check_cb(c): return
@@ -1456,28 +1439,30 @@ async def acc_learning_menu(c):
     aid = int(c.data.split(":")[2])
     async with SessionFactory() as db:
         account = await db.get(Account, aid)
-        chat_count = len((await db.scalars(select(ChatBinding).where(
-            ChatBinding.account_id == aid, ChatBinding.enabled.is_(True)
-        ))).all())
+        chat_count = len((await db.scalars(select(ChatBinding).where(ChatBinding.account_id == aid, ChatBinding.enabled.is_(True)))).all())
         enabled_agent = await db.scalar(select(AIAgent.id).where(AIAgent.enabled.is_(True)))
         ai_on = await global_ai_enabled(db)
     if not account:
         await c.answer("Аккаунт не найден", show_alert=True); return
-    if not account.enabled:
-        await c.answer("Сначала включите аккаунт.", show_alert=True); return
-    if account.manual_pause:
-        await c.answer("Сначала возобновите работу аккаунта.", show_alert=True); return
-    if account.reply_mode != "manual":
-        await c.answer("Перед обучением переключите режим ответов на «Ручной».", show_alert=True); return
-    if not chat_count:
-        await c.answer("Список диалогов ещё не загружен. Откройте «Чаты аккаунта» для первичной загрузки и повторите попытку.", show_alert=True); return
-    if not ai_on or not enabled_agent:
-        await c.answer("Включите глобальный ИИ и настройте хотя бы одного ИИ-агента.", show_alert=True); return
-    buttons = [
-        [("✅ Подтверждаю право на обработку", f"learn:confirm:{aid}")],
-        [("⬅️ Назад", f"acc:view:{aid}")],
-    ]
-    await edit(c, f"🧠 Автообучение · аккаунт #{aid}\n\nБудут обработаны все доступные подходящие чаты аккаунта. Система сохранит краткую сводку, временные тексты удалит после завершения. Новые сообщения учитываются до остановки или максимум 3 дня. Подтвердите право передавать эти сообщения выбранному ИИ-провайдеру. Обучение не отправляет сообщения в чаты.", kb(buttons))
+    learning = account.learning_status in {"training", "stopping"}
+    requirements = []
+    if not account.enabled: requirements.append("включите аккаунт")
+    if account.manual_pause: requirements.append("возобновите работу аккаунта")
+    if account.reply_mode != "manual": requirements.append("переключите режим на «Ручной»")
+    if not chat_count: requirements.append("загрузите чаты и включите хотя бы один")
+    if not ai_on or not enabled_agent: requirements.append("включите глобальный ИИ и настройте ИИ-агента")
+    lines = [f"🧠 Автообучение · аккаунт #{aid}", "", "Контекст: сохранён" if account.learning_prompt.strip() else "Контекст: пока не задан"]
+    if learning:
+        lines.append("Статус: обучение выполняется." if account.learning_status == "training" else "Статус: обучение останавливается.")
+    elif requirements:
+        lines += ["", "Для запуска необходимо:"] + [f"• {item}" for item in requirements]
+    else:
+        lines += ["", "Готово к запуску. Перед стартом подтвердите право передавать сообщения выбранному ИИ-провайдеру."]
+    rows = [[("🧠 Контекст обучения", f"acc:learnprompt:{aid}")]]
+    if learning: rows.append([("⏹ Остановить обучение", f"learn:stop:{aid}")])
+    elif not requirements: rows.append([("▶️ Запустить автообучение", f"learn:confirm:{aid}")])
+    rows.append([("⬅️ К аккаунту", f"acc:view:{aid}")])
+    await edit(c, "\\n".join(lines), kb(rows))
 
 
 @router.callback_query(F.data.startswith("learn:confirm:"))
@@ -2449,34 +2434,15 @@ def channel_setting_text(field, value):
         return f"{label}: {value}"
     return label
 
-async def channels_screen_message(m):
-    async with SessionFactory() as db:
-        accounts = list((await db.scalars(select(Account).order_by(Account.id))).all())
-        counts = {}
-        for account in accounts:
-            counts[account.id] = len((await db.scalars(
-                select(ChannelBinding.id).where(ChannelBinding.account_id == account.id)
-            )).all())
-    rows = [[(f"👤 #{a.id} · {a.display_name[:24]} · каналов: {counts[a.id]}", f"channel:account:{a.id}")] for a in accounts]
-    rows += [[("⬅️ Главное меню", "nav:home")]]
-    await m.answer("📡 Каналы\nСначала выберите Telegram-аккаунт. Внутри него находятся его каналы и общие настройки для них.", reply_markup=kb(rows))
-
-@router.message(F.text == "📡 Каналы")
-async def channels_message(m):
-    if not await check_msg(m): return
-    await channels_screen_message(m)
-
 @router.callback_query(F.data == "channel:menu")
-async def channels_menu(c):
+async def channels_legacy_redirect(c):
     if not await check_cb(c): return
     async with SessionFactory() as db:
         accounts = list((await db.scalars(select(Account).order_by(Account.id))).all())
-        counts = {}
-        for account in accounts:
-            counts[account.id] = len((await db.scalars(select(ChannelBinding.id).where(ChannelBinding.account_id == account.id))).all())
-    rows = [[(f"👤 #{a.id} · {a.display_name[:24]} · каналов: {counts[a.id]}", f"channel:account:{a.id}")] for a in accounts]
-    rows += [[("⬅️ Главное меню", "nav:home")]]
-    await edit(c, "📡 Каналы\nВыберите аккаунт, чтобы открыть список его каналов и настройки.", kb(rows))
+    rows = [[(f"👤 {a.display_name[:28]}", f"channel:account:{a.id}")] for a in accounts]
+    rows.append([("⬅️ К аккаунтам", "acc:list")])
+    await edit(c, "Управление каналами теперь находится в карточке соответствующего аккаунта.", kb(rows))
+
 
 async def channel_account_screen(c, aid):
     async with SessionFactory() as db:
