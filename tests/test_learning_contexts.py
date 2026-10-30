@@ -60,7 +60,7 @@ def test_channel_analysis_payload_without_photo_stays_plain_text() -> None:
 def test_channel_probability_selected_reply_requires_comment_unless_restricted() -> None:
     prompt = build_channel_analysis_prompt("Ограничения канала", reply_requested=True)
 
-    assert "не решай самостоятельно, нужен ли комментарий" in prompt
+    assert "Не решай самостоятельно, нужен ли комментарий" in prompt
     assert "подготовь один естественный, содержательный комментарий" in prompt
     assert "запрещён заданными ограничениями" in prompt
     assert "Ограничения канала" in prompt
