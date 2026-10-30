@@ -167,8 +167,9 @@ async def main():
             cooldown_keys = []
             if int(selected.cooldown_seconds or 0) > 0:
                 cooldown_keys.append(trigger_cooldown_key)
-            if int(selected.message_cooldown_seconds or 0) > 0:
-                cooldown_keys.append(message_cooldown_key)
+            # The account-wide message cooldown is checked for every trigger;
+            # whichever trigger started it must block all other trigger replies too.
+            cooldown_keys.append(message_cooldown_key)
             if cooldown_keys and await redis.exists(*cooldown_keys):
                 record.status = "skipped_cooldown"
                 await db.commit()
@@ -182,16 +183,11 @@ async def main():
             previous = []
             try:
                 async for message in event.client.iter_messages(
-                    event.chat_id, limit=500, max_id=int(event.message.id)
+                    event.chat_id, limit=15, max_id=int(event.message.id), from_user=sender_id
                 ):
-                    if int(message.sender_id or 0) != sender_id:
-                        continue
                     body = (message.message or "").strip()
-                    if not body:
-                        continue
-                    previous.append(body[:700])
-                    if len(previous) >= 15:
-                        break
+                    if body:
+                        previous.append(body[:700])
             except Exception:
                 logging.exception(
                     "Could not fetch trigger participant history: account=%s chat=%s sender=%s",
