@@ -1,5 +1,9 @@
 from app.services.ai_responses import build_reply_style_instructions
-from app.services.channels import build_channel_analysis_style, build_channel_analysis_user_content
+from app.services.channels import (
+    build_channel_analysis_prompt,
+    build_channel_analysis_style,
+    build_channel_analysis_user_content,
+)
 
 
 def test_channel_analysis_uses_channel_learning_not_chat_learning() -> None:
@@ -50,3 +54,21 @@ def test_channel_analysis_payload_without_photo_stays_plain_text() -> None:
     assert isinstance(content, str)
     assert "ПУБЛИКАЦИЯ:\\nТекст поста" not in content
     assert "ПУБЛИКАЦИЯ:\nТекст поста" in content
+
+
+
+def test_channel_probability_selected_reply_requires_comment_unless_restricted() -> None:
+    prompt = build_channel_analysis_prompt("Ограничения канала", reply_requested=True)
+
+    assert "Не решай самостоятельно, нужен ли комментарий" in prompt
+    assert "подготовь один естественный, содержательный комментарий" in prompt
+    assert "запрещён заданными ограничениями" in prompt
+    assert "Ограничения канала" in prompt
+
+
+def test_channel_probability_not_selected_requests_analysis_without_comment() -> None:
+    prompt = build_channel_analysis_prompt("Стиль канала", reply_requested=False)
+
+    assert "Случайная вероятность не выбрала" in prompt
+    assert 'should_reply=false и response=""' in prompt
+    assert "Стиль канала" in prompt

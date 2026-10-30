@@ -6,6 +6,7 @@ from app.workers.channel_monitor import (
     fetch_discussion_comments,
     has_channel_post_content,
     is_legacy_comment_threshold_skip,
+    channel_reply_probability_passes,
 )
 
 
@@ -203,3 +204,25 @@ async def test_channel_ai_retries_image_request_as_text_on_content_type_error(mo
     assert isinstance(calls[1], str)
     assert "не делай выводов" in calls[1]
     assert result.choices[0].message.content.startswith("{")
+
+
+
+def test_channel_reply_probability_has_deterministic_zero_and_hundred_percent(monkeypatch):
+    import app.workers.channel_monitor as monitor
+
+    def unexpected_random_call(*args, **kwargs):
+        raise AssertionError("random roll must not be used for 0% or 100%")
+
+    monkeypatch.setattr(monitor.random, "randint", unexpected_random_call)
+    assert channel_reply_probability_passes(0) is False
+    assert channel_reply_probability_passes(100) is True
+    assert channel_reply_probability_passes(150) is True
+    assert channel_reply_probability_passes(-10) is False
+
+
+def test_channel_reply_probability_roll_controls_reply_selection(monkeypatch):
+    import app.workers.channel_monitor as monitor
+
+    monkeypatch.setattr(monitor.random, "randint", lambda low, high: 35)
+    assert channel_reply_probability_passes(35) is True
+    assert channel_reply_probability_passes(34) is False

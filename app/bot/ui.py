@@ -2676,7 +2676,7 @@ async def channel_open(c, *, answer_callback=True):
         await c.answer("Канал не найден. Обновите список каналов.", show_alert=True)
         return
     state = "🟢 Отвечать в комментариях включено" if binding.reply_enabled else "🔴 Отвечать в комментариях выключено"
-    await edit(c, f"📡 {binding.title}\nАккаунт: #{aid}\n\n{state}\n\nИИ анализирует публикацию и комментарии как контекст аудитории, а затем при необходимости оставляет один комментарий-ответ на исходный пост. На отдельные комментарии пользователей канал-автоматизация не отвечает.", kb([
+    await edit(c, f"📡 {binding.title}\nАккаунт: #{aid}\n\n{state}\n\nИИ анализирует публикацию и комментарии как контекст аудитории. Вероятность определяет, будет ли подготовлен комментарий к исходному посту; при 100% ИИ готовит его для каждой публикации, если ответ не запрещён ограничениями. На отдельные комментарии пользователей канал-автоматизация не отвечает.", kb([
         [("🔴 Выключить ответы" if binding.reply_enabled else "🟢 Включить ответы", f"channel:reply:{binding.id}")],
         [("⚙️ Настроить", f"channel:csettings:{binding.id}")],
         [("🧾 История анализа", f"channel:history:{aid}")],
@@ -2774,7 +2774,7 @@ async def channel_settings_screen(c, scope, object_id):
         "post_instructions": "Как ИИ должен учитывать содержание публикаций.",
         "comments_instructions": "На что обращать внимание в обсуждении.",
         "restrictions_instructions": "Каких тем и действий избегать.",
-        "reply_probability": "Вероятность публикации одного ответа на исходный пост после анализа обсуждения.",
+        "reply_probability": "Вероятность того, что ИИ подготовит комментарий к публикации. При 100% комментарий готовится для каждой публикации, если ответ не запрещён ограничениями.",
         "reply_cooldown_seconds": "Минимальная пауза между публикациями ответов в этом канале.",
     }
     for field in ("post_instructions", "comments_instructions", "restrictions_instructions", "reply_probability", "reply_cooldown_seconds"):
@@ -3110,14 +3110,19 @@ async def channel_analysis_view(c):
         "published": "Комментарий опубликован под исходным постом",
         "manual": "Подготовлен черновик · ручной режим",
         "skipped_ai": "ИИ решил, что комментарий не нужен",
-        "skipped_probability": "Пропущено по вероятности ответа",
+        "skipped_probability": "Не выбран комментарий по вероятности",
         "skipped_cooldown": "Пропущено из-за паузы между ответами",
         "legacy": "Старый анализ · публикация не выполнялась",
         "pending": "Ожидает обработки",
         "approved": "Ожидает публикации",
         "publishing": "Публикуется",
     }
-    decision = ("не определялось в старом анализе" if row.publication_status == "legacy" else ("ответ нужен" if row.should_reply else "ответ не требуется"))
+    if row.publication_status == "legacy":
+        decision = "не определялось в старом анализе"
+    elif row.publication_status == "skipped_probability":
+        decision = "ответ не выбран по вероятности"
+    else:
+        decision = "ответ нужен" if row.should_reply else "ответ не требуется"
     text = (
         f"📡 {row.channel_title} · пост #{row.post_id}\n"
         f"Комментариев: {row.comments_count} · обсуждение: {topic}\n"
