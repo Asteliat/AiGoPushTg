@@ -37,6 +37,13 @@ def build_channel_analysis_user_content(
     return content
 
 
+def effective_channel_chat_replies_enabled(account: Account, channel: ChannelBinding) -> bool:
+    """Resolve whether replies to account-authored messages in this channel's discussion enter Chats."""
+    if channel.chat_replies_enabled_override is not None:
+        return bool(channel.chat_replies_enabled_override)
+    return bool(account.channel_chat_replies_enabled)
+
+
 def channel_comment_threshold_action(action: str, comment_count: int, minimum: int) -> str:
     """Return skip, wait, or continue for the configured discussion comment policy."""
     if action == "skip_empty" and comment_count == 0:
