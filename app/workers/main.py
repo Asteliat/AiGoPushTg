@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 from aiogram import Bot
 from telethon import TelegramClient, events
+from telethon.errors import FloodWaitError
 from sqlalchemy import select
 from app.ai.provider import AIUnavailableError, NoReplyNeeded, summarize_chat_context
 from app.services.ai_responses import generate_response, global_ai_enabled
@@ -36,6 +37,8 @@ async def main():
     account_snapshot: dict[int,Account]={}
     learning_tasks: dict[int,asyncio.Task]={}
     last_discovery: dict[int,datetime] = {}
+    reconnect_failures: dict[int, int] = {}
+    reconnect_after: dict[int, datetime] = {}
 
     async def send_log(text: str, category: str = "main") -> bool:
         # The outbox commit is the delivery guarantee; Telegram delivery is retried
@@ -226,6 +229,18 @@ async def main():
                     "date": datetime.now(timezone.utc).isoformat(),
                 }
                 await remember_message(aid, int(event.chat_id), int(current.telegram_user_id or 0), sent_item)
+            except FloodWaitError as exc:
+                wait_seconds = max(1, int(getattr(exc, "seconds", 1))) + 1
+                logging.warning("Telegram FloodWait for account %s: retry in %ss", aid, wait_seconds)
+                await asyncio.sleep(wait_seconds)
+                if not await automatic_send_allowed(aid, int(event.chat_id), int(expected_agent_id or 0)):
+                    return
+                try:
+                    sent_message = await (event.client.send_message(event.chat_id, draft.proposed_text) if proactive else event.reply(draft.proposed_text))
+                    sent = True
+                except Exception as retry_exc:
+                    logging.exception("Automatic reply retry failed for account %s in chat %s", aid, event.chat_id)
+                    await send_log(f"⚠️ Повторная отправка ответа не удалась\\nАккаунт: {account_name} (#{aid})\\nЧат: {label}\\nОшибка: {type(retry_exc).__name__}: {str(retry_exc)[:700]}", category="errors")
             except Exception as exc:
                 logging.exception("Automatic reply failed for account %s in chat %s", aid, event.chat_id)
                 await send_log(f"⚠️ Не удалось отправить ответ\nАккаунт: {account_name} (#{aid})\nЧат: {label}\nОшибка: {type(exc).__name__}: {str(exc)[:700]}", category="errors")
@@ -515,7 +530,7 @@ async def main():
             await set_connection_status(account.id, "error")
             return
         await set_connection_status(account.id, "connecting")
-        client=TelegramClient(account.session_path,cfg.telegram_api_id,cfg.telegram_api_hash,proxy=telethon_proxy(account.proxy_config_encrypted))
+        client=TelegramClient(account.session_path,cfg.telegram_api_id,cfg.telegram_api_hash,proxy=telethon_proxy(account.proxy_config_encrypted),connection_retries=5,retry_delay=2,auto_reconnect=True)
         try:
             await client.connect()
             if not await client.is_user_authorized():
