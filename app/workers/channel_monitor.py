@@ -452,7 +452,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                 await event.reply(draft.proposed_text)
                 await send_log(
                     f"✅ Ответ в комментариях отправлен\nАккаунт: {account_name} (#{account_id})\n"
-                    f"Канал: {title}\nКомментарий: {message.message[:700]}\nОтвет: {draft.proposed_text[:1200]}"
+                    f"Канал: {title}\nКомментарий: {message.message[:700]}\nОтвет: {draft.proposed_text[:1200]}", category="replies"
                 )
             else:
                 await send_log(
