@@ -1,5 +1,5 @@
 from app.storage.models import Account, AIAgent, ChannelAnalysis, ChannelBinding, ChatBinding, Example
-from app.services.channels import channel_comment_threshold_action
+from app.services.channels import channel_comment_threshold_action, effective_channel_reply_mode
 
 def test_account_has_learning_controls() -> None:
     assert {"learning_status", "learning_started_at", "learning_ends_at", "learning_completed_at", "learning_limit", "learning_prompt"} <= set(Account.__table__.columns.keys())
@@ -18,7 +18,7 @@ def test_chat_bindings_support_auto_discovery() -> None:
 
 
 def test_channels_have_independent_per_account_bindings() -> None:
-    assert {"account_id", "channel_id", "enabled", "comment_wait_seconds"} <= set(ChannelBinding.__table__.columns.keys())
+    assert {"account_id", "channel_id", "enabled", "comment_wait_seconds", "reply_mode_override"} <= set(ChannelBinding.__table__.columns.keys())
 
 
 def test_channel_analysis_is_stored_separately_from_chat_responses() -> None:
@@ -31,7 +31,7 @@ def test_channels_have_reply_and_inherited_settings() -> None:
         "channel_post_instructions", "channel_comments_instructions",
         "channel_restrictions_instructions", "channel_wait_seconds",
         "channel_min_comments", "channel_insufficient_action",
-        "channel_reply_probability", "channel_reply_cooldown_seconds",
+        "channel_reply_probability", "channel_reply_cooldown_seconds", "channel_reply_mode",
     } <= account_columns
     assert {
         "reply_enabled", "discussion_group_id", "post_instructions_override",
@@ -61,3 +61,15 @@ def test_channel_comment_threshold_wait_and_skip_modes() -> None:
     assert channel_comment_threshold_action("skip", 0, 2) == "skip"
     assert channel_comment_threshold_action("skip", 1, 2) == "skip"
     assert channel_comment_threshold_action("skip", 2, 2) == "continue"
+
+
+def test_channel_publication_mode_is_independent_from_chat_mode() -> None:
+    account = Account(telegram_user_id=1, session_path="/tmp/account.session")
+    account.reply_mode = "automatic"
+    account.channel_reply_mode = "manual"
+    channel = ChannelBinding(account_id=1, channel_id=100)
+    assert effective_channel_reply_mode(account, channel) == "manual"
+    channel.reply_mode_override = "automatic"
+    assert effective_channel_reply_mode(account, channel) == "automatic"
+    account.reply_mode = "manual"
+    assert effective_channel_reply_mode(account, channel) == "automatic"
