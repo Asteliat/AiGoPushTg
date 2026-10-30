@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 from sqlalchemy import select
 from telethon import events, utils
-from telethon.errors import FloodWaitError
+from telethon.errors import FloodWaitError, MsgIdInvalidError
 from telethon.tl.functions.messages import GetDiscussionMessageRequest
 
 from app.ai.provider import AIUnavailableError
@@ -1014,49 +1014,55 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
                                 account_id, int(binding.channel_id), reopened_post_id,
                             )
                         entity = await client.get_entity(binding.channel_id)
-                        # Discover the linked discussion group even when every recent post
-                        # already has a completed analysis (and would otherwise be skipped).
-                        async for recent_post in client.iter_messages(entity, limit=RECOVERY_SCAN_LIMIT):
-                            if has_channel_post_content(recent_post.message, recent_post):
-                                try:
-                                    logging.info(
-                                        "Discussion discovery started: account=%s channel_id=%s post_id=%s",
-                                        account_id, int(binding.channel_id), int(recent_post.id),
-                                    )
-                                    discussion = await client(GetDiscussionMessageRequest(peer=entity, msg_id=recent_post.id))
-                                    group = next((chat for chat in getattr(discussion, "chats", []) if getattr(chat, "megagroup", False)), None)
-                                    if group:
-                                        await register_discussion_group(int(binding.channel_id), group)
-                                        logging.info(
-                                            "Discussion discovery succeeded: account=%s channel_id=%s post_id=%s "
-                                            "group_id=%s group_peer_id=%s",
-                                            account_id, int(binding.channel_id), int(recent_post.id),
-                                            int(group.id), int(utils.get_peer_id(group)),
-                                        )
-                                    else:
-                                        logging.warning(
-                                            "Discussion discovery returned no megagroup: account=%s channel_id=%s "
-                                            "post_id=%s chats=%s messages_count=%s",
-                                            account_id, int(binding.channel_id), int(recent_post.id),
-                                            [
-                                                {
-                                                    "id": int(getattr(chat, "id", 0) or 0),
-                                                    "peer_id": int(utils.get_peer_id(chat)),
-                                                    "megagroup": bool(getattr(chat, "megagroup", False)),
-                                                    "title": getattr(chat, "title", None),
-                                                }
-                                                for chat in getattr(discussion, "chats", [])
-                                            ],
-                                            len(getattr(discussion, "messages", []) or []),
-                                        )
-                                except Exception as exc:
-                                    logging.exception(
-                                        "Discussion discovery failed: account=%s channel_id=%s post_id=%s "
-                                        "error_type=%s error=%s",
-                                        account_id, int(binding.channel_id), int(recent_post.id),
-                                        type(exc).__name__, exc,
-                                    )
+                        # A recent post can have comments disabled. Try several posts and
+                        # keep searching when Telegram reports MSG_ID_INVALID for one thread.
+                        async for recent_post in client.iter_messages(entity, limit=10):
+                            if not has_channel_post_content(recent_post.message, recent_post):
+                                continue
+                            try:
+                                logging.info(
+                                    "Discussion discovery started: account=%s channel_id=%s post_id=%s",
+                                    account_id, int(binding.channel_id), int(recent_post.id),
+                                )
+                                discussion = await client(GetDiscussionMessageRequest(
+                                    peer=entity, msg_id=int(recent_post.id)
+                                ))
+                            except MsgIdInvalidError:
+                                logging.debug(
+                                    "No discussion thread for channel post; checking an older post: "
+                                    "account=%s channel_id=%s post_id=%s",
+                                    account_id, int(binding.channel_id), int(recent_post.id),
+                                )
+                                continue
+                            except FloodWaitError as exc:
+                                logging.warning(
+                                    "Discussion discovery FloodWait: account=%s channel_id=%s wait=%ss",
+                                    account_id, int(binding.channel_id), int(getattr(exc, "seconds", 0)),
+                                )
                                 break
+                            except Exception as exc:
+                                logging.exception(
+                                    "Discussion discovery failed: account=%s channel_id=%s post_id=%s "
+                                    "error_type=%s error=%s",
+                                    account_id, int(binding.channel_id), int(recent_post.id),
+                                    type(exc).__name__, exc,
+                                )
+                                continue
+
+                            group = next((
+                                chat for chat in getattr(discussion, "chats", [])
+                                if getattr(chat, "megagroup", False)
+                            ), None)
+                            if not group:
+                                continue
+                            await register_discussion_group(int(binding.channel_id), group)
+                            logging.info(
+                                "Discussion discovery succeeded: account=%s channel_id=%s post_id=%s "
+                                "group_id=%s group_peer_id=%s",
+                                account_id, int(binding.channel_id), int(recent_post.id),
+                                int(group.id), int(utils.get_peer_id(group)),
+                            )
+                            break
                         spawn(poll_published_comment_replies(binding, entity))
                         async for message in client.iter_messages(entity, limit=RECOVERY_SCAN_LIMIT):
                             body = (message.message or "").strip()
