@@ -1237,7 +1237,11 @@ async def acc_view(c, account_id: int | None = None):
         discussion_ids = set((await db.scalars(select(ChannelBinding.discussion_group_id).where(
             ChannelBinding.account_id == aid, ChannelBinding.discussion_group_id.is_not(None)
         ))).all())
-        chats = sum(1 for chat_id in active_chat_ids if chat_id not in discussion_ids)
+        channel_ids = set((await db.scalars(select(ChannelBinding.channel_id).where(
+            ChannelBinding.account_id == aid
+        ))).all())
+        excluded_chat_ids = discussion_ids | channel_ids
+        chats = sum(1 for chat_id in active_chat_ids if chat_id not in excluded_chat_ids)
     learning = a.learning_status in {"training", "stopping"}
     if learning and a.learning_ends_at:
         deadline = a.learning_ends_at.strftime("%d.%m.%Y %H:%M UTC")
@@ -1534,7 +1538,11 @@ async def acc_learning_menu(c, account_id: int | None = None):
         discussion_ids = set((await db.scalars(select(ChannelBinding.discussion_group_id).where(
             ChannelBinding.account_id == aid, ChannelBinding.discussion_group_id.is_not(None)
         ))).all())
-        chat_count = sum(1 for chat_id in active_chat_ids if chat_id not in discussion_ids)
+        channel_ids = set((await db.scalars(select(ChannelBinding.channel_id).where(
+            ChannelBinding.account_id == aid
+        ))).all())
+        excluded_chat_ids = discussion_ids | channel_ids
+        chat_count = sum(1 for chat_id in active_chat_ids if chat_id not in excluded_chat_ids)
         enabled_agent = await db.scalar(select(AIAgent.id).where(AIAgent.enabled.is_(True)))
         ai_on = await global_ai_enabled(db)
     if not account:
@@ -1587,7 +1595,11 @@ async def acc_learning_start(c):
         discussion_ids = set((await db.scalars(select(ChannelBinding.discussion_group_id).where(
             ChannelBinding.account_id == aid, ChannelBinding.discussion_group_id.is_not(None)
         ))).all())
-        chats = [binding for binding in chats if int(binding.chat_id) not in discussion_ids]
+        channel_ids = set((await db.scalars(select(ChannelBinding.channel_id).where(
+            ChannelBinding.account_id == aid
+        ))).all())
+        excluded_chat_ids = discussion_ids | channel_ids
+        chats = [binding for binding in chats if int(binding.chat_id) not in excluded_chat_ids]
         if not account or not account.enabled:
             await c.answer("Аккаунт не найден или выключен", show_alert=True); return
         if account.manual_pause:
@@ -2422,7 +2434,11 @@ async def chat_account_screen(c, aid, page=0):
                 ChannelBinding.discussion_group_id.is_not(None),
             )
         )).all())
-        bindings = [row for row in bindings if int(row.chat_id) not in discussion_ids]
+        channel_ids = set((await db.scalars(
+            select(ChannelBinding.channel_id).where(ChannelBinding.account_id == aid)
+        )).all())
+        excluded_chat_ids = discussion_ids | channel_ids
+        bindings = [row for row in bindings if int(row.chat_id) not in excluded_chat_ids]
     if not account:
         await c.answer("Аккаунт не найден.", show_alert=True)
         return
@@ -2473,7 +2489,11 @@ async def chat_load(c):
             dialogs = []
             async for dialog in client.iter_dialogs():
                 entity = dialog.entity
-                if getattr(entity, "deleted", False) or getattr(entity, "bot", False):
+                if (
+                    getattr(entity, "deleted", False)
+                    or getattr(entity, "bot", False)
+                    or (getattr(entity, "broadcast", False) and not getattr(entity, "megagroup", False))
+                ):
                     continue
                 title = (dialog.name or str(dialog.id)).strip()
                 if title:
@@ -2488,7 +2508,11 @@ async def chat_load(c):
                 ChannelBinding.discussion_group_id.is_not(None),
             )
         )).all())
-        dialogs = [item for item in dialogs if item[0] not in discussion_ids]
+        channel_ids = set((await db.scalars(
+            select(ChannelBinding.channel_id).where(ChannelBinding.account_id == aid)
+        )).all())
+        excluded_chat_ids = discussion_ids | channel_ids
+        dialogs = [item for item in dialogs if item[0] not in excluded_chat_ids]
         existing = list((await db.scalars(select(ChatBinding).where(ChatBinding.account_id == aid))).all())
         by_chat = {row.chat_id: row for row in existing}
         added = 0
