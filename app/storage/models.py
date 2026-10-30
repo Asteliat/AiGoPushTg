@@ -169,6 +169,49 @@ class ChannelPostState(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
 
+
+class TriggerRule(Base):
+    """Account-specific or global chat trigger configuration."""
+    __tablename__ = "trigger_rules"
+    __table_args__ = (Index("ix_trigger_rules_scope_enabled", "account_id", "enabled"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int | None] = mapped_column(
+        ForeignKey("accounts.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    apply_mode: Mapped[str] = mapped_column(
+        String(20), default="empty_only", server_default="empty_only", nullable=False
+    )
+    terms: Mapped[str] = mapped_column(Text, nullable=False)
+    response_instructions: Mapped[str] = mapped_column(Text, default="", server_default="", nullable=False)
+    cooldown_seconds: Mapped[int] = mapped_column(Integer, default=900, server_default="900", nullable=False)
+    message_cooldown_seconds: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class TriggerEvent(Base):
+    """Durable deduplication record: a message is processed at most once per account."""
+    __tablename__ = "trigger_events"
+    __table_args__ = (
+        UniqueConstraint("account_id", "chat_id", "message_id", name="uq_trigger_event_message"),
+        Index("ix_trigger_events_account_created", "account_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), index=True)
+    trigger_id: Mapped[int | None] = mapped_column(
+        ForeignKey("trigger_rules.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    sender_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    matched_term: Mapped[str] = mapped_column(String(255), default="", server_default="", nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default="processing", server_default="processing", nullable=False)
+    error: Mapped[str] = mapped_column(Text, default="", server_default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
 class AIAgent(Base):
     __tablename__ = "ai_agents"
 
