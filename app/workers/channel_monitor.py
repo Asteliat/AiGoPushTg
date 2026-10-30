@@ -94,7 +94,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
     async def poll_published_comment_replies(binding, channel_entity) -> None:
         """Recover only replies addressed to a comment previously published by this account."""
         binding_id = int(binding.id)
-        if binding_id in active_reply_polls or not binding.reply_enabled:
+        if binding_id in active_reply_polls:
             return
         active_reply_polls.add(binding_id)
         try:
@@ -446,7 +446,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
                                 ChannelAnalysis.channel_id == channel_id,
                                 ChannelAnalysis.post_id == post_id,
                             ))
-                            if current and current.publication_status != "publishing":
+                            if current:
                                 current.publication_status = "skipped_cooldown"
                                 await db.commit()
                         publication_status = "skipped_cooldown"
@@ -735,6 +735,25 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
                     if learning_binding.id not in active_channel_learning:
                         active_channel_learning.add(learning_binding.id)
                         spawn(process_channel_learning(learning_binding.id))
+                # Existing replies to already-published channel comments remain ordinary
+                # Chats conversations even if channel automation is later disabled.
+                async with SessionFactory() as db:
+                    all_channel_bindings = list((await db.scalars(
+                        select(ChannelBinding).where(ChannelBinding.account_id == account_id)
+                    )).all())
+                enabled_channel_ids = {int(item.channel_id) for item in bindings}
+                for old_binding in all_channel_bindings:
+                    if int(old_binding.channel_id) in enabled_channel_ids:
+                        continue
+                    try:
+                        old_entity = await client.get_entity(old_binding.channel_id)
+                        spawn(poll_published_comment_replies(old_binding, old_entity))
+                    except Exception:
+                        logging.exception(
+                            "Could not poll replies for disabled channel binding: account=%s channel_id=%s",
+                            account_id, int(old_binding.channel_id),
+                        )
+
                 for binding in bindings:
                     try:
                         async with SessionFactory() as db:
@@ -788,8 +807,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
                                         type(exc).__name__, exc,
                                     )
                                 break
-                        if binding.reply_enabled:
-                            spawn(poll_published_comment_replies(binding, entity))
+                        spawn(poll_published_comment_replies(binding, entity))
                         async for message in client.iter_messages(entity, limit=RECOVERY_SCAN_LIMIT):
                             body = (message.message or "").strip()
                             if not body:
