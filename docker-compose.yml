@@ -24,6 +24,15 @@ services:
       timeout: 3s
       retries: 20
     networks: [internal]
+  migrate:
+    build: .
+    command: ["python", "-m", "app.storage.migrate"]
+    env_file: .env
+    environment:
+      DATABASE_URL: $DATABASE_URL
+    depends_on:
+      postgres: {condition: service_healthy}
+    networks: [internal]
   bot:
     build: .
     restart: unless-stopped
@@ -37,6 +46,7 @@ services:
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
     networks: [internal]
   api:
     build: .
@@ -48,6 +58,7 @@ services:
       REDIS_URL: $REDIS_URL
     depends_on:
       postgres: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
     ports: ["127.0.0.1:8080:8080"]
     networks: [internal]
   worker:
@@ -63,6 +74,7 @@ services:
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
     networks: [internal]
 volumes:
   postgres_data:
