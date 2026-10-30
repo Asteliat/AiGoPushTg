@@ -1,5 +1,9 @@
 from app.storage.models import Account, AIAgent, ChannelAnalysis, ChannelBinding, ChatBinding, Example
-from app.services.channels import channel_comment_threshold_action, effective_channel_reply_mode
+from app.services.channels import (
+    channel_comment_threshold_action,
+    effective_channel_chat_replies_enabled,
+    effective_channel_reply_mode,
+)
 
 def test_account_has_learning_controls() -> None:
     assert {"learning_status", "learning_started_at", "learning_ends_at", "learning_completed_at", "learning_limit", "learning_prompt"} <= set(Account.__table__.columns.keys())
@@ -32,9 +36,10 @@ def test_channels_have_reply_and_inherited_settings() -> None:
         "channel_restrictions_instructions", "channel_wait_seconds",
         "channel_min_comments", "channel_insufficient_action",
         "channel_reply_probability", "channel_reply_cooldown_seconds", "channel_reply_mode",
+        "channel_chat_replies_enabled",
     } <= account_columns
     assert {
-        "reply_enabled", "discussion_group_id", "post_instructions_override",
+        "reply_enabled", "discussion_group_id", "post_instructions_override", "chat_replies_enabled_override",
         "comments_instructions_override", "restrictions_instructions_override",
         "comment_wait_seconds_override", "min_comments_override",
         "insufficient_action_override", "reply_probability_override",
@@ -73,3 +78,16 @@ def test_channel_publication_mode_is_independent_from_chat_mode() -> None:
     assert effective_channel_reply_mode(account, channel) == "automatic"
     account.reply_mode = "manual"
     assert effective_channel_reply_mode(account, channel) == "automatic"
+
+
+def test_channel_discussion_chat_replies_inherit_global_setting_and_allow_override() -> None:
+    account = Account(telegram_user_id=1, session_path="/tmp/account.session")
+    channel = ChannelBinding(account_id=1, channel_id=100)
+    assert effective_channel_chat_replies_enabled(account, channel) is True
+    account.channel_chat_replies_enabled = False
+    assert effective_channel_chat_replies_enabled(account, channel) is False
+    channel.chat_replies_enabled_override = True
+    assert effective_channel_chat_replies_enabled(account, channel) is True
+    channel.chat_replies_enabled_override = False
+    account.channel_chat_replies_enabled = True
+    assert effective_channel_chat_replies_enabled(account, channel) is False
