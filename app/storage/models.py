@@ -133,6 +133,11 @@ class ChannelAnalysis(Base):
     on_topic: Mapped[bool] = mapped_column(Boolean, default=False)
     suggested_response: Mapped[str] = mapped_column(Text, default="")
     comments_count: Mapped[int] = mapped_column(Integer, default=0)
+    should_reply: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
+    publication_status: Mapped[str] = mapped_column(String(20), default="pending", server_default="pending", nullable=False)
+    discussion_group_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    published_comment_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    publication_error: Mapped[str] = mapped_column(Text, default="", server_default="", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
