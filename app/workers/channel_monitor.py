@@ -49,6 +49,16 @@ def has_channel_post_content(post_text: str | None, post_message=None) -> bool:
     return bool((post_text or "").strip() or getattr(post_message, "photo", None))
 
 
+def channel_reply_probability_passes(probability: int) -> bool:
+    """Select whether this post gets a generated reply; 0/100 are deterministic."""
+    value = max(0, min(100, int(probability or 0)))
+    if value == 0:
+        return False
+    if value == 100:
+        return True
+    return random.randint(1, 100) <= value
+
+
 def is_legacy_comment_threshold_skip(last_error: str | None) -> bool:
     """Identify old terminal states that were incorrectly skipped for having few comments."""
     reason = (last_error or "").strip().lower()
@@ -501,11 +511,30 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
                     )
                     return
 
+                agent = await db.get(AIAgent, account.ai_agent_id)
+                if not agent or not agent.enabled:
+                    await update_state(
+                        channel_id, post_id, status="retry",
+                        next_retry_at=_utcnow() + timedelta(minutes=5),
+                        last_error="assigned AI agent unavailable",
+                    )
+                    return
+
+                probability = (
+                    binding.reply_probability_override
+                    if binding.reply_probability_override is not None
+                    else agent.channel_reply_probability_override
+                    if agent.channel_reply_probability_override is not None
+                    else account.channel_reply_probability
+                )
+                reply_requested = channel_reply_probability_passes(probability)
+
                 image_data_uri = await download_post_image_data_uri(post_message)
                 result = await analyze_channel_post(
                     db, account=account, channel=binding, post_id=post_id,
                     post_text=stored_post_text, comments=comments[:10],
                     image_data_uri=image_data_uri,
+                    reply_requested=reply_requested,
                 )
                 result.discussion_group_id = group_peer_id
                 if not result.should_reply and result.publication_status == "pending":
@@ -532,30 +561,9 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
                     await redis.set(lock_key, "done", ex=365 * 24 * 3600)
                     return
 
-                agent = await db.get(AIAgent, account.ai_agent_id)
-                if not agent or not agent.enabled:
-                    await update_state(
-                        channel_id, post_id, status="retry",
-                        next_retry_at=_utcnow() + timedelta(minutes=5),
-                        last_error="assigned AI agent unavailable",
-                    )
-                    return
-
                 if result.publication_status == "pending":
-                    probability = (
-                        binding.reply_probability_override
-                        if binding.reply_probability_override is not None
-                        else agent.channel_reply_probability_override
-                        if agent.channel_reply_probability_override is not None
-                        else account.channel_reply_probability
-                    )
-                    probability = max(0, min(100, int(probability or 0)))
-                    if probability == 0 or random.randint(1, 100) > probability:
-                        result.publication_status = "skipped_probability"
-                        await db.commit()
-                    else:
-                        result.publication_status = "approved"
-                        await db.commit()
+                    result.publication_status = "approved"
+                    await db.commit()
 
                 mode = effective_channel_reply_mode(account, binding)
                 account_name = account.display_name
@@ -665,7 +673,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
             status_text = {
                 "published": "Комментарий опубликован ответом на исходную публикацию.",
                 "manual": "Подготовлен черновик. Ручной режим: комментарий не опубликован.",
-                "skipped_probability": "Публикация пропущена по вероятности ответа.",
+                "skipped_probability": "ИИ проанализировал пост, но вероятность не выбрала подготовку комментария.",
                 "skipped_ai": "ИИ решил, что отдельный комментарий к публикации не нужен.",
                 "skipped_cooldown": "Публикация пропущена из-за паузы между ответами.",
                 "approved": "Ответ подготовлен, ожидает публикации.",
