@@ -645,7 +645,12 @@ async def main():
                     if expires and expires.tzinfo is None:
                         expires = expires.replace(tzinfo=timezone.utc)
                     if account.learning_status in {"training", "stopping"} and account.id not in clients:
-                        should_finalize = account.learning_status == "stopping" or (expires and now >= expires)
+                        should_finalize = (
+                            account.learning_status == "stopping"
+                            or account.learning_started_at is None
+                            or account.learning_ends_at is None
+                            or (expires and now >= expires)
+                        )
                         if should_finalize:
                             started = account.learning_started_at
                             if started:
