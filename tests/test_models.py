@@ -1,6 +1,5 @@
 from app.storage.models import Account, AIAgent, ChannelAnalysis, ChannelBinding, ChatBinding, Example
 from app.services.channels import (
-    channel_comment_threshold_action,
     effective_channel_chat_replies_enabled,
     effective_channel_reply_mode,
 )
@@ -33,16 +32,14 @@ def test_channels_have_reply_and_inherited_settings() -> None:
     channel_columns = set(ChannelBinding.__table__.columns.keys())
     assert {
         "channel_post_instructions", "channel_comments_instructions",
-        "channel_restrictions_instructions", "channel_wait_seconds",
-        "channel_min_comments", "channel_insufficient_action",
+        "channel_restrictions_instructions",
         "channel_reply_probability", "channel_reply_cooldown_seconds", "channel_reply_mode",
         "channel_chat_replies_enabled",
     } <= account_columns
     assert {
         "reply_enabled", "discussion_group_id", "post_instructions_override", "chat_replies_enabled_override",
         "comments_instructions_override", "restrictions_instructions_override",
-        "comment_wait_seconds_override", "min_comments_override",
-        "insufficient_action_override", "reply_probability_override",
+        "reply_probability_override",
         "reply_cooldown_seconds_override", "learning_prompt",
         "learning_status", "learning_completed_at",
     } <= channel_columns
@@ -53,19 +50,6 @@ def test_agents_have_channel_reply_overrides() -> None:
         "channel_reply_probability_override",
         "channel_reply_cooldown_seconds_override",
     } <= set(AIAgent.__table__.columns.keys())
-
-
-def test_channel_no_comments_policy_skips_empty_discussions() -> None:
-    assert channel_comment_threshold_action("skip_empty", 0, 2) == "skip"
-    assert channel_comment_threshold_action("skip_empty", 1, 2) == "wait"
-    assert channel_comment_threshold_action("skip_empty", 2, 2) == "continue"
-
-
-def test_channel_comment_threshold_wait_and_skip_modes() -> None:
-    assert channel_comment_threshold_action("wait", 0, 2) == "wait"
-    assert channel_comment_threshold_action("skip", 0, 2) == "skip"
-    assert channel_comment_threshold_action("skip", 1, 2) == "skip"
-    assert channel_comment_threshold_action("skip", 2, 2) == "continue"
 
 
 def test_channel_publication_mode_is_independent_from_chat_mode() -> None:
