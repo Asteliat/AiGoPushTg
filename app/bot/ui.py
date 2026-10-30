@@ -502,7 +502,7 @@ async def trigger_message_cooldown_received(m: Message, state: FSMContext):
     scope = data["trigger_scope"]
     account_id = data.get("trigger_account_id")
     await finish_prompt(
-        m, state, "✅ Триггер сохранён. Он начнёт учитываться Worker после обновления настроек.",
+        m, state, "✅ Триггер сохранён. Подключённые аккаунты начнут учитывать его сразу.",
         kb([[("🎯 К списку триггеров", f"trigger:account:{account_id}" if scope == "account" else "trigger:global")]]),
     )
 
