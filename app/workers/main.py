@@ -181,7 +181,7 @@ async def main():
                     event.chat_id, limit=15, max_id=int(event.message.id), from_user=sender_id
                 ):
                     body = (message.message or "").strip()
-                    previous.append(body[:700] if body else "[Участник отправил сообщение без текста]")
+                    previous.append(body[:400] if body else "[Участник отправил сообщение без текста]")
             except Exception:
                 logging.exception(
                     "Could not fetch trigger participant history: account=%s chat=%s sender=%s",
