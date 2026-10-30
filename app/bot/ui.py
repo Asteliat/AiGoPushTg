@@ -2922,7 +2922,7 @@ async def channel_analysis_view(c):
         "approved": "Ожидает публикации",
         "publishing": "Публикуется",
     }
-    decision = "ответ нужен" if row.should_reply else "ответ не требуется"
+    decision = ("не определялось в старом анализе" if row.publication_status == "legacy" else ("ответ нужен" if row.should_reply else "ответ не требуется"))
     text = (
         f"📡 {row.channel_title} · пост #{row.post_id}\n"
         f"Комментариев: {row.comments_count} · обсуждение: {topic}\n"
@@ -2930,6 +2930,7 @@ async def channel_analysis_view(c):
         f"Статус: {publication_labels.get(row.publication_status, row.publication_status)}\n\n"
         f"Сводка ИИ:\n{row.comments_summary[:1800]}\n\n"
         f"Вариант комментария к публикации:\n{row.suggested_response[:1800] or 'ИИ не предложил публиковать комментарий.'}"
+        + (f"\n\nОшибка публикации: {row.publication_error[:700]}" if row.publication_error else "")
     )
     await edit(c, text, kb([
         [("⬅️ История анализа", f"channel:history:{row.account_id}")],
