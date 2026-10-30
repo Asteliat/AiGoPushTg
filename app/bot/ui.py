@@ -2620,7 +2620,7 @@ async def channel_settings_screen(c, scope, object_id):
     if scope == "channel":
         learning_state = "идёт" if binding.learning_status == "training" else "ошибка — запустите повторно" if binding.learning_status == "error" else "завершено" if binding.learning_completed_at else "не запускалось"
         lines.append(f"Автообучение: {learning_state}")
-        lines.append("ИИ изучает до 200 последних текстовых постов и до 5 комментариев к каждому, чтобы понять тематику и стиль обсуждений.")
+        lines.append("Автообучение — анализ до 200 последних текстовых публикаций и до 100 комментариев к каждой. Пустые публикации без текста пропускаются.")
         rows.append([("🧠 Автообучение по последним 200 постам", f"channel:learn:{object_id}")])
         rows.append([("↩️ Сбросить настройки канала к глобальным", f"channel:inherit:{object_id}")])
         rows.append([("⬅️ К карточке канала", f"channel:open:{account.id}:{binding.channel_id}")])
