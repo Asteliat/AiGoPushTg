@@ -1716,9 +1716,9 @@ async def assign_all(c):
         await db.commit()
     await edit(c,f"«{a.name}» назначен всем аккаунтам. Локальные переключатели ИИ не менялись.",back_home())
 @router.callback_query(F.data.startswith("agent:view:"))
-async def agent_view(c):
+async def agent_view(c, agent_id: int | None = None):
     if not await check_cb(c): return
-    aid=int(c.data.split(":")[2])
+    aid=agent_id if agent_id is not None else int(c.data.split(":")[2])
     async with SessionFactory() as db:
         a=await db.get(AIAgent,aid)
         if not a: await c.answer("Агент не найден",show_alert=True); return
@@ -1863,9 +1863,9 @@ async def persona_style(m,state):
         await db.refresh(p)
     await finish_prompt(m, state, label, kb([[("🎭 К персонам","persona:menu")],[("🏠 Главное меню","nav:home")]]))
 @router.callback_query(F.data.startswith("persona:view:"))
-async def persona_view(c):
+async def persona_view(c, persona_id: int | None = None):
     if not await check_cb(c): return
-    pid=int(c.data.split(":")[2])
+    pid=persona_id if persona_id is not None else int(c.data.split(":")[2])
     async with SessionFactory() as db:
         p=await db.get(Persona,pid); n=len((await db.scalars(select(Example).where(Example.persona_id==pid))).all())
     if not p: await c.answer("Персона не найдена",show_alert=True); return
@@ -1914,9 +1914,9 @@ async def example_menu(c):
     buttons += [[("➕ Добавить общий пример","example:add:0")],[("⬅️ Главное меню","nav:home")]]
     await edit(c,"🧩 Примеры",kb(buttons))
 @router.callback_query(F.data.startswith("example:account:"))
-async def account_examples(c):
+async def account_examples(c, account_id: int | None = None):
     if not await check_cb(c): return
-    aid = int(c.data.split(":")[2])
+    aid = account_id if account_id is not None else int(c.data.split(":")[2])
     async with SessionFactory() as db:
         account = await db.get(Account, aid)
         examples = list((await db.scalars(select(Example).where(Example.account_id == aid).order_by(Example.id.desc()).limit(15))).all())
@@ -1970,9 +1970,9 @@ async def example_reply(m,state):
     else:
         await finish_prompt(m,state,"Общий пример сохранён.",kb([[("💡 К примерам","example:menu")],[("🏠 Главное меню","nav:home")]]))
 @router.callback_query(F.data.startswith("example:view:"))
-async def example_view(c):
+async def example_view(c, example_id: int | None = None):
     if not await check_cb(c): return
-    eid=int(c.data.split(":")[2])
+    eid=example_id if example_id is not None else int(c.data.split(":")[2])
     async with SessionFactory() as db: e=await db.get(Example,eid); p=await db.get(Persona,e.persona_id) if e and e.persona_id else None
     if not e: await c.answer("Пример не найден",show_alert=True); return
     back = f"example:account:{e.account_id}" if e.account_id else "example:menu"
