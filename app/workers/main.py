@@ -110,7 +110,7 @@ async def main():
             agent = await db.get(AIAgent, account.ai_agent_id) if account.ai_agent_id else None
             return bool(agent and agent.enabled and (allow_unbound or binding))
 
-    async def on_message(event, *, aid, labels, allow_unbound: bool = False, forced_label: str | None = None):
+    async def on_message(event, *, aid, labels, allow_unbound: bool = False, forced_label: str | None = None, extra_context: str = ""):
         label = forced_label or labels.get(event.chat_id)
         if (label is None and not allow_unbound) or not event.message or not event.message.message:
             return
@@ -161,7 +161,8 @@ async def main():
 
             # Store a rolling chat history and a separate history for each participant.
             # Redis expires conversation records after 30 days.
-            context = await read_conversation_context(aid, int(event.chat_id), sender_id)
+            history_context = await read_conversation_context(aid, int(event.chat_id), sender_id)
+            context = "\n\n".join(part for part in (extra_context.strip(), history_context) if part)
             item = {
                 "message_id": int(event.message.id),
                 "sender_id": sender_id,
