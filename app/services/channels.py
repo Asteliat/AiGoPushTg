@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.provider import AIUnavailableError, chat_completion_with_retry
-from app.storage.models import Account, AIAgent, ChannelAnalysis, ChannelBinding, Persona
+from app.storage.models import Account, AIAgent, ChannelAnalysis, ChannelBinding
 
 
 def channel_comment_threshold_action(action: str, comment_count: int, minimum: int) -> str:
@@ -71,13 +71,13 @@ async def analyze_channel_post(
     if existing:
         return existing
 
-    persona = await session.get(Persona, account.persona_id) if account.persona_id else None
     post_instructions = channel.post_instructions_override if channel.post_instructions_override is not None else account.channel_post_instructions
     comments_instructions = channel.comments_instructions_override if channel.comments_instructions_override is not None else account.channel_comments_instructions
     restrictions_instructions = channel.restrictions_instructions_override if channel.restrictions_instructions_override is not None else account.channel_restrictions_instructions
     style = build_channel_analysis_style(
-        persona_style=persona.style_instructions if persona else "",
-        account_style_override=account.persona_style_override,
+        # Channel automation deliberately does not inherit chat personas or chat rules.
+        persona_style="",
+        account_style_override="",
         post_instructions=post_instructions,
         comments_instructions=comments_instructions,
         restrictions_instructions=restrictions_instructions,
