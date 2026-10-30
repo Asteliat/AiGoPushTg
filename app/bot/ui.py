@@ -16,7 +16,7 @@ from telethon.tl.types import ChatInviteAlready
 from app.telegram_gateway.discovery import search_public_groups, search_web_groups, find_invite_links_in_dialogs
 from app.services.ai_responses import global_ai_enabled
 from app.services.chat_bindings import discovered_binding_values
-from app.services.channels import effective_channel_reply_mode, learn_channel_style
+from app.services.channels import effective_channel_reply_mode
 from app.settings import get_settings
 from app.storage.db import SessionFactory
 from app.storage.models import Account, AIAgent, AppSetting, ChatBinding, ChannelBinding, ChannelAnalysis, Example, Persona
