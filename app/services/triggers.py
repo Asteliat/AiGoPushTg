@@ -2,13 +2,22 @@
 from __future__ import annotations
 
 import re
+import shlex
 
 
 def parse_trigger_terms(raw: str) -> list[str]:
-    """Parse one or more trigger words/phrases separated by commas, semicolons or lines."""
+    """Parse comma-separated phrases or space-separated words; quote multiword terms."""
+    source = raw or ""
+    if re.search(r"[,;\\n]", source):
+        candidates = [" ".join(item.split()).strip() for item in re.split(r"[,;\\n]+", source)]
+    else:
+        try:
+            candidates = shlex.split(source)
+        except ValueError:
+            candidates = [source.strip()]
     values = []
     seen = set()
-    for item in re.split(r"[,;\n]+", raw or ""):
+    for item in candidates:
         term = " ".join(item.split()).strip()
         key = term.casefold()
         if term and key not in seen:
