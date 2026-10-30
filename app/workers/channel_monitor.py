@@ -1,10 +1,11 @@
 """Reliable per-post channel monitor with recovery after worker restarts.
 
-Only text-bearing channel posts are considered. Each post is tracked in the database,
-so Redis loss/restarts cannot cause completed analyses to be repeated. Replies use the
-account reply mode: automatic mode publishes them, manual mode sends drafts to the operator.
+Text and photo channel posts are analyzed independently from ordinary Chats.
+Channel publication mode and its settings never inherit the Chats reply mode.
 """
 import asyncio
+import base64
+import io
 import logging
 from datetime import datetime, timedelta, timezone
 import random
@@ -16,7 +17,7 @@ from telethon.errors import FloodWaitError
 from telethon.tl.functions.messages import GetDiscussionMessageRequest
 
 from app.ai.provider import AIUnavailableError
-from app.services.channels import analyze_channel_post, channel_comment_threshold_action, learn_channel_style
+from app.services.channels import analyze_channel_post, channel_comment_threshold_action, effective_channel_reply_mode, learn_channel_style
 from app.services.ai_responses import global_ai_enabled
 from app.storage.db import SessionFactory
 from app.storage.models import Account, AIAgent, ChannelAnalysis, ChannelBinding, ChannelPostState
@@ -90,6 +91,37 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
                     break
         found.reverse()
         return found
+
+    async def download_post_image_data_uri(message) -> str | None:
+        """Download and normalize a Telegram photo for a vision-capable AI model."""
+        if not getattr(message, "photo", None):
+            return None
+        try:
+            raw = await client.download_media(message, file=bytes)
+            if not raw:
+                return None
+            if not isinstance(raw, (bytes, bytearray)):
+                raise TypeError("Telegram did not return photo bytes")
+            if len(raw) > 20 * 1024 * 1024:
+                raise AIUnavailableError("Фотография слишком большая для анализа (лимит 20 МБ).")
+            from PIL import Image
+
+            with Image.open(io.BytesIO(raw)) as source:
+                source.load()
+                source.thumbnail((1600, 1600))
+                if source.mode not in {"RGB", "L"}:
+                    source = source.convert("RGB")
+                output = io.BytesIO()
+                source.save(output, format="JPEG", quality=82, optimize=True)
+            encoded = base64.b64encode(output.getvalue()).decode("ascii")
+            return "data:image/jpeg;base64," + encoded
+        except AIUnavailableError:
+            raise
+        except Exception as exc:
+            raise AIUnavailableError(
+                f"Не удалось подготовить фотографию публикации: {type(exc).__name__}: {str(exc)[:180]}"
+            ) from exc
+
 
     async def find_published_comment_ancestor(chat_id: int, message, immediate_parent=None, published_by_id=None):
         """Return the saved channel analysis only when a reply chain reaches our own comment."""
@@ -218,10 +250,11 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
             active_reply_polls.discard(binding_id)
 
 
-    async def process_post(channel_entity, channel_id: int, post_id: int, post_text: str, channel_title: str):
+    async def process_post(channel_entity, channel_id: int, post_id: int, post_text: str, channel_title: str, post_message=None):
         key = (channel_id, post_id)
-        if key in active_posts or not post_text.strip():
+        if key in active_posts or (not post_text.strip() and not getattr(post_message, "photo", None)):
             return
+        stored_post_text = post_text.strip() or "[Фотография без текстового описания]"
         active_posts.add(key)
         lock_key = f"atcivperson:channel-post:{account_id}:{channel_id}:{post_id}"
         cooldown_lock_key = None
@@ -280,7 +313,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
                         return
                     state.status = "processing"
                     state.attempts += 1
-                    state.post_text = post_text[:12000]
+                    state.post_text = stored_post_text
                     state.channel_title = channel_title[:255]
                     state.next_retry_at = None
                     state.last_error = ""
@@ -291,7 +324,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
                         channel_id=channel_id,
                         post_id=post_id,
                         channel_title=channel_title[:255],
-                        post_text=post_text[:12000],
+                        post_text=stored_post_text,
                         status="processing",
                         attempts=1,
                         updated_at=now,
@@ -395,9 +428,11 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
                     )
                     return
 
+                image_data_uri = await download_post_image_data_uri(post_message)
                 result = await analyze_channel_post(
                     db, account=account, channel=binding, post_id=post_id,
-                    post_text=post_text, comments=comments[:10],
+                    post_text=stored_post_text, comments=comments[:10],
+                    image_data_uri=image_data_uri,
                 )
                 result.discussion_group_id = group_peer_id
                 if not result.should_reply and result.publication_status == "pending":
@@ -449,7 +484,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
                         result.publication_status = "approved"
                         await db.commit()
 
-                mode = account.reply_mode
+                mode = effective_channel_reply_mode(account, binding)
                 account_name = account.display_name
                 effective_cooldown = (
                     binding.reply_cooldown_seconds_override
@@ -748,7 +783,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
 
     async def handle(event):
         message = event.message
-        if not message or not (message.message or "").strip():
+        if not message or (not (message.message or "").strip() and not getattr(message, "photo", None)):
             return
         if not event.is_channel or event.is_group:
             return
@@ -757,7 +792,10 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
             "Channel post event: account=%s channel_id=%s post_id=%s text_length=%s",
             account_id, channel_id, int(message.id), len(message.message or ""),
         )
-        spawn(process_post(event.chat, channel_id, int(message.id), message.message, getattr(event.chat, "title", "") or "Канал"))
+        spawn(process_post(
+            event.chat, channel_id, int(message.id), message.message,
+            getattr(event.chat, "title", "") or "Канал", post_message=message,
+        ))
 
     async def recovery_loop():
         """Revisit recent channel history to recover missed events and due retries."""
@@ -821,7 +859,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
                         # Discover the linked discussion group even when every recent post
                         # already has a completed analysis (and would otherwise be skipped).
                         async for recent_post in client.iter_messages(entity, limit=RECOVERY_SCAN_LIMIT):
-                            if (recent_post.message or "").strip():
+                            if (recent_post.message or "").strip() or getattr(recent_post, "photo", None):
                                 try:
                                     logging.info(
                                         "Discussion discovery started: account=%s channel_id=%s post_id=%s",
@@ -864,7 +902,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
                         spawn(poll_published_comment_replies(binding, entity))
                         async for message in client.iter_messages(entity, limit=RECOVERY_SCAN_LIMIT):
                             body = (message.message or "").strip()
-                            if not body:
+                            if not body and not getattr(message, "photo", None):
                                 continue
                             previous = state_by_post.get(int(message.id))
                             if previous:
@@ -895,6 +933,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
                             spawn(process_post(
                                 entity, int(binding.channel_id), int(message.id), body,
                                 binding.title or getattr(entity, "title", "") or "Канал",
+                                post_message=message,
                             ))
                     except Exception:
                         logging.exception(
