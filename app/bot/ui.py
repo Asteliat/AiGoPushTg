@@ -217,7 +217,10 @@ async def restore_previous_screen(c, callback_data):
         await edit(c, await home_text(), MAIN)
         return
     parts = callback_data.split(":")
-    if callback_data.startswith("acc:view:"): await acc_view(c, int(parts[2]))
+    if callback_data == "tool:menu": await tools_menu(c)
+    elif callback_data == "trigger:global": await trigger_screen(c, "global")
+    elif callback_data.startswith("trigger:account:"): await trigger_screen(c, "account", int(parts[2]))
+    elif callback_data.startswith("acc:view:"): await acc_view(c, int(parts[2]))
     elif callback_data == "acc:list": await acc_list(c)
     elif callback_data.startswith("acc:learnprompt:"): await acc_learning_prompt(c, int(parts[2]))
     elif callback_data.startswith("acc:learn:"): await acc_learning_menu(c, int(parts[2]))
@@ -298,6 +301,17 @@ def trigger_back_callback(scope: str, account_id: int | None = None) -> str:
 def trigger_rule_title(rule: TriggerRule) -> str:
     terms = ", ".join(parse_trigger_terms(rule.terms))
     return (terms[:42] + "…") if len(terms) > 43 else terms
+
+
+@router.callback_query(F.data == "trigger:global")
+async def trigger_global_menu(c: CallbackQuery):
+    await trigger_screen(c, "global")
+
+
+@router.callback_query(F.data.startswith("trigger:account:"))
+async def trigger_account_menu(c: CallbackQuery):
+    if not await check_cb(c): return
+    await trigger_screen(c, "account", int(c.data.split(":")[2]))
 
 
 async def trigger_screen(c: CallbackQuery, scope: str, account_id: int | None = None):
