@@ -91,6 +91,40 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
         found.reverse()
         return found
 
+    async def find_published_comment_ancestor(chat_id: int, message, immediate_parent=None):
+        """Return the saved channel analysis only when a reply chain reaches our own comment."""
+        async with SessionFactory() as db:
+            rows = list((await db.scalars(select(ChannelAnalysis).where(
+                ChannelAnalysis.account_id == account_id,
+                ChannelAnalysis.discussion_group_id == int(chat_id),
+                ChannelAnalysis.publication_status == "published",
+                ChannelAnalysis.published_comment_id.is_not(None),
+            ))).all())
+        if not rows:
+            return None
+        by_comment_id = {int(row.published_comment_id): row for row in rows}
+        header = getattr(message, "reply_to", None)
+        parent_id = int(getattr(header, "reply_to_msg_id", 0) or 0)
+        parent = immediate_parent
+        for _ in range(8):
+            if not parent_id:
+                return None
+            matched = by_comment_id.get(parent_id)
+            if matched:
+                return matched
+            if parent is None:
+                try:
+                    parent = await client.get_messages(chat_id, ids=parent_id)
+                except Exception:
+                    return None
+            if not parent:
+                return None
+            parent_header = getattr(parent, "reply_to", None)
+            parent_id = int(getattr(parent_header, "reply_to_msg_id", 0) or 0)
+            parent = None
+        return None
+
+
     async def poll_published_comment_replies(binding, channel_entity) -> None:
         """Recover only replies addressed to a comment previously published by this account."""
         binding_id = int(binding.id)
@@ -130,11 +164,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
                 ):
                     if comment.out or not (comment.message or "").strip():
                         continue
-                    reply_header = getattr(comment, "reply_to", None)
-                    if int(getattr(reply_header, "reply_to_msg_id", 0) or 0) != int(analysis.published_comment_id):
-                        continue
-
-                    async def get_reply_message(parent_id=int(analysis.published_comment_id)):
+                    async def get_reply_message(parent_id=int(getattr(comment.reply_to, "reply_to_msg_id", 0) or 0)):
                         return await client.get_messages(group_entity, ids=parent_id)
 
                     async def get_sender(comment=comment):
@@ -618,41 +648,41 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
             active_channel_learning.discard(binding_id)
 
     async def handle_reply_to_our_channel_comment(event):
-        """Route only direct replies to a comment this account actually published."""
+        """Route only replies whose reply-chain descends from our own published comment."""
         message = event.message
         if (
             not event.is_group or not message or message.out
             or not (message.message or "").strip()
             or not getattr(message, "reply_to", None)
+            or not int(message.sender_id or 0)
         ):
             return
 
-        parent_id = int(getattr(message.reply_to, "reply_to_msg_id", 0) or 0)
-        if not parent_id or int(message.sender_id or 0) == 0:
+        chat_id = int(event.chat_id)
+        try:
+            immediate_parent = await event.get_reply_message()
+        except Exception:
+            return
+        if not immediate_parent:
             return
 
         try:
-            parent = await event.get_reply_message()
+            sender = await event.get_sender()
+            if getattr(sender, "bot", False):
+                return
         except Exception:
-            return
-        if not parent or not parent.out:
+            pass
+
+        analysis = await find_published_comment_ancestor(chat_id, message, immediate_parent)
+        if not analysis:
             return
 
-        chat_id = int(event.chat_id)
         async with SessionFactory() as db:
             account = await db.get(Account, account_id)
             if (
                 not account or not account.enabled or account.manual_pause
-                or int(parent.sender_id or 0) != int(account.telegram_user_id or 0)
+                or int(message.sender_id or 0) == int(account.telegram_user_id or 0)
             ):
-                return
-            analysis = await db.scalar(select(ChannelAnalysis).where(
-                ChannelAnalysis.account_id == account_id,
-                ChannelAnalysis.discussion_group_id == chat_id,
-                ChannelAnalysis.published_comment_id == parent_id,
-                ChannelAnalysis.publication_status == "published",
-            ))
-            if not analysis:
                 return
             channel_title = analysis.channel_title or f"канал {analysis.channel_id}"
             chat_context = (
@@ -660,14 +690,14 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
                 "Используй его только чтобы понять, на что отвечает собеседник. "
                 "Дальше веди обычный диалог по настройкам раздела «Чаты».\n"
                 f"Исходная публикация:\n{analysis.post_text[:2500]}\n\n"
-                f"Комментарий аккаунта, на который ответил пользователь:\n{analysis.suggested_response[:1500]}"
+                f"Комментарий аккаунта, с которого начался диалог:\n{analysis.suggested_response[:1500]}"
             )
 
         if route_chat_reply is None:
             logging.warning(
                 "A reply to our channel comment was detected but no chat router is configured: "
-                "account=%s group_id=%s parent_id=%s",
-                account_id, chat_id, parent_id,
+                "account=%s group_id=%s comment_id=%s",
+                account_id, chat_id, int(analysis.published_comment_id),
             )
             return
 
@@ -676,9 +706,9 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
             return
         try:
             logging.info(
-                "Routing reply to our channel comment into Chats pipeline: "
-                "account=%s channel=%s group_id=%s parent_comment_id=%s message_id=%s",
-                account_id, channel_title, chat_id, parent_id, int(message.id),
+                "Routing reply-chain to our channel comment into Chats pipeline: "
+                "account=%s channel=%s group_id=%s root_comment_id=%s message_id=%s",
+                account_id, channel_title, chat_id, int(analysis.published_comment_id), int(message.id),
             )
             await route_chat_reply(event, channel_title, chat_context)
             await redis.set(lock_key, "done", ex=365 * 24 * 3600)
@@ -691,6 +721,7 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
                 "Could not route channel-comment reply into Chats pipeline: account=%s group_id=%s message_id=%s",
                 account_id, chat_id, int(message.id),
             )
+
 
     async def handle(event):
         message = event.message
