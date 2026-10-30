@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.settings import get_settings
-from app.storage.db import engine, get_session, init_db
+from app.storage.db import engine, get_session
 from app.storage.models import Account, AIAgent, Persona
 
 settings = get_settings()
@@ -17,7 +17,6 @@ async def lifespan(_: FastAPI):
     cfg = get_settings()
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     (cfg.data_dir / "sessions").mkdir(parents=True, exist_ok=True)
-    await init_db()
     yield
     await engine.dispose()
 
