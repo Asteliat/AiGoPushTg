@@ -115,8 +115,10 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
             # Establish a durable baseline once, so enabling polling does not trigger
             # replies to the entire historical comment archive. Redis AOF preserves it.
             baseline_key = f"atcivperson:channel-comment-poll-start:{account_id}:{binding.channel_id}"
+            # Include comments posted just before the first poll/deploy as well.
+            initial_baseline = _utcnow() - timedelta(minutes=5)
             await redis.set(
-                baseline_key, str(_utcnow().timestamp()), nx=True, ex=365 * 24 * 3600
+                baseline_key, str(initial_baseline.timestamp()), nx=True, ex=365 * 24 * 3600
             )
             baseline_raw = await redis.get(baseline_key)
             baseline = datetime.fromtimestamp(float(baseline_raw), timezone.utc)
