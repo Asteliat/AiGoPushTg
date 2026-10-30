@@ -172,8 +172,13 @@ def cancel_return_for(callback_data: str) -> str:
     if callback_data.startswith("logs:add:"): return f"logs:category:{parts[2]}"
     if callback_data.startswith(("runtime:input:", "runtime:apply:")): return "runtime:menu"
     if callback_data.startswith(("agent:rt:input:", "agent:channelrt:input:")): return f"agent:runtime:menu:{parts[3]}"
+    if callback_data.startswith("agent:edit:"): return f"agent:view:{parts[3]}"
     if callback_data.startswith("agent:"): return "agent:menu"
+    if callback_data.startswith("persona:edit:"): return f"persona:view:{parts[2]}"
     if callback_data.startswith("persona:"): return "persona:menu"
+    if callback_data.startswith("example:addacc:"): return f"example:account:{parts[2]}"
+    if callback_data.startswith("example:add:"): return f"persona:view:{parts[2]}" if parts[2] != "0" else "example:menu"
+    if callback_data.startswith("example:account:"): return callback_data
     if callback_data.startswith("example:"): return "example:menu"
     if callback_data.startswith("channel:"): return "channel:menu"
     if callback_data.startswith("acc:"): return f"acc:view:{parts[-1]}" if parts[-1].isdigit() else "acc:list"
