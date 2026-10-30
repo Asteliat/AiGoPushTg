@@ -588,6 +588,18 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
                 "Channel post processing failed: account=%s channel_id=%s post_id=%s",
                 account_id, channel_id, post_id,
             )
+            try:
+                async with SessionFactory() as db:
+                    failed_analysis = await db.scalar(select(ChannelAnalysis).where(
+                        ChannelAnalysis.account_id == account_id,
+                        ChannelAnalysis.channel_id == channel_id,
+                        ChannelAnalysis.post_id == post_id,
+                    ))
+                    if failed_analysis and failed_analysis.publication_status == "publishing":
+                        failed_analysis.publication_error = f"{type(exc).__name__}: {str(exc)[:500]}"
+                        await db.commit()
+            except Exception:
+                logging.exception("Could not save channel publication error: account=%s channel_id=%s post_id=%s", account_id, channel_id, post_id)
             await update_state(
                 channel_id, post_id, status="retry",
                 next_retry_at=_utcnow() + timedelta(minutes=5),
