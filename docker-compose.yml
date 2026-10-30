@@ -33,6 +33,34 @@ services:
     depends_on:
       postgres: {condition: service_healthy}
     networks: [internal]
+  backup:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      PGHOST: postgres
+      PGUSER: atcivperson
+      PGPASSWORD: $POSTGRES_PASSWORD
+      PGDATABASE: atcivperson
+    volumes:
+      - ./backups:/backups
+    command:
+      - sh
+      - -c
+      - |
+        mkdir -p /backups && chmod 700 /backups
+        while true; do
+          stamp=$(date -u +%Y%m%dT%H%M%SZ)
+          if pg_dump -Fc -f "/backups/atcivperson-$stamp.dump"; then
+            chmod 600 "/backups/atcivperson-$stamp.dump"
+            find /backups -maxdepth 1 -type f -name 'atcivperson-*.dump' -mtime +14 -delete
+          else
+            echo "Database backup failed" >&2
+          fi
+          sleep 86400
+        done
+    depends_on:
+      postgres: {condition: service_healthy}
+    networks: [internal]
   bot:
     build: .
     restart: unless-stopped
