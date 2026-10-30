@@ -24,7 +24,7 @@ from app.storage.models import Account, AIAgent, ChannelAnalysis, ChannelBinding
 
 SCAN_INTERVAL_SECONDS = 60
 RECOVERY_SCAN_LIMIT = 500
-COMMENT_POLL_POST_LIMIT = 20
+COMMENT_POLL_POST_LIMIT = 100
 COMMENT_POLL_COMMENT_LIMIT = 100
 PROCESSING_STALE_MINUTES = 20
 
@@ -125,6 +125,9 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
 
             async for post in client.iter_messages(channel_entity, limit=COMMENT_POLL_POST_LIMIT):
                 if not (post.message or "").strip():
+                    continue
+                reply_info = getattr(post, "replies", None)
+                if reply_info is not None and int(getattr(reply_info, "replies", 0) or 0) == 0:
                     continue
                 recent_comments = []
                 async for comment in client.iter_messages(
