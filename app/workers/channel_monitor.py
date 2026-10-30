@@ -313,6 +313,39 @@ def install_channel_monitor(client, account_id: int, redis, send_log):
                 active_posts.discard(key)
 
 
+    async def process_channel_learning(binding_id: int) -> None:
+        try:
+            async with SessionFactory() as db:
+                binding = await db.get(ChannelBinding, binding_id)
+                account = await db.get(Account, binding.account_id) if binding else None
+                if not binding or not account or binding.learning_status != "training":
+                    return
+                if not account.enabled or account.manual_pause:
+                    return
+            prompt = await learn_channel_style(client, account=account, channel=binding)
+            async with SessionFactory() as db:
+                current = await db.get(ChannelBinding, binding_id)
+                if current and current.learning_status == "training":
+                    current.learning_prompt = prompt
+                    current.learning_status = "idle"
+                    current.learning_started_at = None
+                    current.learning_completed_at = _utcnow()
+                    await db.commit()
+            await send_log("Автообучение канала завершено: " + binding.title, category="learning")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logging.exception("Channel learning failed for binding %s", binding_id)
+            async with SessionFactory() as db:
+                current = await db.get(ChannelBinding, binding_id)
+                if current and current.learning_status == "training":
+                    current.learning_status = "error"
+                    current.learning_started_at = None
+                    await db.commit()
+            await send_log("Ошибка автообучения канала: " + str(exc)[:500], category="errors")
+        finally:
+            active_channel_learning.discard(binding_id)
+
     async def handle_discussion_comment(event):
         message = event.message
         if not event.is_group or not message or message.out or not (message.message or "").strip():
