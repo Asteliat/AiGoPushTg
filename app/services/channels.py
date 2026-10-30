@@ -118,7 +118,11 @@ async def analyze_channel_post(
         on_topic = bool(parsed.get("on_topic"))
         summary = str(parsed.get("summary", "")).strip()[:3000]
         response = str(parsed.get("response", "")).strip()[:3000]
-        should_reply = bool(parsed.get("should_reply", bool(response)))
+        raw_should_reply = parsed.get("should_reply", bool(response))
+        if isinstance(raw_should_reply, str):
+            should_reply = raw_should_reply.strip().lower() in {"true", "1", "yes", "да"}
+        else:
+            should_reply = bool(raw_should_reply)
     except (ValueError, TypeError, AttributeError) as exc:
         raise AIUnavailableError("ИИ вернул некорректный формат анализа; результат не сохранён.") from exc
     if not summary or (should_reply and not response):
