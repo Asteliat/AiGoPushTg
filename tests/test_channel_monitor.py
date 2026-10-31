@@ -120,6 +120,9 @@ def test_legacy_posts_skipped_only_by_comment_threshold_are_reopened():
     assert is_legacy_comment_threshold_skip("skipped: 0 comments, minimum 2")
     assert not is_legacy_comment_threshold_skip("waiting for comments: 0/2")
     assert not is_legacy_comment_threshold_skip("skipped by AI: no reply")
+    assert not is_legacy_comment_threshold_skip(
+        "comment-threshold-timeout: skipped with 0 comments; minimum 2; action=skip"
+    )
 
 
 from app.services.channels import (
@@ -128,6 +131,53 @@ from app.services.channels import (
     is_multimodal_content_type_error,
     request_channel_analysis_completion,
 )
+
+from app.services.channels import (
+    channel_comment_threshold_decision,
+    decode_channel_comment_policy_action,
+    encode_channel_comment_policy_action,
+)
+
+
+def test_comment_threshold_waits_before_applying_timeout_action():
+    assert channel_comment_threshold_decision(
+        enabled=True, action="skip", comment_count=0, minimum=2, was_waiting=False
+    ) == "wait"
+    assert channel_comment_threshold_decision(
+        enabled=True, action="skip", comment_count=1, minimum=2, was_waiting=True
+    ) == "skip"
+
+
+def test_comment_threshold_wait_action_rechecks_until_minimum_is_reached():
+    assert channel_comment_threshold_decision(
+        enabled=True, action="wait", comment_count=1, minimum=2, was_waiting=True
+    ) == "wait"
+    assert channel_comment_threshold_decision(
+        enabled=True, action="wait", comment_count=2, minimum=2, was_waiting=True
+    ) == "continue"
+
+
+def test_skip_empty_only_skips_when_no_comments_exist_after_wait():
+    assert channel_comment_threshold_decision(
+        enabled=True, action="skip_empty", comment_count=0, minimum=2, was_waiting=True
+    ) == "skip"
+    assert channel_comment_threshold_decision(
+        enabled=True, action="skip_empty", comment_count=1, minimum=2, was_waiting=True
+    ) == "wait"
+
+
+def test_disabling_comment_threshold_bypasses_count_and_preserves_timeout_action():
+    assert channel_comment_threshold_decision(
+        enabled=False, action="skip", comment_count=0, minimum=2, was_waiting=False
+    ) == "continue"
+    for action in ("wait", "skip", "skip_empty"):
+        stored = encode_channel_comment_policy_action(False, action)
+        assert decode_channel_comment_policy_action(stored) == (False, action)
+        assert decode_channel_comment_policy_action(
+            encode_channel_comment_policy_action(True, action)
+        ) == (True, action)
+
+
 
 
 def test_text_only_channel_analysis_uses_string_content():

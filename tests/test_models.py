@@ -2,6 +2,7 @@ from app.storage.models import Account, AIAgent, ChannelAnalysis, ChannelBinding
 from app.services.channels import (
     effective_channel_chat_replies_enabled,
     effective_channel_reply_mode,
+    resolve_channel_comment_policy,
 )
 
 def test_account_has_learning_controls() -> None:
@@ -83,3 +84,18 @@ def test_legacy_comment_threshold_columns_remain_for_database_compatibility() ->
     channel_columns = set(ChannelBinding.__table__.columns.keys())
     assert {"channel_wait_seconds", "channel_min_comments", "channel_insufficient_action"} <= account_columns
     assert {"comment_wait_seconds", "comment_wait_seconds_override", "min_comments_override", "insufficient_action_override"} <= channel_columns
+
+
+def test_channel_comment_policy_uses_existing_global_values_and_channel_overrides() -> None:
+    account = Account(telegram_user_id=1, session_path="/tmp/account.session")
+    account.channel_wait_seconds = 300
+    account.channel_min_comments = 2
+    account.channel_insufficient_action = "wait"
+    channel = ChannelBinding(account_id=1, channel_id=100)
+
+    assert resolve_channel_comment_policy(account, channel) == (True, "wait", 2, 300)
+
+    channel.comment_wait_seconds_override = 60
+    channel.min_comments_override = 1
+    channel.insufficient_action_override = "off_skip"
+    assert resolve_channel_comment_policy(account, channel) == (False, "skip", 1, 60)

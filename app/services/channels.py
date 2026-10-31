@@ -20,6 +20,85 @@ def effective_channel_reply_mode(account: Account, channel: ChannelBinding) -> s
     return "automatic" if value == "automatic" else "manual"
 
 
+def decode_channel_comment_policy_action(value: str | None) -> tuple[bool, str]:
+    """Return whether the comment threshold is enabled and its timeout action.
+
+    Disabled values retain the previous action in the existing VARCHAR(10) column,
+    so toggling the condition off and on does not discard the user's chosen behavior.
+    """
+    raw = (value or "wait").strip().lower()
+    if raw == "off":
+        return False, "wait"
+    disabled_actions = {
+        "off_wait": "wait",
+        "off_skip": "skip",
+        "off_empty": "skip_empty",
+    }
+    if raw in disabled_actions:
+        return False, disabled_actions[raw]
+    if raw not in {"wait", "skip", "skip_empty"}:
+        return True, "wait"
+    return True, raw
+
+
+def encode_channel_comment_policy_action(enabled: bool, action: str) -> str:
+    """Store enabled state and timeout behavior in the legacy-compatible action column."""
+    normalized = action if action in {"wait", "skip", "skip_empty"} else "wait"
+    if enabled:
+        return normalized
+    return {
+        "wait": "off_wait",
+        "skip": "off_skip",
+        "skip_empty": "off_empty",
+    }[normalized]
+
+
+def resolve_channel_comment_policy(
+    account: Account,
+    channel: ChannelBinding | None = None,
+) -> tuple[bool, str, int, int]:
+    """Resolve threshold enabled state, timeout action, minimum count, and wait interval."""
+    raw_action = (
+        channel.insufficient_action_override
+        if channel is not None and channel.insufficient_action_override is not None
+        else account.channel_insufficient_action
+    )
+    enabled, action = decode_channel_comment_policy_action(raw_action)
+    minimum_value = (
+        channel.min_comments_override
+        if channel is not None and channel.min_comments_override is not None
+        else account.channel_min_comments
+    )
+    wait_value = (
+        channel.comment_wait_seconds_override
+        if channel is not None and channel.comment_wait_seconds_override is not None
+        else account.channel_wait_seconds
+    )
+    minimum = max(1, min(10, int(minimum_value or 2)))
+    wait_seconds = max(0, int(wait_value or 0))
+    return enabled, action, minimum, wait_seconds
+
+
+def channel_comment_threshold_decision(
+    *,
+    enabled: bool,
+    action: str,
+    comment_count: int,
+    minimum: int,
+    was_waiting: bool,
+) -> str:
+    """Decide whether to continue, wait another interval, or skip after a timeout."""
+    if not enabled or comment_count >= minimum:
+        return "continue"
+    if not was_waiting:
+        return "wait"
+    if action == "skip":
+        return "skip"
+    if action == "skip_empty" and comment_count == 0:
+        return "skip"
+    return "wait"
+
+
 def build_channel_analysis_user_text(
     post_text: str,
     comments: list[str],
