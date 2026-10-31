@@ -19,9 +19,11 @@ from telethon.tl.functions.messages import GetDiscussionMessageRequest
 from app.ai.provider import AIUnavailableError
 from app.services.channels import (
     analyze_channel_post,
+    channel_comment_threshold_decision,
     effective_channel_chat_replies_enabled,
     effective_channel_reply_mode,
     learn_channel_style,
+    resolve_channel_comment_policy,
 )
 from app.services.ai_responses import global_ai_enabled
 from app.storage.db import SessionFactory
@@ -369,6 +371,11 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
         cooldown_lock_key = None
         cooldown_lock_acquired = False
         lock_acquired = False
+        was_waiting = False
+        comment_policy_enabled = False
+        comment_policy_action = "wait"
+        min_comments = 2
+        wait_seconds = 300
         try:
             async with SessionFactory() as db:
                 account = await db.get(Account, account_id)
@@ -385,6 +392,13 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
                 ):
                     return
 
+                (
+                    comment_policy_enabled,
+                    comment_policy_action,
+                    min_comments,
+                    wait_seconds,
+                ) = resolve_channel_comment_policy(account, binding)
+
                 lock_acquired = bool(await redis.set(lock_key, "processing", nx=True, ex=30 * 60))
                 if not lock_acquired:
                     return
@@ -396,10 +410,14 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
                 ).with_for_update())
                 now = _utcnow()
                 if state:
+                    was_waiting = state.status == "waiting"
                     if state.status == "done":
                         await redis.set(lock_key, "done", ex=365 * 24 * 3600)
                         return
-                    if state.next_retry_at and state.next_retry_at > now:
+                    if (
+                        state.next_retry_at and state.next_retry_at > now
+                        and not (was_waiting and not comment_policy_enabled)
+                    ):
                         return
                     if state.status == "processing" and state.updated_at > now - timedelta(minutes=PROCESSING_STALE_MINUTES):
                         return
@@ -486,10 +504,54 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
             telegram_reply_count = getattr(reply_metadata, "replies", None)
             logging.info(
                 "Channel discussion context loaded: account=%s channel_id=%s post_id=%s "
-                "telegram_replies=%s text_comments=%s sources=[%s]; comment count does not gate analysis",
+                "telegram_replies=%s text_comments=%s sources=[%s] threshold_enabled=%s "
+                "minimum=%s action=%s was_waiting=%s",
                 account_id, channel_id, post_id, telegram_reply_count,
-                len(comments), comment_fetch_diagnostics,
+                len(comments), comment_fetch_diagnostics, comment_policy_enabled,
+                min_comments, comment_policy_action, was_waiting,
             )
+
+            threshold_decision = channel_comment_threshold_decision(
+                enabled=comment_policy_enabled,
+                action=comment_policy_action,
+                comment_count=len(comments),
+                minimum=min_comments,
+                was_waiting=was_waiting,
+            )
+            if threshold_decision == "wait":
+                delay_seconds = max(1, wait_seconds)
+                await update_state(
+                    channel_id, post_id,
+                    status="waiting",
+                    next_retry_at=_utcnow() + timedelta(seconds=delay_seconds),
+                    last_error=(
+                        f"waiting for comments: {len(comments)}/{min_comments}; "
+                        f"next check in {delay_seconds}s"
+                    ),
+                )
+                logging.info(
+                    "Channel post is waiting for discussion comments: account=%s "
+                    "channel_id=%s post_id=%s count=%s minimum=%s retry_in=%ss",
+                    account_id, channel_id, post_id, len(comments), min_comments, delay_seconds,
+                )
+                return
+            if threshold_decision == "skip":
+                reason = (
+                    f"comment-threshold-timeout: skipped with {len(comments)} comments; "
+                    f"minimum {min_comments}; action={comment_policy_action}"
+                )
+                await send_log(
+                    f"⏭ Публикация пропущена: за время ожидания не набралось нужное "
+                    f"количество комментариев. Канал: {channel_title} · пост #{post_id}. "
+                    f"Сейчас: {len(comments)}, требуется: {min_comments}.",
+                    category="channels",
+                )
+                await update_state(
+                    channel_id, post_id, status="done",
+                    next_retry_at=None, last_error=reason,
+                )
+                await redis.set(lock_key, "done", ex=365 * 24 * 3600)
+                return
 
             async with SessionFactory() as db:
                 account = await db.get(Account, account_id)
