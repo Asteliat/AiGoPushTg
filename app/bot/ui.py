@@ -16,7 +16,7 @@ from telethon.tl.types import ChatInviteAlready
 from app.telegram_gateway.discovery import search_public_groups, search_web_groups, find_invite_links_in_dialogs
 from app.services.ai_responses import global_ai_enabled
 from app.services.chat_bindings import discovered_binding_values
-from app.services.channels import effective_channel_chat_replies_enabled, effective_channel_reply_mode
+from app.services.channels import (\n    decode_channel_comment_policy_action,\n    encode_channel_comment_policy_action,\n    effective_channel_chat_replies_enabled,\n    effective_channel_reply_mode,\n    resolve_channel_comment_policy,\n)
 from app.settings import get_settings
 from app.storage.db import SessionFactory
 from app.storage.models import Account, AIAgent, AppSetting, ChatBinding, ChannelBinding, ChannelAnalysis, Example, Persona, TriggerRule
@@ -2949,6 +2949,8 @@ async def chat_toggle(c):
 # Channels: account -> channel -> channel card -> inherited/overridden settings.
 CHANNEL_SETTING_FIELDS = {
     "post_instructions": ("⚙️ Постов", "channel_post_instructions", "post_instructions_override", "text"),
+    "wait_seconds": ("⏱ Время ожидания", "channel_wait_seconds", "comment_wait_seconds_override", "seconds"),
+    "min_comments": ("💬 Минимум комментариев", "channel_min_comments", "min_comments_override", "min_comments"),
     "comments_instructions": ("⚙️ Комментариев", "channel_comments_instructions", "comments_instructions_override", "text"),
     "restrictions_instructions": ("⚙️ Ограничений", "channel_restrictions_instructions", "restrictions_instructions_override", "text"),
     "reply_probability": ("🎯 Вероятность ответа", "channel_reply_probability", "reply_probability_override", "percent"),
@@ -3120,7 +3122,7 @@ async def channel_settings_screen(c, scope, object_id):
     lines = [
         f"⚙️ {title}",
         "Общие значения этого аккаунта применяются ко всем его каналам. Индивидуальные настройки канала могут их переопределить.",
-        "Каждый непустой пост обрабатывается сразу. Комментарии аудитории — только дополнительный контекст, их количество не блокирует анализ. Пустые посты без текста и фото пропускаются.",
+        "ИИ анализирует публикацию и связанные с ней комментарии. При включённом условии бот сначала ждёт заданное количество комментариев; при выключенном — начинает анализ без ожидания.",
         "",
     ]
     rows = []
@@ -3149,6 +3151,17 @@ async def channel_settings_screen(c, scope, object_id):
     rows.append([(
         f"Ответы коммент {chat_replies_icon}",
         f"channel:chatreplies:info:{prefix}:{object_id}",
+    )])
+
+    policy_enabled, policy_action, policy_minimum, policy_wait = resolve_channel_comment_policy(account, binding)
+    policy_icon = "🟢" if policy_enabled else "🔴"
+    lines.append(
+        f"Условие по комментариям: {policy_icon} {'включено' if policy_enabled else 'выключено'} "
+        f"({policy_minimum} комментария · ожидание {format_duration(policy_wait)})"
+    )
+    rows.append([(
+        f"💬 Условие по комментариям {policy_icon}",
+        f"channel:commentpolicy:open:{prefix}:{object_id}",
     )])
     if binding is not None and binding.chat_replies_enabled_override is not None:
         rows.append([(
@@ -3200,6 +3213,194 @@ async def channel_custom_settings(c):
     if not await check_cb(c): return
     await channel_settings_screen(c, "channel", int(c.data.split(":")[2]))
 
+async def channel_comment_policy_screen(c, scope, object_id):
+    async with SessionFactory() as db:
+        if scope == "g":
+            account = await db.get(Account, object_id)
+            binding = None
+        else:
+            binding = await db.get(ChannelBinding, object_id)
+            account = await db.get(Account, binding.account_id) if binding else None
+    if not account or (scope == "c" and not binding):
+        await c.answer("Настройка не найдена.", show_alert=True)
+        return
+
+    enabled, action, minimum, wait_seconds = resolve_channel_comment_policy(account, binding)
+    icon = "🟢" if enabled else "🔴"
+    source = (
+        "глобальная настройка аккаунта"
+        if binding is None or binding.insufficient_action_override is None
+        else "индивидуальная настройка канала"
+    )
+    action_labels = {
+        "wait": "Продолжать ждать, пока не наберётся минимум",
+        "skip": "После одного интервала пропустить публикацию, если минимума нет",
+        "skip_empty": "Пропустить только если комментариев совсем нет; если они есть — продолжать ждать",
+    }
+    if enabled:
+        condition_text = (
+            f"Бот ждёт минимум {minimum} комментария в обсуждении новой публикации. "
+            "Как только порог достигнут, ИИ анализирует публикацию и комментарии, "
+            "определяет, относятся ли они к теме поста, и использует их как контекст "
+            "для собственного комментария."
+        )
+    else:
+        condition_text = (
+            "Условие выключено: бот не ждёт определённого количества комментариев "
+            "и передаёт публикацию на анализ сразу."
+        )
+    description = (
+        f"💬 Условие по комментариям {icon}\n"
+        f"Состояние: {'включено' if enabled else 'выключено'} · {source}.\n"
+        f"Минимум: {minimum}\n"
+        f"Время ожидания: {format_duration(wait_seconds)} ({wait_seconds} сек.)\n"
+        f"Действие после ожидания: {action_labels[action]}.\n\n"
+        f"{condition_text}\n\n"
+        "Вероятность публикации комментария остаётся отдельной настройкой и работает "
+        "по прежним правилам. Этот параметр её не изменяет."
+    )
+    prefix = "g" if scope == "g" else "c"
+    rows = [[(
+        "🔴 Выключить условие" if enabled else "🟢 Включить условие",
+        f"channel:commentpolicy:toggle:{prefix}:{object_id}",
+    )]]
+    rows.append([(
+        "⚙️ Настроить минимум, ожидание и действие",
+        f"channel:commentpolicy:config:{prefix}:{object_id}",
+    )])
+    back = f"channel:gsettings:{account.id}" if binding is None else f"channel:csettings:{binding.id}"
+    rows.append([("⬅️ К настройкам канала", back)])
+    await edit(c, description, kb(rows))
+
+
+async def channel_comment_policy_config_screen(c, scope, object_id):
+    async with SessionFactory() as db:
+        if scope == "g":
+            account = await db.get(Account, object_id)
+            binding = None
+        else:
+            binding = await db.get(ChannelBinding, object_id)
+            account = await db.get(Account, binding.account_id) if binding else None
+    if not account or (scope == "c" and not binding):
+        await c.answer("Настройка не найдена.", show_alert=True)
+        return
+
+    enabled, action, minimum, wait_seconds = resolve_channel_comment_policy(account, binding)
+    action_labels = {
+        "wait": "Ждать дальше до достижения минимума",
+        "skip": "Пропустить после одного интервала, если минимума нет",
+        "skip_empty": "Пропустить, только если комментариев нет совсем",
+    }
+    prefix = "g" if scope == "g" else "c"
+    description = (
+        "⚙️ Параметры условия по комментариям\n\n"
+        f"Условие: {'включено' if enabled else 'выключено'}\n"
+        f"Минимум комментариев: {minimum}\n"
+        f"Интервал ожидания: {format_duration(wait_seconds)} ({wait_seconds} сек.)\n"
+        f"Действие по окончании интервала: {action_labels[action]}\n\n"
+        "Если минимум ещё не набран, бот ждёт указанный интервал и проверяет обсуждение повторно. "
+        "При достижении минимума запускается анализ. Если минимум не набран, применяется "
+        "выбранное действие."
+    )
+    rows = [
+        [(f"💬 Минимум комментариев · {minimum}", f"channel:edit:{prefix}:{object_id}:min_comments")],
+        [(f"⏱ Время ожидания · {format_duration(wait_seconds)}", f"channel:edit:{prefix}:{object_id}:wait_seconds")],
+        [(f"⏭ Действие после ожидания · {action_labels[action]}", f"channel:commentpolicy:action:{prefix}:{object_id}")],
+        [("⬅️ Назад", f"channel:commentpolicy:open:{prefix}:{object_id}")],
+    ]
+    await edit(c, description, kb(rows))
+
+
+@router.callback_query(F.data.startswith("channel:commentpolicy:open:"))
+async def channel_comment_policy_open(c):
+    if not await check_cb(c): return
+    _, _, _, scope, object_raw = c.data.split(":")
+    if scope not in {"g", "c"}:
+        await c.answer("Неизвестная настройка.", show_alert=True)
+        return
+    await channel_comment_policy_screen(c, scope, int(object_raw))
+
+
+@router.callback_query(F.data.startswith("channel:commentpolicy:config:"))
+async def channel_comment_policy_config(c):
+    if not await check_cb(c): return
+    _, _, _, scope, object_raw = c.data.split(":")
+    if scope not in {"g", "c"}:
+        await c.answer("Неизвестная настройка.", show_alert=True)
+        return
+    await channel_comment_policy_config_screen(c, scope, int(object_raw))
+
+
+@router.callback_query(F.data.startswith("channel:commentpolicy:toggle:"))
+async def channel_comment_policy_toggle(c):
+    if not await check_cb(c): return
+    _, _, _, scope, object_raw = c.data.split(":")
+    if scope not in {"g", "c"}:
+        await c.answer("Неизвестная настройка.", show_alert=True)
+        return
+    object_id = int(object_raw)
+    async with SessionFactory() as db:
+        if scope == "g":
+            account = await db.get(Account, object_id)
+            if not account:
+                await c.answer("Аккаунт не найден.", show_alert=True)
+                return
+            enabled, action = decode_channel_comment_policy_action(account.channel_insufficient_action)
+            account.channel_insufficient_action = encode_channel_comment_policy_action(not enabled, action)
+        else:
+            binding = await db.get(ChannelBinding, object_id)
+            if not binding:
+                await c.answer("Канал не найден.", show_alert=True)
+                return
+            raw_action = (
+                binding.insufficient_action_override
+                if binding.insufficient_action_override is not None
+                else (await db.get(Account, binding.account_id)).channel_insufficient_action
+            )
+            enabled, action = decode_channel_comment_policy_action(raw_action)
+            binding.insufficient_action_override = encode_channel_comment_policy_action(not enabled, action)
+        await db.commit()
+    await channel_comment_policy_screen(c, scope, object_id)
+
+
+@router.callback_query(F.data.startswith("channel:commentpolicy:action:"))
+async def channel_comment_policy_action(c):
+    if not await check_cb(c): return
+    _, _, _, scope, object_raw = c.data.split(":")
+    if scope not in {"g", "c"}:
+        await c.answer("Неизвестная настройка.", show_alert=True)
+        return
+    object_id = int(object_raw)
+    async with SessionFactory() as db:
+        if scope == "g":
+            account = await db.get(Account, object_id)
+            if not account:
+                await c.answer("Аккаунт не найден.", show_alert=True)
+                return
+            enabled, action = decode_channel_comment_policy_action(account.channel_insufficient_action)
+            next_action = {"wait": "skip", "skip": "skip_empty", "skip_empty": "wait"}[action]
+            account.channel_insufficient_action = encode_channel_comment_policy_action(enabled, next_action)
+        else:
+            binding = await db.get(ChannelBinding, object_id)
+            if not binding:
+                await c.answer("Канал не найден.", show_alert=True)
+                return
+            account = await db.get(Account, binding.account_id)
+            if not account:
+                await c.answer("Аккаунт не найден.", show_alert=True)
+                return
+            raw_action = (
+                binding.insufficient_action_override
+                if binding.insufficient_action_override is not None
+                else account.channel_insufficient_action
+            )
+            enabled, action = decode_channel_comment_policy_action(raw_action)
+            next_action = {"wait": "skip", "skip": "skip_empty", "skip_empty": "wait"}[action]
+            binding.insufficient_action_override = encode_channel_comment_policy_action(enabled, next_action)
+        await db.commit()
+    await channel_comment_policy_config_screen(c, scope, object_id)
+
+
 @router.callback_query(F.data.startswith("channel:edit:"))
 async def channel_setting_edit(c, state: FSMContext):
     if not await check_cb(c): return
@@ -3208,7 +3409,7 @@ async def channel_setting_edit(c, state: FSMContext):
         await c.answer("Неизвестная настройка.", show_alert=True)
         return
     label, _, _, kind = CHANNEL_SETTING_FIELDS[field]
-    minimum, maximum = (0, 100) if kind == "percent" else (0, 2147483647) if kind == "seconds" else (0, 4000)
+    minimum, maximum = (1, 10) if kind == "min_comments" else (0, 100) if kind == "percent" else (0, 2147483647) if kind == "seconds" else (0, 4000)
     await state.clear()
     await state.update_data(channel_scope=scope, channel_object_id=int(object_raw), channel_field=field, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data))
     await state.set_state(Flow.channel_setting_value)
@@ -3218,6 +3419,8 @@ async def channel_setting_edit(c, state: FSMContext):
         hint = "Введите целое число секунд. Например: 3600 секунд = 01:00:00 (60 минут)."
     elif kind == "percent":
         hint = "Введите процент от 0 до 100."
+    elif kind == "min_comments":
+        hint = "Введите минимальное количество комментариев от 1 до 10."
     else:
         hint = "Введите число от 1 до 10."
     range_hint = f"Максимум: {maximum} сек. ({format_duration(maximum)})." if kind == "seconds" else f"Допустимый диапазон: {minimum}–{maximum}."
@@ -3243,7 +3446,7 @@ async def channel_setting_save(m: Message, state: FSMContext):
             await prompt_message(m, state, "Введите целое число.")
             return
         value = int(raw)
-        minimum, maximum = (0, 100) if kind == "percent" else (0, 2147483647)
+        minimum, maximum = (1, 10) if kind == "min_comments" else (0, 100) if kind == "percent" else (0, 2147483647)
         if not minimum <= value <= maximum:
             await prompt_message(m, state, f"Допустимый диапазон: {minimum}–{maximum}.")
             return
@@ -3261,8 +3464,14 @@ async def channel_setting_save(m: Message, state: FSMContext):
                 await finish_prompt(m, state, "Канал не найден.")
                 return
             setattr(binding, channel_attr, value)
+            if field == "wait_seconds":
+                binding.comment_wait_seconds = value
         await db.commit()
-    destination = f"channel:gsettings:{object_id}" if scope == "g" else f"channel:csettings:{object_id}"
+    destination = (
+        f"channel:commentpolicy:config:{scope}:{object_id}"
+        if field in {"wait_seconds", "min_comments"}
+        else f"channel:gsettings:{object_id}" if scope == "g" else f"channel:csettings:{object_id}"
+    )
     shown = format_duration(value) if kind == "seconds" else f"{value}%" if kind == "percent" else str(value)
     await finish_prompt(m, state, f"✅ {label}: {shown}", kb([[("⬅️ К настройкам", destination)], [("🏠 Главное меню", "nav:home")]]))
 
@@ -3410,8 +3619,7 @@ async def channel_legacy_action(c):
         await c.answer("Неизвестная настройка.", show_alert=True)
         return
     object_id = int(object_raw)
-    await c.answer("Ожидание комментариев больше не используется. Посты анализируются независимо от их количества.")
-    await channel_settings_screen(c, "global" if scope == "g" else "channel", object_id)
+    await channel_comment_policy_screen(c, scope, object_id)
 
 @router.callback_query(F.data.startswith("channel:inherit:"))
 async def channel_inherit(c):
