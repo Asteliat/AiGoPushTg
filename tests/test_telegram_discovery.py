@@ -92,3 +92,61 @@ def test_search_engine_captcha_is_reported_and_not_parsed(monkeypatch):
 
     assert results == []
     assert status == "captcha"
+
+
+
+def test_provider_cooldown_pauses_only_blocked_engine():
+    import app.telegram_gateway.discovery as discovery
+
+    discovery._PROVIDER_COOLDOWNS.clear()
+    discovery._PROVIDER_FAILURES.clear()
+
+    discovery._record_provider_status("Google", "captcha")
+
+    assert not discovery._provider_available("Google")
+    assert discovery._provider_available("Bing")
+    assert discovery._PROVIDER_FAILURES["Google"] == 1
+
+
+def test_provider_success_clears_its_cooldown():
+    import app.telegram_gateway.discovery as discovery
+
+    discovery._PROVIDER_COOLDOWNS["Google"] = 9999999999.0
+    discovery._PROVIDER_FAILURES["Google"] = 2
+
+    discovery._record_provider_status("Google", "ok")
+
+    assert discovery._provider_available("Google")
+    assert "Google" not in discovery._PROVIDER_FAILURES
+
+
+async def test_web_search_uses_short_cache(monkeypatch):
+    import app.telegram_gateway.discovery as discovery
+
+    discovery._SEARCH_CACHE.clear()
+    calls = 0
+
+    def fake_engine_search(engine, template, query, page=0):
+        nonlocal calls
+        calls += 1
+        return ([{
+            "id": None,
+            "title": "Python group",
+            "username": "python_group",
+            "link": "https://t.me/python_group",
+            "members": 0,
+            "verified": False,
+            "score": 24,
+            "source": engine,
+            "kind": "unknown",
+            "search_page": page + 1,
+        }], "ok")
+
+    monkeypatch.setattr(discovery, "_engine_search", fake_engine_search)
+    first = await discovery.search_web_groups("python cache test", pages_per_query=1)
+    first_call_count = calls
+    second = await discovery.search_web_groups("python cache test", pages_per_query=1)
+
+    assert first
+    assert second == first
+    assert calls == first_call_count
