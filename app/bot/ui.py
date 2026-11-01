@@ -2710,7 +2710,10 @@ async def chat_search_query(m: Message, state: FSMContext):
             f"{type(exc).__name__}: {str(exc)[:220]}\n\n"
             "Проверьте подключение аккаунта и повторите поиск.",
             kb([
-                [("🔎 Повторить поиск", f"chat:search:{aid}")],
+                [(
+                    "🔎 Повторить всеми аккаунтами" if len(account_ids) > 1 else "🔎 Повторить поиск",
+                    "tool:groups:all" if len(account_ids) > 1 else f"chat:search:{aid}",
+                )],
                 [("⬅️ Инструменты", "tool:menu")],
             ]),
         )
@@ -2729,7 +2732,10 @@ async def chat_search_query(m: Message, state: FSMContext):
             "а Telegram не предоставляет полный каталог всех публичных групп. "
             "Попробуйте синонимы, более короткий запрос или другую формулировку.",
             kb([
-                [("🔎 Новый запрос", f"chat:search:{aid}")],
+                [(
+                    "🔎 Новый поиск всеми аккаунтами" if len(account_ids) > 1 else "🔎 Новый запрос",
+                    "tool:groups:all" if len(account_ids) > 1 else f"chat:search:{aid}",
+                )],
                 [("⬅️ Инструменты", "tool:menu")],
             ]),
         )
