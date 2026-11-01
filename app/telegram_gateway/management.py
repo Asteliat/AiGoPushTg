@@ -307,7 +307,7 @@ async def resolve_peers_for_consent(account_id: int, peer_refs: list[str]) -> li
             for value in values:
                 entity = await client.get_entity(value)
                 if not getattr(entity, "id", None) or entity.__class__.__name__ in {"Channel", "Chat"}:
-                    raise ValueError(f"{raw} не является личным Telegram-аккаунтом.")
+                    raise ValueError(f"@{value} не является личным Telegram-аккаунтом.")
                 username = getattr(entity, "username", None)
                 if not username:
                     raise ValueError(f"У @{value} нет публичного username.")
