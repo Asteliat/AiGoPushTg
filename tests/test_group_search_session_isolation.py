@@ -44,10 +44,10 @@ async def test_group_candidate_verification_uses_isolated_session(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_group_candidate_verification_rejects_unauthorized_snapshot(monkeypatch):
-    client = SimpleNamespace(is_user_authorized=_unauthorized)
-
     async def _unauthorized():
         return False
+
+    client = SimpleNamespace(is_user_authorized=_unauthorized)
 
     @asynccontextmanager
     async def fake_isolated_client(_account):
