@@ -602,7 +602,6 @@ async def management_schedule_status(c: CallbackQuery):
     if not await check_cb(c):
         return
     schedule_id = int(c.data.rsplit(":", 1)[1])
-    all_items = []
     async with SessionFactory() as db:
         from app.storage.models import AutomationSchedule
         row = await db.get(AutomationSchedule, schedule_id)

@@ -8,7 +8,7 @@ from app.services.automation import dispatch_due_schedules, process_due_campaign
 async def automation_dispatcher() -> None:
     while True:
         try:
-            await dispatch_due_schedules(max_schedules=5)\n            await dispatch_due_schedules(max_schedules=5)
+            await dispatch_due_schedules(max_schedules=5)
             await process_due_campaigns(max_tasks=1)
         except asyncio.CancelledError:
             raise
