@@ -7,6 +7,7 @@ from sqlalchemy import select
 from app.settings import get_settings
 from app.storage.db import SessionFactory, init_db
 from app.storage.models import Account
+from app.telegram_gateway.session import configure_telethon_sqlite_session
 
 async def main() -> None:
     cfg = get_settings()
@@ -21,6 +22,7 @@ async def main() -> None:
         raise SystemExit("Некорректный номер.")
     session_path = folder / ("account_" + re.sub(r"\D", "", phone)[-12:])
     client = TelegramClient(str(session_path), cfg.telegram_api_id, cfg.telegram_api_hash)
+    configure_telethon_sqlite_session(client)
     await client.start(phone=phone)
     try:
         me = await client.get_me()
