@@ -127,9 +127,9 @@ async def test_batch_subscription_stops_on_floodwait(monkeypatch):
 
     class FakeClient:
         async def get_entity(self, target):
-            if target == "second":
+            if target == "first":
                 raise FloodWaitError(request=None, capture=17)
-            return SimpleNamespace(__class__=type("Channel", (), {}))
+            return SimpleNamespace(id=100, access_hash=200)
 
         async def __call__(self, request):
             return None
@@ -138,7 +138,13 @@ async def test_batch_subscription_stops_on_floodwait(monkeypatch):
     async def fake_client(_account_id):
         yield SimpleNamespace(id=1), FakeClient()
 
+    from app.services import automation
+
+    async def no_rate_limit(_account_id, _operation):
+        return None
+
+    monkeypatch.setattr(automation, "reserve_operation_slot", no_rate_limit)
     monkeypatch.setattr(management, "isolated_account_client", fake_client)
     result = await management.manage_subscriptions_batch(1, ["first", "second", "third"], action="join")
     assert result["flood_wait_seconds"] == 17
-    assert result["processed"] == 2
+    assert result["processed"] == 1
