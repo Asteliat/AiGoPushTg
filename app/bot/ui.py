@@ -731,6 +731,8 @@ async def management_campaign_status(c: CallbackQuery):
             f"📨 Задача #{task_id}\nТип: {item['kind']}\nСтатус: {item['status']}\n"
             f"Запуск UTC: {item['scheduled_at']}\nПолучатели: {counts}"
         )
+        if item["kind"] == "direct_invite":
+            text_value += f"\nЦелевая группа: {item.get('target_group_label') or 'не указана'}"
         if item["last_error"]:
             text_value += f"\nПоследняя информация: {item['last_error'][:500]}"
         log_lines = [
@@ -747,7 +749,7 @@ async def management_campaign_status(c: CallbackQuery):
             rows.append([(f"↻ {entry['peer_label'][:22]} · разрешить повтор", f"tool:campaign:resolve:{task_id}:{entry['peer_id']}:retry")])
         failed_count = int(item["recipients"].get("failed", 0) or 0)
         pending_count = int(item["recipients"].get("pending", 0) or 0)
-        if item["status"] in {"completed", "failed"} and (
+        if item["status"] in {"completed", "failed", "needs_review"} and (
             failed_count > 0 or (item["status"] == "failed" and pending_count > 0)
         ):
             rows.append([("🔁 Повторить неудачные доставки", f"tool:campaign:retry:{task_id}")])

@@ -289,9 +289,11 @@ async def campaign_status(task_id: int) -> dict:
             .order_by(AutomationTaskRecipient.id)
             .limit(100)
         )).all())
+        payload = json.loads(task.payload)
         return {
             "id": task.id, "account_id": task.account_id, "kind": task.kind, "status": task.status,
             "scheduled_at": _aware(task.scheduled_at).isoformat(),
+            "target_group_label": str(payload.get("target_group_label") or ""),
             "last_error": task.last_error, "recipients": counts,
             "delivery_log": [{
                 "peer_id": int(row.peer_id),
