@@ -176,18 +176,23 @@ async def revoke_consent(account_id: int, peer_id: int, *, scope: str | None = N
 
 async def list_consents(account_id: int, *, scope: str | None = None) -> list[dict]:
     async with SessionFactory() as db:
-        query = select(AutomationConsent).where(
-            AutomationConsent.account_id == account_id,
-            AutomationConsent.revoked_at.is_(None),
-        ).order_by(AutomationConsent.granted_at.desc())
-        if scope:
-            query = query.where(AutomationConsent.scope == scope)
-        rows = list((await db.scalars(query.limit(MAX_RECIPIENTS))).all())
-        result = [{
-            "peer_id": int(row.peer_id), "peer_ref": row.peer_ref, "peer_label": row.peer_label,
-            "scope": row.scope, "target_group_id": None, "target_group_label": "",
-            "granted_at": row.granted_at.isoformat(),
-        } for row in rows]
+        result = []
+        if scope != "direct_invite":
+            query = select(AutomationConsent).where(
+                AutomationConsent.account_id == account_id,
+                AutomationConsent.revoked_at.is_(None),
+                # Legacy unscoped direct-invite grants are not valid anymore.
+                AutomationConsent.scope != "direct_invite",
+            ).order_by(AutomationConsent.granted_at.desc())
+            if scope:
+                query = query.where(AutomationConsent.scope == scope)
+            rows = list((await db.scalars(query.limit(MAX_RECIPIENTS))).all())
+            result.extend({
+                "peer_id": int(row.peer_id), "peer_ref": row.peer_ref,
+                "peer_label": row.peer_label, "scope": row.scope,
+                "target_group_id": None, "target_group_label": "",
+                "granted_at": row.granted_at.isoformat(),
+            } for row in rows)
         if not scope or scope == "direct_invite":
             direct_rows = list((await db.scalars(select(AutomationInviteConsent).where(
                 AutomationInviteConsent.account_id == account_id,
@@ -200,6 +205,7 @@ async def list_consents(account_id: int, *, scope: str | None = None) -> list[di
                 "target_group_label": row.target_group_label,
                 "granted_at": row.granted_at.isoformat(),
             } for row in direct_rows)
+        result.sort(key=lambda item: item["granted_at"], reverse=True)
         return result[:MAX_RECIPIENTS]
 
 
