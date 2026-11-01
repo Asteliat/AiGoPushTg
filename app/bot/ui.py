@@ -562,7 +562,7 @@ async def management_campaign_status(c: CallbackQuery):
         elif item["status"] == "paused":
             rows.append([("▶️ Возобновить", f"tool:campaign:resume:{task_id}")])
             rows.append([("⛔ Отменить", f"tool:campaign:cancel-task:{task_id}")])
-        rows.append([("↩️ К задачам", "tool:campaign:list:0")])
+        rows.append([("↩️ К задачам", f"tool:campaign:list:{item['account_id']}")])
         await edit(c, text_value, kb(rows))
     except Exception as exc:
         await edit(c, f"Не удалось получить задачу: {type(exc).__name__}: {str(exc)[:250]}", back_home())
@@ -574,7 +574,6 @@ async def management_campaign_status(c: CallbackQuery):
 async def management_campaign_change(c: CallbackQuery):
     if not await check_cb(c):
         return
-    action, task_id_raw = c.data.rsplit(":", 2)[-2:]
     task_id = int(c.data.rsplit(":", 1)[1])
     status = {"pause": "paused", "resume": "queued", "cancel-task": "cancelled"}[c.data.split(":")[2]]
     try:
