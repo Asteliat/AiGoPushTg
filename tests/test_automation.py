@@ -88,3 +88,17 @@ def test_direct_invite_requires_a_target_group():
     assert payload["target_group_id"] == -100123456
     with pytest.raises(ValueError, match="целевую супергруппу"):
         _validate_payload("direct_invite", {})
+
+
+
+@pytest.mark.asyncio
+async def test_direct_invite_consent_requires_supergroup():
+    from app.services.automation import grant_direct_invite_consent
+
+    with pytest.raises(ValueError, match="супергруппу"):
+        await grant_direct_invite_consent(
+            1,
+            peer={"peer_id": 42, "peer_label": "User"},
+            group={"peer_id": -10042, "is_megagroup": False},
+            consent_source="user asked",
+        )
