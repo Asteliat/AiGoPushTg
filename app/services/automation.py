@@ -653,13 +653,21 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                             await db.commit()
                             break
                         # Consent is checked again immediately before each send.
-                        scope = "invite" if kind in {"invite", "direct_invite"} else ("group_publish" if kind == "group_broadcast" else "broadcast")
-                        consent = await db.scalar(select(AutomationConsent).where(
-                            AutomationConsent.account_id == account_id,
-                            AutomationConsent.peer_id == recipient.peer_id,
-                            AutomationConsent.scope == scope,
-                            AutomationConsent.revoked_at.is_(None),
-                        ))
+                        scope = "invite" if kind == "invite" else ("group_publish" if kind == "group_broadcast" else "broadcast")
+                        if kind == "direct_invite":
+                            consent = await db.scalar(select(AutomationInviteConsent).where(
+                                AutomationInviteConsent.account_id == account_id,
+                                AutomationInviteConsent.peer_id == recipient.peer_id,
+                                AutomationInviteConsent.target_group_id == int(payload["target_group_id"]),
+                                AutomationInviteConsent.revoked_at.is_(None),
+                            ))
+                        else:
+                            consent = await db.scalar(select(AutomationConsent).where(
+                                AutomationConsent.account_id == account_id,
+                                AutomationConsent.peer_id == recipient.peer_id,
+                                AutomationConsent.scope == scope,
+                                AutomationConsent.revoked_at.is_(None),
+                            ))
                         if not consent:
                             recipient.status = "skipped"
                             recipient.last_error = "Consent revoked before delivery."
