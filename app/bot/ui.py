@@ -594,6 +594,13 @@ async def management_campaign_status(c: CallbackQuery):
         )
         if item["last_error"]:
             text_value += f"\nПоследняя информация: {item['last_error'][:500]}"
+        log_lines = [
+            f"{entry['peer_label']} · {entry['status']} · попыток: {entry['attempts']}"
+            + (f" · {entry['last_error'][:120]}" if entry["last_error"] else "")
+            for entry in item.get("delivery_log", [])[:12]
+        ]
+        if log_lines:
+            text_value += "\n\nЖурнал доставок:\n" + "\n".join(log_lines)
         rows = []
         if int(item["recipients"].get("failed", 0) or 0) > 0 and item["status"] in {"completed", "failed"}:
             rows.append([("🔁 Повторить неудачные доставки", f"tool:campaign:retry:{task_id}")])
