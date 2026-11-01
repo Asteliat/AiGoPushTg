@@ -6,6 +6,7 @@ scrape participants, add strangers to groups, or bypass Telegram limits.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from datetime import datetime, timedelta, timezone
@@ -45,7 +46,7 @@ def _validate_payload(kind: str, payload: dict) -> dict:
         raise ValueError("Текст сообщения не должен превышать 4096 символов.")
     if not normalized["text"] and not normalized["file_path"]:
         raise ValueError("Добавьте текст или файл.")
-    if kind == "invite" and not re.search(r"(?:https?://)?t\\.me/", normalized["text"], re.I):
+    if kind == "invite" and not re.search(r"(?:https?://)?t\\.me/", normalized["text"] or normalized["caption"], re.I):
         raise ValueError("Для приглашения укажите текст и ссылку-приглашение t.me.")
     if normalized["file_path"]:
         root = (Path(get_settings().data_dir) / "automation_uploads").resolve()
@@ -194,6 +195,20 @@ async def campaign_status(task_id: int) -> dict:
             "scheduled_at": _aware(task.scheduled_at).isoformat(),
             "last_error": task.last_error, "recipients": counts,
         }
+
+
+async def list_campaigns(account_id: int, *, limit: int = 10) -> list[dict]:
+    async with SessionFactory() as db:
+        rows = list((await db.scalars(
+            select(AutomationTask).where(
+                AutomationTask.account_id == account_id
+            ).order_by(AutomationTask.id.desc()).limit(max(1, min(limit, 25)))
+        )).all())
+        return [{
+            "id": row.id, "kind": row.kind, "status": row.status,
+            "scheduled_at": _aware(row.scheduled_at).isoformat(),
+            "last_error": row.last_error,
+        } for row in rows]
 
 
 async def _account_limits(account_id: int) -> tuple[int, int]:
@@ -375,7 +390,7 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                                 item.delivered_at = utcnow()
                                 item.last_error = ""
                             await db.commit()
-                    await __import__("asyncio").sleep(interval)
+                    await asyncio.sleep(interval)
         except Exception as exc:
             async with SessionFactory() as db:
                 current = await db.get(AutomationTask, task_id)
@@ -389,7 +404,7 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
 
 
 __all__ = [
-    "campaign_status", "create_campaign", "grant_consent", "list_consents",
+    "campaign_status", "create_campaign", "grant_consent", "list_campaigns", "list_consents",
     "process_due_campaigns", "revoke_consent", "set_account_limits",
     "set_campaign_status",
 ]
