@@ -646,8 +646,8 @@ async def resolve_groups_for_consent(account_id: int, group_refs: list[str]) -> 
         if not value:
             raise ValueError(f"Некорректная ссылка на группу: {raw}")
         values.append(value)
-    if not values or len(values) > 100:
-        raise ValueError("Укажите от 1 до 100 групп.")
+    if not values or len(values) > 500:
+        raise ValueError("Укажите от 1 до 500 групп.")
     async with _account_lock(account_id):
         async with isolated_account_client(account_id) as (_account, client):
             result = []
