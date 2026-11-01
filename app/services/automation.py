@@ -286,6 +286,7 @@ async def _cleanup_campaign_upload(account_id: int, payload: dict) -> None:
                     (AutomationTask.status == "failed") & AutomationTaskRecipient.status.in_(
                         ["pending", "failed", "uncertain"]
                     ),
+                    (AutomationTask.status == "cancelled") & (AutomationTaskRecipient.status == "sending"),
                 ),
             ))
         if not int(active_schedules or 0) and not int(active_tasks or 0):
