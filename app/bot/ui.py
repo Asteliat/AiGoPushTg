@@ -2564,25 +2564,23 @@ def _candidate_keyboard(aid: int, candidates: list[dict], offset: int = 0):
     return kb(rows)
 
 
-async def _load_account_client(aid: int):
+@asynccontextmanager
+async def isolated_account_client(aid: int):
+    """Open an authorized account through a temporary session snapshot."""
     if not cfg.telegram_api_id or not cfg.telegram_api_hash:
         raise RuntimeError("Не заданы TELEGRAM_API_ID и TELEGRAM_API_HASH.")
     async with SessionFactory() as db:
         account = await db.get(Account, aid)
     if not account or not account.enabled:
         raise RuntimeError("Аккаунт не найден или отключён.")
-    client = TelegramClient(account.session_path, cfg.telegram_api_id, cfg.telegram_api_hash, proxy=telethon_proxy(account.proxy_config_encrypted))
-    await client.connect()
-    if not await client.is_user_authorized():
-        await client.disconnect()
-        raise RuntimeError("Сессия аккаунта не авторизована.")
-    return account, client
-
-async def _verify_group_candidates_isolated(account, candidates: list[dict], concurrency: int = 4):
-    """Verify search results on a snapshot, never opening the worker's live session."""
     async with isolated_telegram_client(account) as client:
         if not await client.is_user_authorized():
             raise RuntimeError("Сессия аккаунта не авторизована.")
+        yield account, client
+
+async def _verify_group_candidates_isolated(account, candidates: list[dict], concurrency: int = 4):
+    """Verify search results on a snapshot, never opening the worker's live session."""
+    async with isolated_account_client(account.id) as (_account, client):
         return await verify_group_candidates(client, candidates, concurrency=concurrency)
 
 
@@ -2821,11 +2819,8 @@ async def chat_discover_links(c):
         progress_text = f"🧭 Глубокий поиск ссылок · аккаунт #{aid}\n\nГрупп обработано: {groups}\nСообщений просмотрено: {messages:,}\nУникальных ссылок найдено: {links}\n\nСканирование продолжается…".replace(",", " ")
         await edit_anchor(c.bot, anchor, progress_text, kb([[("⬅️ К аккаунту", f"acc:view:{aid}")]]))
     try:
-        account, client = await _load_account_client(aid)
-        try:
+        async with isolated_account_client(aid) as (account, client):
             candidates = await find_invite_links_in_dialogs(client, dialog_limit=None, messages_per_dialog=5000, progress_callback=report_progress)
-        finally:
-            await client.disconnect()
     except Exception as exc:
         await edit_anchor(c.bot, {"ui_chat_id": c.message.chat.id, "ui_message_id": c.message.message_id}, f"Не удалось найти ссылки: {str(exc)[:180]}", kb([[("⬅️ К аккаунту", f"acc:view:{aid}")]]))
         return
@@ -2875,8 +2870,7 @@ async def chat_candidate_preview(c):
         await c.answer("У этой группы нет публичной ссылки.", show_alert=True); return
     try:
         kind, target = _parse_chat_link(link)
-        account, client = await _load_account_client(aid)
-        try:
+        async with isolated_account_client(aid) as (account, client):
             already = False
             if kind == "public":
                 entity = await client.get_entity(target)
@@ -2901,8 +2895,6 @@ async def chat_candidate_preview(c):
                     title = getattr(invite, "title", None) or "Закрытая группа"
                     members = len(getattr(invite, "participants", []) or []) or int(getattr(invite, "participants_count", 0) or 0)
                     entity_id = None
-        finally:
-            await client.disconnect()
     except Exception as exc:
         await edit(c, f"Не удалось проверить ссылку:\n{str(exc)[:220]}", kb([[("⬅️ К результатам", f"chat:results:{aid}")], [("⬅️ К аккаунту", f"acc:view:{aid}")]]))
         return
@@ -2953,8 +2945,7 @@ async def chat_join_link_input(m: Message, state: FSMContext):
     # Reuse the same guarded preview flow as search results.
     CHAT_PENDING_JOIN.pop((m.from_user.id, aid), None)
     try:
-        account, client = await _load_account_client(aid)
-        try:
+        async with isolated_account_client(aid) as (account, client):
             already = False
             if kind == "public":
                 entity = await client.get_entity(target)
@@ -2979,8 +2970,6 @@ async def chat_join_link_input(m: Message, state: FSMContext):
                     title = getattr(invite, "title", None) or "Закрытая группа"
                     members = len(getattr(invite, "participants", []) or []) or int(getattr(invite, "participants_count", 0) or 0)
                     entity_id = None
-        finally:
-            await client.disconnect()
     except Exception as exc:
         await edit_anchor(m.bot, anchor, f"Не удалось проверить ссылку:\n{str(exc)[:220]}", kb([[("🔗 Ввести другую ссылку", f"chat:joinlink:{aid}")], [("⬅️ К аккаунту", f"acc:view:{aid}")]]))
         return
@@ -2997,8 +2986,7 @@ async def chat_join_confirm(c):
     if not pending:
         await c.answer("Предпросмотр устарел. Проверьте ссылку ещё раз.", show_alert=True); return
     try:
-        account, client = await _load_account_client(aid)
-        try:
+        async with isolated_account_client(aid) as (account, client):
             entity = None
             if pending.get("already") and pending.get("entity_id"):
                 entity = await client.get_entity(pending["entity_id"])
@@ -3016,8 +3004,6 @@ async def chat_join_confirm(c):
                 raise ValueError("Ссылка не ведёт на группу.")
             chat_id = int(utils.get_peer_id(entity))
             title = (getattr(entity, "title", None) or pending["title"] or "Группа")[:255]
-        finally:
-            await client.disconnect()
     except Exception as exc:
         # Approval-only invite links are not equivalent to membership; explain that no binding was created.
         if "InviteRequestSentError" in type(exc).__name__:
@@ -3025,8 +3011,7 @@ async def chat_join_confirm(c):
             return
         if "UserAlreadyParticipantError" in type(exc).__name__:
             try:
-                account, client = await _load_account_client(aid)
-                try:
+                async with isolated_account_client(aid) as (account, client):
                     kind, target = pending["kind"], pending["target"]
                     if kind == "public":
                         entity = await client.get_entity(target)
@@ -3037,8 +3022,6 @@ async def chat_join_confirm(c):
                         raise RuntimeError("Не удалось определить уже доступную группу.")
                     chat_id = int(utils.get_peer_id(entity))
                     title = (getattr(entity, "title", None) or pending["title"] or "Группа")[:255]
-                finally:
-                    await client.disconnect()
             except Exception as nested:
                 await edit(c, f"Аккаунт уже состоит в группе, но не удалось обновить её в списке: {type(nested).__name__}.", kb([[("⬅️ К аккаунту", f"acc:view:{aid}")]]))
                 return
