@@ -549,3 +549,206 @@ async def find_invite_links_in_dialogs(
     if progress_callback:
         await progress_callback(scanned_groups, scanned_messages, len(found))
     return sorted(found.values(), key=lambda item: (bool(item.get("private_invite")), item["link"]), reverse=True)
+
+
+def _is_broadcast_channel(entity) -> bool:
+    """True only for broadcast channels, never groups/supergroups."""
+    return bool(
+        getattr(entity, "broadcast", False)
+        and not getattr(entity, "megagroup", False)
+        and not getattr(entity, "gigagroup", False)
+    )
+
+
+def _channel_quality(entity) -> tuple[int, int] | None:
+    if not _is_broadcast_channel(entity):
+        return None
+    if any(getattr(entity, flag, False) for flag in ("deleted", "scam", "fake", "restricted")):
+        return None
+    title = (getattr(entity, "title", "") or "").strip()
+    username = (getattr(entity, "username", "") or "").strip()
+    normalized = f"{title} {username}".casefold()
+    if not title or any(term in normalized for term in _HARD_SPAM):
+        return None
+
+    subscribers = int(getattr(entity, "participants_count", 0) or 0)
+    score = 45
+    if username:
+        score += 8
+    if subscribers >= 100:
+        score += 8
+    if subscribers >= 1000:
+        score += 8
+    if subscribers >= 10000:
+        score += 4
+    if getattr(entity, "verified", False):
+        score += 12
+    if any(term in normalized for term in _SOFT_SPAM):
+        score -= 18
+    if len(title) < 4:
+        score -= 8
+    return score, subscribers
+
+
+async def search_public_channels(client, query: str, limit: int = 100) -> list[dict]:
+    """Search Telegram's own public index and retain broadcast channels only."""
+    response = await client(ContactsSearchRequest(q=query[:100], limit=min(max(limit, 1), 100)))
+    found: dict[int, dict] = {}
+    for entity in response.chats:
+        quality = _channel_quality(entity)
+        username = getattr(entity, "username", None)
+        if quality is None or not username:
+            continue
+        score, subscribers = quality
+        item = {
+            "id": int(entity.id),
+            "title": (getattr(entity, "title", None) or username or str(entity.id))[:120],
+            "username": username,
+            "link": f"https://t.me/{username}",
+            "members": subscribers,
+            "verified": True,
+            "score": score,
+            "source": "Telegram",
+            "kind": "channel",
+        }
+        found[item["id"]] = item
+    return sorted(found.values(), key=lambda x: (x["score"], x["members"]), reverse=True)
+
+
+async def search_web_channels(query: str, limit: int = 600, pages_per_query: int = 5) -> list[dict]:
+    """Search public engines for channel links; Telegram verification happens separately."""
+    clean_query = " ".join((query or "").split())[:100]
+    if len(clean_query) < 2:
+        return []
+    # Prefixing the cache/search phrase keeps channel searches isolated from group searches.
+    results = await search_web_groups(
+        f"канал {clean_query}", limit=limit, pages_per_query=pages_per_query
+    )
+    return results
+
+
+async def verify_channel_candidates(
+    client, candidates: list[dict], concurrency: int = 4
+) -> list[dict]:
+    """Resolve every candidate with Telegram and keep broadcast channels only."""
+    semaphore = asyncio.Semaphore(max(1, min(concurrency, 8)))
+
+    async def verify(item: dict) -> dict | None:
+        parsed = _normalize_telegram_link(str(item.get("link") or ""))
+        if not parsed:
+            return None
+        link, kind, target = parsed
+        async with semaphore:
+            try:
+                if kind == "public":
+                    entity = await client.get_entity(target)
+                    quality = _channel_quality(entity)
+                    if quality is None:
+                        return None
+                    score, subscribers = quality
+                    username = getattr(entity, "username", None)
+                    if not username:
+                        return None
+                    return {
+                        **item,
+                        "id": int(entity.id),
+                        "title": (getattr(entity, "title", None) or item.get("title") or username)[:120],
+                        "username": username,
+                        "link": f"https://t.me/{username}",
+                        "members": subscribers,
+                        "verified": True,
+                        "score": max(score, int(item.get("score") or 0)),
+                        "kind": "channel",
+                    }
+
+                invite = await client(CheckChatInviteRequest(hash=target))
+                if isinstance(invite, ChatInviteAlready):
+                    entity = invite.chat
+                    quality = _channel_quality(entity)
+                    if quality is None:
+                        return None
+                    score, subscribers = quality
+                    username = getattr(entity, "username", None)
+                    canonical = f"https://t.me/{username}" if username else link
+                    return {
+                        **item,
+                        "id": int(entity.id),
+                        "title": (getattr(entity, "title", None) or item.get("title") or "Канал")[:120],
+                        "username": username,
+                        "link": canonical,
+                        "members": subscribers,
+                        "verified": True,
+                        "score": max(score, int(item.get("score") or 0)),
+                        "kind": "channel",
+                    }
+
+                # A private invite is accepted only when Telegram explicitly identifies
+                # it as a channel and not as a megagroup invite.
+                if not getattr(invite, "channel", False) or getattr(invite, "megagroup", False):
+                    return None
+                title = (getattr(invite, "title", None) or item.get("title") or "Приватный канал")[:120]
+                subscribers = int(getattr(invite, "participants_count", 0) or 0)
+                return {
+                    **item,
+                    "id": None,
+                    "title": title,
+                    "username": None,
+                    "link": link,
+                    "members": subscribers,
+                    "verified": True,
+                    "score": max(35, int(item.get("score") or 0)),
+                    "kind": "channel",
+                }
+            except FloodWaitError as exc:
+                await asyncio.sleep(min(max(int(exc.seconds), 1), 30))
+                try:
+                    if kind == "public":
+                        entity = await client.get_entity(target)
+                        quality = _channel_quality(entity)
+                        if quality is None:
+                            return None
+                        score, subscribers = quality
+                        username = getattr(entity, "username", None)
+                        if not username:
+                            return None
+                        return {
+                            **item,
+                            "id": int(entity.id),
+                            "title": (getattr(entity, "title", None) or username)[:120],
+                            "username": username,
+                            "link": f"https://t.me/{username}",
+                            "members": subscribers,
+                            "verified": True,
+                            "score": score,
+                            "kind": "channel",
+                        }
+                except Exception:
+                    return None
+                return None
+            except Exception:
+                return None
+
+    checked = await asyncio.gather(
+        *(verify(item) for item in candidates), return_exceptions=True
+    )
+    unique: dict[str, dict] = {}
+    for item in checked:
+        if not isinstance(item, dict) or not item.get("verified"):
+            continue
+        key = str(item.get("link") or "").casefold()
+        if not key:
+            continue
+        if key not in unique:
+            unique[key] = item
+        else:
+            current = unique[key]
+            current["score"] = max(int(current.get("score") or 0), int(item.get("score") or 0))
+            current["members"] = max(int(current.get("members") or 0), int(item.get("members") or 0))
+            current["source"] = ", ".join(dict.fromkeys(
+                (current.get("source", "") + ", " + item.get("source", "")).strip(", ").split(", ")
+            ))
+    return sorted(
+        unique.values(),
+        key=lambda x: (int(x.get("score") or 0), int(x.get("members") or 0)),
+        reverse=True,
+    )
