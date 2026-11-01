@@ -881,6 +881,8 @@ async def create_schedule(
     ends_at: datetime | None = None, max_runs: int = 30,
 ) -> int:
     """Create a recurring campaign; repeated sends require explicit opt-in and >=24h spacing."""
+    if kind == "direct_invite":
+        raise ValueError("Прямое добавление можно запланировать однократно, но не повторять автоматически.")
     normalized = _validate_payload(kind, payload)
     if not 86400 <= int(interval_seconds) <= 31536000:
         raise ValueError("Повторение должно быть от 24 часов до 365 дней.")
