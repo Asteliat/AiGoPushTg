@@ -20,7 +20,8 @@ from app.storage.db import SessionFactory
 from app.storage.models import (
     Account,
     AppSetting,
-     AutomationSchedule,
+    AutomationConsent,
+    AutomationSchedule,
     ScheduledReaction,
     AutomationOperationEvent,
     AutomationTask,
