@@ -448,6 +448,7 @@ async def management_account_menu(c: CallbackQuery):
         [("📷 Изменить фото профиля", f"tool:mg:photo:{aid}")],
         [("🤝 Добавить согласие", f"tool:mg:consent:{aid}"), ("🚫 Отозвать согласие", f"tool:mg:revokeconsent:{aid}")],
         [("📨 Создать рассылку / приглашение", f"tool:mg:campaign:{aid}")],
+        [("📋 Очередь и история задач", f"tool:mg:campaigns:{aid}")],
         [("⏱ Лимиты отправки", f"tool:mg:limits:{aid}")],
         [("⬅️ К аккаунтам", "tool:management")],
     ]))
@@ -482,6 +483,17 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         "campaign": "Формат: broadcast или invite | now либо YYYY-MM-DD HH:MM UTC | @user1,@user2. Только получатели с активным согласием; максимум 100 за задачу.",
         "limits": "Формат: интервал_секунд | максимум_сообщений_за_24ч. По умолчанию 30 | 50; диапазоны 1–3600 и 1–500.",
     }
+    if action == "campaigns":
+        items = await telegram_automation.list_campaigns(aid, limit=12)
+        if not items:
+            await edit(c, "Задач пока нет.", kb([[("↩️ К инструментам аккаунта", f"tool:management:account:{aid}")]]))
+            return
+        rows = []
+        for item in items:
+            rows.append([(f"#{item['id']} · {item['kind']} · {item['status']}", f"tool:campaign:status:{item['id']}")])
+        rows.append([("↩️ К инструментам аккаунта", f"tool:management:account:{aid}")])
+        await edit(c, "📋 Очередь и история задач\n\nВыберите задачу для просмотра статуса и управления.", kb(rows))
+        return
     if action == "profile":
         try:
             data = await telegram_management.get_profile(aid)
@@ -527,6 +539,64 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
     if action not in prompts:
         await c.answer("Неизвестное действие.", show_alert=True); return
     await management_prompt(c, state, action, aid, prompts[action])
+
+
+@router.callback_query(F.data.startswith("tool:campaign:status:"))
+async def management_campaign_status(c: CallbackQuery):
+    if not await check_cb(c):
+        return
+    task_id = int(c.data.rsplit(":", 1)[1])
+    try:
+        item = await telegram_automation.campaign_status(task_id)
+        counts = ", ".join(f"{key}: {value}" for key, value in item["recipients"].items()) or "нет"
+        text_value = (
+            f"📨 Задача #{task_id}\nТип: {item['kind']}\nСтатус: {item['status']}\n"
+            f"Запуск UTC: {item['scheduled_at']}\nПолучатели: {counts}"
+        )
+        if item["last_error"]:
+            text_value += f"\nПоследняя информация: {item['last_error'][:500]}"
+        rows = []
+        if item["status"] in {"queued", "running"}:
+            rows.append([("⏸ Приостановить", f"tool:campaign:pause:{task_id}")])
+            rows.append([("⛔ Отменить", f"tool:campaign:cancel-task:{task_id}")])
+        elif item["status"] == "paused":
+            rows.append([("▶️ Возобновить", f"tool:campaign:resume:{task_id}")])
+            rows.append([("⛔ Отменить", f"tool:campaign:cancel-task:{task_id}")])
+        rows.append([("↩️ К задачам", "tool:campaign:list:0")])
+        await edit(c, text_value, kb(rows))
+    except Exception as exc:
+        await edit(c, f"Не удалось получить задачу: {type(exc).__name__}: {str(exc)[:250]}", back_home())
+
+
+@router.callback_query(F.data.startswith("tool:campaign:pause:"))
+@router.callback_query(F.data.startswith("tool:campaign:resume:"))
+@router.callback_query(F.data.startswith("tool:campaign:cancel-task:"))
+async def management_campaign_change(c: CallbackQuery):
+    if not await check_cb(c):
+        return
+    action, task_id_raw = c.data.rsplit(":", 2)[-2:]
+    task_id = int(c.data.rsplit(":", 1)[1])
+    status = {"pause": "paused", "resume": "queued", "cancel-task": "cancelled"}[c.data.split(":")[2]]
+    try:
+        await telegram_automation.set_campaign_status(task_id, status)
+        await management_campaign_status(c)
+    except Exception as exc:
+        await c.answer(f"Не удалось изменить задачу: {str(exc)[:180]}", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("tool:campaign:list:"))
+async def management_campaign_list(c: CallbackQuery):
+    if not await check_cb(c):
+        return
+    aid = int(c.data.rsplit(":", 1)[1])
+    await management_campaigns_render(c, aid)
+
+
+async def management_campaigns_render(c: CallbackQuery, aid: int):
+    items = await telegram_automation.list_campaigns(aid, limit=12)
+    rows = [[(f"#{item['id']} · {item['kind']} · {item['status']}", f"tool:campaign:status:{item['id']}")] for item in items]
+    rows.append([("↩️ К инструментам аккаунта", f"tool:management:account:{aid}")])
+    await edit(c, "📋 Очередь и история задач\n\nВыберите задачу.", kb(rows))
 
 
 @router.callback_query(F.data == "tool:simulation")
