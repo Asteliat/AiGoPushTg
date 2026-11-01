@@ -128,7 +128,7 @@ class Flow(StatesGroup):
     runtime_value=State(); channel_setting_value=State(); log_chat_id=State()
     phone_number=State(); phone_code=State(); phone_password=State(); qr_password=State()
     chat_search_query=State(); chat_join_link=State(); channel_search_query=State()
-    trigger_terms=State(); trigger_response=State(); trigger_cooldown=State(); trigger_message_cooldown=State(); trigger_edit_value=State(); management_input=State(); management_campaign_content=State(); management_campaign_confirm=State()
+    trigger_terms=State(); trigger_response=State(); trigger_cooldown=State(); trigger_message_cooldown=State(); trigger_edit_value=State(); management_input=State(); management_campaign_content=State(); management_campaign_confirm=State(); management_photo=State()
 
 def admin(uid): return uid is not None and uid in cfg.admin_id_set
 def kb(rows):
@@ -445,6 +445,7 @@ async def management_account_menu(c: CallbackQuery):
         [("➕ Вступить в чат", f"tool:mg:join:{aid}"), ("➖ Выйти из чата", f"tool:mg:leave:{aid}")],
         [("❤️ Реакция на публикацию", f"tool:mg:reaction:{aid}")],
         [("✏️ Изменить профиль", f"tool:mg:editprofile:{aid}")],
+        [("📷 Изменить фото профиля", f"tool:mg:photo:{aid}")],
         [("🤝 Добавить согласие", f"tool:mg:consent:{aid}"), ("🚫 Отозвать согласие", f"tool:mg:revokeconsent:{aid}")],
         [("📨 Создать рассылку / приглашение", f"tool:mg:campaign:{aid}")],
         [("⏱ Лимиты отправки", f"tool:mg:limits:{aid}")],
@@ -506,6 +507,16 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
             await edit(c, "\n".join(lines)[:3900], kb([[("⬅️ К инструментам аккаунта", f"tool:management:account:{aid}")]]))
         except Exception as exc:
             await edit(c, f"Не удалось получить контакты: {type(exc).__name__}: {str(exc)[:250]}", back_home())
+        return
+    if action == "photo":
+        await state.clear()
+        await state.update_data(
+            management_action="photo", management_account_id=aid,
+            ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id,
+            return_callback=f"tool:management:account:{aid}",
+        )
+        await state.set_state(Flow.management_photo)
+        await edit(c, "Отправьте фотографию, которую нужно установить на профиль аккаунта. Поддерживается фото или изображение-документ до 10 МБ.", CANCEL)
         return
     if action == "campaign":
         await state.clear()
@@ -659,6 +670,43 @@ async def management_input_received(m: Message, state: FSMContext):
         )
     except Exception as exc:
         await prompt_message(m, state, f"❌ {type(exc).__name__}: {str(exc)[:500]}\n\nПроверьте ввод и попробуйте ещё раз.")
+
+@router.message(Flow.management_photo)
+async def management_photo_received(m: Message, state: FSMContext):
+    if not await check_msg(m) or not await private(m):
+        return
+    photo = m.photo[-1] if m.photo else None
+    if not photo and m.document and (m.document.mime_type or "").startswith("image/"):
+        photo = m.document
+    if not photo:
+        await prompt_message(m, state, "Отправьте изображение как фото или файл.")
+        return
+    if int(getattr(photo, "file_size", 0) or 0) > 10 * 1024 * 1024:
+        await prompt_message(m, state, "Изображение больше 10 МБ. Отправьте файл меньшего размера.")
+        return
+    data = await state.get_data()
+    aid = int(data.get("management_account_id") or 0)
+    path = os.path.join(tempfile.gettempdir(), f"atciv-profile-{aid}-{secrets.token_hex(8)}.jpg")
+    try:
+        await m.bot.download(photo, destination=path)
+        await telegram_management.set_profile_photo(aid, path)
+        await finish_prompt(m, state, "✅ Фото профиля обновлено.", kb([
+            [("↩️ К инструментам аккаунта", f"tool:management:account:{aid}")],
+            [("🏠 Главное меню", "nav:home")],
+        ]))
+    except telegram_management.FloodWaitError as exc:
+        await finish_prompt(m, state, f"Telegram установил FloodWait: {int(exc.seconds)} сек. Фото не загружено.", kb([
+            [("↩️ К инструментам аккаунта", f"tool:management:account:{aid}")],
+        ]))
+    except Exception as exc:
+        await prompt_message(m, state, f"Не удалось обновить фото: {type(exc).__name__}: {str(exc)[:350]}")
+    finally:
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except OSError:
+            logging.exception("Could not remove temporary profile photo %s", path)
+
 
 @router.message(Flow.management_campaign_content)
 async def management_campaign_content_received(m: Message, state: FSMContext):
