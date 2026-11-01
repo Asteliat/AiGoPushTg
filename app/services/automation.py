@@ -198,12 +198,20 @@ async def _cleanup_campaign_upload(account_id: int, payload: dict) -> None:
                 AutomationSchedule.status.in_(["active", "paused"]),
                 AutomationSchedule.payload.contains(str(candidate)),
             ))
-            active_tasks = await db.scalar(select(func.count()).select_from(
-                AutomationTask
+            active_tasks = await db.scalar(select(func.count(func.distinct(
+                AutomationTask.id
+            ))).select_from(AutomationTask).join(
+                AutomationTaskRecipient,
+                AutomationTaskRecipient.task_id == AutomationTask.id,
             ).where(
                 AutomationTask.account_id == account_id,
-                AutomationTask.status.in_(["queued", "running", "paused", "needs_review"]),
                 AutomationTask.payload.contains(str(candidate)),
+                or_(
+                    AutomationTask.status.in_(["queued", "running", "paused", "needs_review"]),
+                    (AutomationTask.status == "failed") & AutomationTaskRecipient.status.in_(
+                        ["pending", "failed", "uncertain"]
+                    ),
+                ),
             ))
         if not int(active_schedules or 0) and not int(active_tasks or 0):
             candidate.unlink(missing_ok=True)
