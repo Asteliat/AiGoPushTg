@@ -102,3 +102,18 @@ async def test_direct_invite_consent_requires_supergroup():
             group={"peer_id": -10042, "is_megagroup": False},
             consent_source="user asked",
         )
+
+
+
+@pytest.mark.asyncio
+async def test_direct_invite_schedule_must_be_one_shot():
+    from datetime import datetime, timezone
+    from app.services.automation import create_schedule
+
+    with pytest.raises(ValueError, match="однократно"):
+        await create_schedule(
+            1, kind="direct_invite", recipients=[42],
+            payload={"target_group_id": -100123},
+            starts_at=datetime.now(timezone.utc), interval_seconds=86400,
+            max_runs=3,
+        )
