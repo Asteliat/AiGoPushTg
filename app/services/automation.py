@@ -185,13 +185,19 @@ async def retry_failed_campaign(task_id: int) -> int:
         task = await db.get(AutomationTask, task_id)
         if not task or task.status in {"cancelled", "paused", "running"}:
             raise ValueError("Задачу нельзя повторить в текущем статусе.")
-        failed = list((await db.scalars(select(AutomationTaskRecipient).where(
+        retryable = list((await db.scalars(select(AutomationTaskRecipient).where(
             AutomationTaskRecipient.task_id == task_id,
-            AutomationTaskRecipient.status == "failed",
+            AutomationTaskRecipient.status.in_(["failed", "sending"]),
         ))).all())
-        if not failed:
-            raise ValueError("В задаче нет неудачных доставок для повтора.")
-        for recipient in failed:
+        pending_count = await db.scalar(select(func.count()).select_from(
+            AutomationTaskRecipient
+        ).where(
+            AutomationTaskRecipient.task_id == task_id,
+            AutomationTaskRecipient.status == "pending",
+        ))
+        if not retryable and not int(pending_count or 0):
+            raise ValueError("В задаче нет неотправленных получателей для повтора.")
+        for recipient in retryable:
             recipient.status = "pending"
             recipient.last_error = ""
         task.status = "queued"
@@ -200,7 +206,7 @@ async def retry_failed_campaign(task_id: int) -> int:
         task.last_error = ""
         task.updated_at = utcnow()
         await db.commit()
-        return len(failed)
+        return len(retryable) + int(pending_count or 0)
 
 
 async def campaign_status(task_id: int) -> dict:
@@ -476,15 +482,15 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
 
         async with SessionFactory() as db:
             final_task = await db.get(AutomationTask, task_id)
-            failed_count = await db.scalar(select(func.count()).select_from(
+            unfinished_count = await db.scalar(select(func.count()).select_from(
                 AutomationTaskRecipient
             ).where(
                 AutomationTaskRecipient.task_id == task_id,
-                AutomationTaskRecipient.status == "failed",
+                AutomationTaskRecipient.status.in_(["pending", "sending", "failed"]),
             ))
             if final_task and (
                 final_task.status == "cancelled"
-                or (final_task.status in {"completed", "failed"} and int(failed_count or 0) == 0)
+                or (final_task.status in {"completed", "failed"} and int(unfinished_count or 0) == 0)
             ):
                 try:
                     final_payload = json.loads(final_task.payload)
