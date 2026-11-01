@@ -479,7 +479,7 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         "reactionlimits": "Лимиты реакций: интервал в секундах | максимум за 24 часа | тихо с | тихо до (UTC). Пример: 30 | 50 | - | -.",
         "global-subscription": "Глобальные лимиты подписок: интервал | максимум за 24 часа | тихо с | тихо до (UTC). Пример: 10 | 20 | 23:00 | 07:00.",
         "global-reaction": "Глобальные лимиты реакций: интервал | максимум за 24 часа | тихо с | тихо до (UTC). Пример: 30 | 50 | - | -.",
-        "schedule": "Создание повторяющейся кампании. Формат: broadcast, invite или group_broadcast | старт now либо YYYY-MM-DD HH:MM UTC | интервал в часах (не менее 24) | число запусков (1–365) | @user1,@user2. Каждое повторение заново проверяет согласия.",
+        "schedule": "Создание повторяющейся кампании. Формат: broadcast, invite или group_broadcast | старт now либо YYYY-MM-DD HH:MM UTC | интервал в часах (не менее 24) | число запусков (1–365) | @user1,@user2. Каждый запуск повторно проверяет доступность получателей в Telegram.",
         "limits": "Формат: интервал_секунд | максимум_сообщений_за_24ч | тихо_с | тихо_до (UTC). Пример: 30 | 50 | 23:00 | 08:00. Без тихих часов: 30 | 50 | - | -.",
         "global-limits": "Глобальные значения по умолчанию для аккаунтов без индивидуального переопределения. Формат: интервал_секунд | максимум_сообщений_за_24ч | тихо_с | тихо_до (UTC). Пример: 30 | 50 | 23:00 | 08:00. Без тихих часов: 30 | 50 | - | -.",
     }
@@ -604,7 +604,7 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
             [("📣 Опубликовать в своей группе", f"tool:campaign:start:{aid}:group_broadcast:{mode}")],
             [("↩️ Назад", f"tool:management:account:{aid}")],
         ])
-        await edit(c, title + "\n\nВыберите конкретных получателей. Доступность личных сообщений и платные сообщения за Stars определяются самим Telegram; прямое добавление дополнительно проверяет приватность и право invite_users.",
+        await edit(c, title + "\n\nВыберите конкретных получателей. Доступность личных сообщений и требования Stars определяются самим Telegram; прямое добавление дополнительно проверяет приватность и право invite_users.",
             kb(type_rows))
         return
     if action not in prompts:
@@ -971,7 +971,7 @@ async def management_input_received(m: Message, state: FSMContext):
                     await prompt_message(m, state, "Шаг 2 из 3 · Целевая группа\n\nУкажите peer ID или @username супергруппы, где аккаунт является администратором.")
                 else:
                     await state.update_data(management_action="campaign_recipients")
-                    await prompt_message(m, state, "Шаг 2 из 3 · Получатели\n\nОтправьте @username или ссылку каждого получателя через запятую или с новой строки. Напишите ALL, чтобы выбрать всех с действующим согласием. Для публикации в группе укажите группы, где аккаунт администратор (можно peer ID из списка групп).")
+                    await prompt_message(m, state, "Шаг 2 из 3 · Получатели\n\nОтправьте @username или ссылку каждого получателя через запятую или с новой строки. Укажите конкретных получателей через @username. Для публикации в группе укажите группы, где аккаунт администратор (можно peer ID из списка групп).")
             return
         elif action == "campaign_interval":
             if not raw.isdigit() or not 1 <= int(raw) <= 8760:
@@ -993,7 +993,7 @@ async def management_input_received(m: Message, state: FSMContext):
             if next_action == "campaign_target_group":
                 await prompt_message(m, state, "Шаг 4 из 5 · Целевая группа\n\nУкажите peer ID или @username супергруппы, где аккаунт является администратором.")
             else:
-                await prompt_message(m, state, "Шаг 4 из 5 · Получатели\n\nОтправьте @username или ссылку каждого получателя через запятую или с новой строки. Напишите ALL, чтобы выбрать всех с действующим согласием. Для публикации в группе укажите группы, где аккаунт администратор.")
+                await prompt_message(m, state, "Шаг 4 из 5 · Получатели\n\nОтправьте @username или ссылку каждого получателя через запятую или с новой строки. Укажите конкретных получателей через @username. Для публикации в группе укажите группы, где аккаунт администратор.")
             return
         elif action == "campaign_target_group":
             group = await telegram_management.resolve_group_for_direct_invite(aid, raw)
@@ -1347,7 +1347,7 @@ async def management_campaign_content_received(m: Message, state: FSMContext):
         f"Запуск (UTC): {data.get('campaign_scheduled_at')}\nПолучатели: {', '.join(recipients[:12])}"
         + (" и другие" if len(recipients) > 12 else "")
         + f"\n\nТекст: {(payload['text'] or payload['caption'] or 'Файл без подписи')[:700]}\n\n"
-        ("Для прямого добавления Telegram проверит приватность и invite_users; " if kind == "direct_invite" else "Подтвердите запуск только если каждый адресат действительно дал согласие. ")
+        ("Для прямого добавления Telegram проверит приватность и invite_users; " if kind == "direct_invite" else "Проверьте список выбранных получателей перед запуском. ")
         + ("Для group_broadcast аккаунт должен быть администратором каждой группы." if kind == "group_broadcast" else "")
     )
     await delete_msg(m)
