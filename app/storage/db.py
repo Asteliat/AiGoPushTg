@@ -86,6 +86,8 @@ async def init_db() -> None:
             "CREATE TABLE IF NOT EXISTS automation_task_recipients (id SERIAL PRIMARY KEY, task_id INTEGER NOT NULL REFERENCES automation_tasks(id) ON DELETE CASCADE, peer_id BIGINT NOT NULL, peer_label VARCHAR(255) NOT NULL DEFAULT '', status VARCHAR(20) NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT '', delivered_at TIMESTAMPTZ NULL, CONSTRAINT uq_automation_task_recipient UNIQUE (task_id, peer_id))",
             "CREATE INDEX IF NOT EXISTS ix_automation_recipients_task_id ON automation_task_recipients (task_id)",
             "CREATE INDEX IF NOT EXISTS ix_automation_recipients_due ON automation_task_recipients (task_id, status)",
+            "ALTER TABLE automation_consents ADD COLUMN IF NOT EXISTS peer_ref VARCHAR(255) NOT NULL DEFAULT ''",
+            "ALTER TABLE automation_task_recipients ADD COLUMN IF NOT EXISTS peer_ref VARCHAR(255) NOT NULL DEFAULT ''",
             "ALTER TABLE ai_agents ADD COLUMN IF NOT EXISTS channel_reply_probability_override INTEGER NULL",
             "ALTER TABLE ai_agents ADD COLUMN IF NOT EXISTS channel_reply_cooldown_seconds_override INTEGER NULL",
             "ALTER TABLE channel_analyses ADD COLUMN IF NOT EXISTS should_reply BOOLEAN NOT NULL DEFAULT FALSE",
