@@ -116,3 +116,19 @@ def test_account_tool_queue_models_are_persistent():
     assert {"account_id", "kind", "recipients_json", "interval_seconds", "next_run_at", "max_runs"} <= set(AutomationSchedule.__table__.columns.keys())
     assert {"account_id", "chat_ref", "message_id", "emoji", "run_at", "status"} <= set(ScheduledReaction.__table__.columns.keys())
     assert {"account_id", "operation", "occurred_at"} <= set(AutomationOperationEvent.__table__.columns.keys())
+
+
+
+def test_direct_invite_consent_is_group_specific():
+    from app.storage.models import AutomationInviteConsent
+
+    columns = set(AutomationInviteConsent.__table__.columns.keys())
+    assert {"account_id", "peer_id", "target_group_id", "consent_source", "revoked_at"} <= columns
+    constraints = [
+        constraint for constraint in AutomationInviteConsent.__table__.constraints
+        if getattr(constraint, "name", None) == "uq_automation_invite_consent_target"
+    ]
+    assert len(constraints) == 1
+    assert {column.name for column in constraints[0].columns} == {
+        "account_id", "peer_id", "target_group_id"
+    }

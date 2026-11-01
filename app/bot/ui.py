@@ -521,7 +521,11 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
     if action == "consents":
         items = await telegram_automation.list_consents(aid)
         lines = [f"👥 Согласия аккаунта #{aid} · {len(items)}"]
-        lines.extend(f"{item['peer_label']} · @{item['peer_ref'].lstrip('@')} · {item['scope']}" for item in items)
+        lines.extend(
+            f"{item['peer_label']} · @{item['peer_ref'].lstrip('@')} · {item['scope']}"
+            + (f" → {item['target_group_label']}" if item.get("target_group_label") else "")
+            for item in items
+        )
         await edit(c, "\n".join(lines)[:3900] or "Согласий пока нет.", kb([[("↩️ К инструментам аккаунта", f"tool:management:account:{aid}")]]))
         return
     if action == "reactions":
