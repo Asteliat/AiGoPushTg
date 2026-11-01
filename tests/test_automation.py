@@ -22,7 +22,7 @@ def test_campaign_rejects_empty_payload():
 
 
 def test_campaign_rejects_unknown_kind():
-    with pytest.raises(ValueError, match="Поддерживаются"):
+    with pytest.raises(ValueError, match="Неизвестный тип кампании"):
         _validate_payload("members", {"text": "hello"})
 
 
