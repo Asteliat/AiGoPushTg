@@ -242,7 +242,7 @@ async def join_chat(account_id: int, link: str) -> None:
         async with isolated_account_client(account_id) as (_account, client):
             lowered = value.lower().rstrip("/")
             if "t.me/+" in lowered or "t.me/joinchat/" in lowered:
-                invite_hash = value.rstrip("/").rsplit("/", 1)[-1].lstrip("+")
+                invite_hash = value.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1].lstrip("+")
                 if not invite_hash:
                     raise ValueError("Некорректная приватная ссылка-приглашение.")
                 invite = await client(CheckChatInviteRequest(hash=invite_hash))
@@ -263,7 +263,7 @@ async def leave_chat(account_id: int, link: str) -> None:
         raise ValueError("Укажите ссылку или @username.")
     async with _account_lock(account_id):
         async with isolated_account_client(account_id) as (_account, client):
-            target = value.split("t.me/", 1)[1].split("/", 1)[0] if "t.me/" in value.lower() else value
+            target = value.split("t.me/", 1)[1].split("/", 1)[0].split("?", 1)[0] if "t.me/" in value.lower() else value
             entity = await client.get_entity(target)
             if entity.__class__.__name__ == "Chat":
                 await client.delete_dialog(entity)
