@@ -13,7 +13,7 @@ import re
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select
 
 from app.settings import get_settings
 from app.storage.db import SessionFactory
@@ -1038,6 +1038,10 @@ async def reserve_operation_slot(account_id: int, operation: str) -> None:
             values.get(f"automation.default.{operation}.daily_limit", str(default_daily)),
         ))))
         now = utcnow()
+        await db.execute(delete(AutomationOperationEvent).where(
+            AutomationOperationEvent.account_id == account_id,
+            AutomationOperationEvent.occurred_at < now - timedelta(days=7),
+        ))
         quiet_start = values.get(
             f"automation.{account_id}.{operation}.quiet_start_utc",
             values.get(f"automation.default.{operation}.quiet_start_utc", ""),
