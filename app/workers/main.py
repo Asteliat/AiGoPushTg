@@ -25,6 +25,7 @@ from app.services.triggers import select_matching_trigger
 from app.services.notifications import enqueue_notification, dispatch_pending_notifications
 from app.services.chat_bindings import discovered_binding_values
 from app.telegram_gateway.proxy import telethon_proxy
+from app.telegram_gateway.session import configure_telethon_sqlite_session
 
 async def heartbeat(redis):
     while True:
@@ -1007,6 +1008,7 @@ async def main():
                 retry_delay=2,
                 auto_reconnect=True,
             )
+            configure_telethon_sqlite_session(client)
             lease_task = asyncio.create_task(
                 maintain_session_lease(account.id, lease_token, client)
             )
