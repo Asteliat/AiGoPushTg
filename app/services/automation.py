@@ -882,6 +882,8 @@ async def dispatch_due_schedules(*, max_schedules: int = 10) -> int:
 
 async def resolve_uncertain_recipient(task_id: int, peer_id: int, *, delivered: bool) -> None:
     """Operator reconciliation for a delivery whose acknowledgement was lost."""
+    cleanup_payload = None
+    cleanup_account_id = None
     async with SessionFactory() as db:
         item = await db.scalar(select(AutomationTaskRecipient).where(
             AutomationTaskRecipient.task_id == task_id,
@@ -918,7 +920,12 @@ async def resolve_uncertain_recipient(task_id: int, peer_id: int, *, delivered: 
                 else:
                     task.status = "failed" if int(remaining_failed or 0) else "completed"
                     task.completed_at = utcnow()
+        if task and task.status == "completed":
+            cleanup_payload = json.loads(task.payload)
+            cleanup_account_id = task.account_id
         await db.commit()
+    if cleanup_payload is not None and cleanup_account_id is not None:
+        await _cleanup_campaign_upload(cleanup_account_id, cleanup_payload)
 
 
 
