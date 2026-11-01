@@ -291,16 +291,20 @@ async def get_chat_overview(account_id: int, link: str) -> ChatOverview:
             )
 
 
-async def parse_public_channel_posts(
+async def parse_chat_history(
     account_id: int, channel: str, *, limit: int = 20
 ) -> dict:
-    """Parse public broadcast-channel posts and their visible counters, never participants."""
+    """Parse recent messages from an accessible channel/group, never participant lists."""
     limit = max(1, min(int(limit), 100))
     async with _account_lock(account_id):
         async with isolated_account_client(account_id) as (_account, client):
             entity = await client.get_entity(channel.strip())
-            if not getattr(entity, "broadcast", False):
-                raise ValueError("Парсер публикаций работает только с каналами вещания, не с группами.")
+            if not (
+                getattr(entity, "broadcast", False)
+                or getattr(entity, "megagroup", False)
+                or entity.__class__.__name__ == "Chat"
+            ):
+                raise ValueError("Укажите канал или группу, историю которой аккаунт имеет право просматривать.")
             posts = []
             async for message in client.iter_messages(entity, limit=limit):
                 if not message or getattr(message, "action", None):
@@ -435,6 +439,6 @@ async def simulate_post_activity(
 __all__ = [
     "ChatOverview", "FloodWaitError", "add_contact", "delete_contact",
     "get_chat_overview", "get_profile", "join_chat", "leave_chat",
-    "import_contacts", "list_contacts", "parse_public_channel_posts", "react_to_message", "resolve_peer_for_consent", "resolve_peers_for_consent", "set_profile_photo", "simulate_post_activity",
+    "import_contacts", "list_contacts", "parse_chat_history", "react_to_message", "resolve_peer_for_consent", "resolve_peers_for_consent", "set_profile_photo", "simulate_post_activity",
     "update_profile",
 ]
