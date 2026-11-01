@@ -526,7 +526,7 @@ async def manage_subscriptions_batch(
                                 continue
                             await client(ImportChatInviteRequest(hash=invite_hash))
                         else:
-                            target = value.rsplit("/", 1)[-1] if "t.me/" in lowered else value
+                            target = value.split("t.me/", 1)[1].split("/", 1)[0].split("?", 1)[0] if "t.me/" in lowered else value
                             entity = await client.get_entity(target)
                             await client(JoinChannelRequest(entity))
                     else:
