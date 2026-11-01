@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import asyncio
 import html
+import logging
 import re
+import time
 from html.parser import HTMLParser
 from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 from urllib.request import Request, urlopen
@@ -26,6 +28,38 @@ _SOFT_SPAM = (
     "розыгрыш", "заработок", "сигналы", "инвестиции", "airdrop",
     "крипта", "crypto", "обменник", "продвижение", "подписчики",
 )
+_logger = logging.getLogger(__name__)
+
+_PROVIDER_COOLDOWNS: dict[str, float] = {}
+_PROVIDER_FAILURES: dict[str, int] = {}
+_SEARCH_CACHE: dict[str, tuple[float, list[dict]]] = {}
+_CACHE_TTL_SECONDS = 15 * 60
+_CACHE_MAX_ITEMS = 256
+
+
+def _provider_cooldown_seconds(status: str, failures: int) -> int:
+    base = {"captcha": 30 * 60, "blocked": 15 * 60, "rate_limited": 10 * 60}.get(status, 5 * 60)
+    return min(base * (2 ** min(max(failures - 1, 0), 4)), 6 * 60 * 60)
+
+
+def _provider_available(name: str, now: float | None = None) -> bool:
+    return _PROVIDER_COOLDOWNS.get(name, 0.0) <= (time.monotonic() if now is None else now)
+
+
+def _record_provider_status(name: str, status: str) -> None:
+    if status == "ok":
+        _PROVIDER_FAILURES.pop(name, None)
+        _PROVIDER_COOLDOWNS.pop(name, None)
+        return
+    if status not in {"captcha", "blocked", "rate_limited"}:
+        return
+    failures = _PROVIDER_FAILURES.get(name, 0) + 1
+    _PROVIDER_FAILURES[name] = failures
+    delay = _provider_cooldown_seconds(status, failures)
+    _PROVIDER_COOLDOWNS[name] = time.monotonic() + delay
+    _logger.warning("Group discovery provider %s paused for %ss (%s)", name, delay, status)
+
+
 _SPECIAL_NAMES = {
     "share", "addstickers", "addemoji", "proxy", "socks", "login", "iv",
     "confirmphone", "setlanguage", "boost", "giftcode", "premium", "c",
@@ -226,15 +260,23 @@ def _engine_search(engine: str, template: str, query: str, page: int = 0) -> tup
 
 
 async def search_web_groups(query: str, limit: int = 600, pages_per_query: int = 5) -> list[dict]:
-    """Search multiple public engines; stop querying an engine when it presents a CAPTCHA.
+    """Search public engines with independent cooldowns and a short result cache.
 
-    A CAPTCHA or rate limit disables only that engine for the current search. Other
-    engines continue independently, so one blocked provider cannot cancel discovery.
-    No CAPTCHA solving, stealth browser automation or anti-bot circumvention is used.
+    A CAPTCHA or provider block pauses only that provider. Subsequent searches
+    automatically skip it until its cooldown expires; healthy providers continue.
+    Telegram-native discovery is independent and remains available to the caller.
     """
     clean_query = " ".join((query or "").split())[:100]
     if len(clean_query) < 2:
         return []
+
+    cache_key = clean_query.casefold()
+    now = time.monotonic()
+    cached = _SEARCH_CACHE.get(cache_key)
+    if cached and cached[0] > now:
+        return [dict(item) for item in cached[1]][:max(1, min(int(limit), 1000))]
+    if cached:
+        _SEARCH_CACHE.pop(cache_key, None)
 
     engines = (
         ("Google", "https://www.google.com/search?q={q}&num=50&start={offset}"),
@@ -254,6 +296,9 @@ async def search_web_groups(query: str, limit: int = 600, pages_per_query: int =
 
     async def run_engine(name: str, template: str) -> list[dict]:
         collected: list[dict] = []
+        if not _provider_available(name):
+            _logger.info("Skipping group discovery provider %s during cooldown", name)
+            return collected
         async with semaphore:
             for term in terms:
                 for page in range(page_count):
@@ -261,12 +306,13 @@ async def search_web_groups(query: str, limit: int = 600, pages_per_query: int =
                         _engine_search, name, template, term, page
                     )
                     if status in {"captcha", "blocked", "rate_limited"}:
-                        # Do not hammer a provider after it explicitly blocks the request.
+                        _record_provider_status(name, status)
                         return collected
+                    if status == "ok":
+                        _record_provider_status(name, "ok")
                     collected.extend(batch)
                     if status == "error":
                         continue
-                    # A short pause keeps deep pagination from becoming a burst of requests.
                     if page + 1 < page_count:
                         await asyncio.sleep(0.25)
         return collected
@@ -297,7 +343,16 @@ async def search_web_groups(query: str, limit: int = 600, pages_per_query: int =
                 item["search_pages"] = [item.pop("search_page", 1)]
                 found[key] = item
     ordered = sorted(found.values(), key=lambda x: x["score"], reverse=True)
-    return ordered[:max(1, min(int(limit), 1000))]
+    result = ordered[:max(1, min(int(limit), 1000))]
+    _SEARCH_CACHE[cache_key] = (
+        time.monotonic() + _CACHE_TTL_SECONDS,
+        [dict(item) for item in result],
+    )
+    if len(_SEARCH_CACHE) > _CACHE_MAX_ITEMS:
+        oldest = sorted(_SEARCH_CACHE.items(), key=lambda entry: entry[1][0])
+        for old_key, _ in oldest[:len(_SEARCH_CACHE) - _CACHE_MAX_ITEMS]:
+            _SEARCH_CACHE.pop(old_key, None)
+    return result
 
 
 async def verify_group_candidates(client, candidates: list[dict], concurrency: int = 4) -> list[dict]:
