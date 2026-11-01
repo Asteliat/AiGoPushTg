@@ -467,7 +467,14 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                                 AutomationTaskRecipient.task_id == task_id,
                                 AutomationTaskRecipient.status == "uncertain",
                             ))
-                            current.status = "needs_review" if int(uncertain_count or 0) else "completed"
+                            failed_count = await db.scalar(select(func.count()).select_from(AutomationTaskRecipient).where(
+                                AutomationTaskRecipient.task_id == task_id,
+                                AutomationTaskRecipient.status == "failed",
+                            ))
+                            current.status = (
+                                "needs_review" if int(uncertain_count or 0)
+                                else ("failed" if int(failed_count or 0) else "completed")
+                            )
                             current.completed_at = utcnow()
                             current.updated_at = utcnow()
                             await db.commit()
@@ -493,13 +500,18 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                             recipient.last_error = "Consent revoked before delivery."
                             await db.commit()
                             continue
-                        sent_today = await db.scalar(select(func.count()).select_from(
+                        sent_query = select(func.count()).select_from(
                             AutomationTaskRecipient
                         ).join(AutomationTask).where(
                             AutomationTask.account_id == account_id,
                             AutomationTaskRecipient.status == "sent",
                             AutomationTaskRecipient.delivered_at >= now - timedelta(hours=24),
-                        ))
+                        )
+                        if kind == "invite":
+                            sent_query = sent_query.where(AutomationTask.kind == "invite")
+                        else:
+                            sent_query = sent_query.where(AutomationTask.kind.in_(["broadcast", "group_broadcast"]))
+                        sent_today = await db.scalar(sent_query)
                         if int(sent_today or 0) >= daily_limit:
                             current.status = "queued"
                             current.scheduled_at = now + timedelta(hours=24)

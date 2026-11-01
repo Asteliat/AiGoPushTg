@@ -687,7 +687,7 @@ async def management_campaign_status(c: CallbackQuery):
             failed_count > 0 or (item["status"] == "failed" and pending_count > 0)
         ):
             rows.append([("🔁 Повторить неудачные доставки", f"tool:campaign:retry:{task_id}")])
-        if item["status"] in {"queued", "running"}:
+        if item["status"] in {"queued", "running", "needs_review"}:
             rows.append([("⏸ Приостановить", f"tool:campaign:pause:{task_id}")])
             rows.append([("⛔ Отменить", f"tool:campaign:cancel-task:{task_id}")])
         elif item["status"] == "paused":
