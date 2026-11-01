@@ -833,7 +833,7 @@ async def management_campaign_content_received(m: Message, state: FSMContext):
         if not payload["text"]:
             await prompt_message(m, state, "Отправьте текст или прикрепите документ.")
             return
-    if kind == "invite" and not re.search(r"https?://t\\.me/|t\\.me/", payload["text"] or payload["caption"], re.I):
+    if kind == "invite" and not re.search(r"https?://t\.me/|t\.me/", payload["text"] or payload["caption"], re.I):
         await prompt_message(m, state, "В тексте приглашения должна быть ссылка t.me.")
         return
     await state.update_data(campaign_payload=payload)
