@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import sqlite3
 import tempfile
 import time
@@ -196,8 +197,11 @@ async def update_profile(
         raise ValueError("BIO должен быть не длиннее 70 символов.")
     if username is not None:
         username = username.strip().lstrip("@")
-        if username and not (5 <= len(username) <= 32):
-            raise ValueError("Username должен содержать от 5 до 32 символов.")
+        if username and not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{4,31}", username):
+            raise ValueError(
+                "Username должен начинаться с латинской буквы и содержать 5–32 символа: "
+                "латинские буквы, цифры или подчёркивание."
+            )
     async with _account_lock(account_id):
         async with isolated_account_client(account_id) as (_account, client):
             if any(value is not None for value in (first_name, last_name, about)):

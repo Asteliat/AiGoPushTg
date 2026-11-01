@@ -1373,7 +1373,14 @@ async def management_photo_received(m: Message, state: FSMContext):
         return
     data = await state.get_data()
     aid = int(data.get("management_account_id") or 0)
-    path = os.path.join(tempfile.gettempdir(), f"atciv-profile-{aid}-{secrets.token_hex(8)}.jpg")
+    original_name = getattr(photo, "file_name", None) or "profile.jpg"
+    extension = os.path.splitext(original_name)[1].lower()
+    if extension not in {".jpg", ".jpeg", ".png"}:
+        extension = ".jpg"
+    path = os.path.join(
+        tempfile.gettempdir(),
+        f"atciv-profile-{aid}-{secrets.token_hex(8)}{extension}",
+    )
     try:
         await m.bot.download(photo, destination=path)
         await telegram_management.set_profile_photo(aid, path)

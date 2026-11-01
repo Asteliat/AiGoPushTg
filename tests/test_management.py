@@ -191,3 +191,12 @@ def test_sqlite_session_snapshot_is_valid_and_independent(tmp_path):
     with sqlite3.connect(snapshot) as db:
         assert db.execute("SELECT value FROM session_data").fetchone()[0] == "original"
         assert db.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+
+
+
+@pytest.mark.asyncio
+async def test_update_profile_rejects_invalid_username_before_session_access():
+    from app.telegram_gateway.management import update_profile
+
+    with pytest.raises(ValueError, match="Username"):
+        await update_profile(1, username="bad username")
