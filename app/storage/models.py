@@ -254,3 +254,54 @@ class OutboxNotification(Base):
     last_error: Mapped[str] = mapped_column(Text, default="", server_default="", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AutomationConsent(Base):
+    """Explicit opt-in for one account to contact one Telegram peer for a scope."""
+    __tablename__ = "automation_consents"
+    __table_args__ = (UniqueConstraint("account_id", "peer_id", "scope", name="uq_automation_consent_peer_scope"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), index=True)
+    peer_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    peer_label: Mapped[str] = mapped_column(String(255), default="", server_default="", nullable=False)
+    scope: Mapped[str] = mapped_column(String(24), default="broadcast", server_default="broadcast", nullable=False)
+    consent_source: Mapped[str] = mapped_column(String(255), default="", server_default="", nullable=False)
+    granted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AutomationTask(Base):
+    """Durable scheduled campaign/task with resumable state."""
+    __tablename__ = "automation_tasks"
+    __table_args__ = (Index("ix_automation_tasks_due", "status", "scheduled_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(24), nullable=False)
+    payload: Mapped[str] = mapped_column(Text, default="{}", server_default="{}", nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="queued", server_default="queued", nullable=False, index=True)
+    scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str] = mapped_column(Text, default="", server_default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class AutomationTaskRecipient(Base):
+    """Per-recipient delivery record; retries never duplicate acknowledged deliveries."""
+    __tablename__ = "automation_task_recipients"
+    __table_args__ = (
+        UniqueConstraint("task_id", "peer_id", name="uq_automation_task_recipient"),
+        Index("ix_automation_recipients_due", "task_id", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("automation_tasks.id", ondelete="CASCADE"), index=True)
+    peer_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    peer_label: Mapped[str] = mapped_column(String(255), default="", server_default="", nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="pending", server_default="pending", nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    last_error: Mapped[str] = mapped_column(Text, default="", server_default="", nullable=False)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
