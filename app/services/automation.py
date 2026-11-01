@@ -596,8 +596,12 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                                 AutomationTaskRecipient.peer_id == peer_id,
                             ))
                             if item:
-                                item.status = "failed"
-                                item.last_error = f"{type(exc).__name__}: {str(exc)[:500]}"
+                                if kind == "group_invite" and type(exc).__name__ == "UserAlreadyParticipantError":
+                                    item.status = "skipped"
+                                    item.last_error = "User is already a member of the target group."
+                                else:
+                                    item.status = "failed"
+                                    item.last_error = f"{type(exc).__name__}: {str(exc)[:500]}"
                             await db.commit()
                     else:
                         async with SessionFactory() as db:
