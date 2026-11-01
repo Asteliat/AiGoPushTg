@@ -61,3 +61,16 @@ def test_quiet_hours_reject_partial_window():
 
     with pytest.raises(ValueError):
         _normalize_quiet_hours("22:00", None)
+
+
+
+def test_group_broadcast_payload_accepts_text():
+    from app.services.automation import _validate_payload
+
+    assert _validate_payload("group_broadcast", {"text": "Announcement"})["text"] == "Announcement"
+
+
+def test_operation_limit_quiet_hours_are_validated():
+    from app.services.automation import _normalize_quiet_hours
+
+    assert _normalize_quiet_hours("23:00", "07:00") == ("23:00", "07:00")

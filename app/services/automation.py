@@ -287,6 +287,10 @@ async def _account_limits(account_id: int, operation: str = "broadcast") -> tupl
                 f"automation.default.{operation}.daily_limit",
                 f"automation.{account_id}.{operation}.interval_seconds",
                 f"automation.{account_id}.{operation}.daily_limit",
+                f"automation.default.{operation}.quiet_start_utc",
+                f"automation.default.{operation}.quiet_end_utc",
+                f"automation.{account_id}.{operation}.quiet_start_utc",
+                f"automation.{account_id}.{operation}.quiet_end_utc",
             ])
         ))).all())
     values = {row.key: row.value for row in rows}
@@ -296,8 +300,18 @@ async def _account_limits(account_id: int, operation: str = "broadcast") -> tupl
     operation_daily = max(1, min(500, int(values.get(f"automation.default.{operation}.daily_limit", str(default_daily)))))
     interval = max(1, min(3600, int(values.get(f"automation.{account_id}.{operation}.interval_seconds", values.get(f"automation.{account_id}.interval_seconds", str(operation_interval))))))
     daily = max(1, min(500, int(values.get(f"automation.{account_id}.{operation}.daily_limit", values.get(f"automation.{account_id}.daily_limit", str(operation_daily))))))
-    quiet_start = values.get(f"automation.{account_id}.quiet_start_utc", values.get("automation.default.quiet_start_utc", "")) or None
-    quiet_end = values.get(f"automation.{account_id}.quiet_end_utc", values.get("automation.default.quiet_end_utc", "")) or None
+    quiet_start = values.get(
+        f"automation.{account_id}.{operation}.quiet_start_utc",
+        values.get(f"automation.{account_id}.quiet_start_utc",
+                   values.get(f"automation.default.{operation}.quiet_start_utc",
+                              values.get("automation.default.quiet_start_utc", ""))),
+    ) or None
+    quiet_end = values.get(
+        f"automation.{account_id}.{operation}.quiet_end_utc",
+        values.get(f"automation.{account_id}.quiet_end_utc",
+                   values.get(f"automation.default.{operation}.quiet_end_utc",
+                              values.get("automation.default.quiet_end_utc", ""))),
+    ) or None
     return interval, daily, quiet_start, quiet_end
 
 
@@ -618,7 +632,10 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
 __all__ = [
     "campaign_status", "create_campaign", "grant_consent", "list_campaigns", "list_consents",
     "process_due_campaigns", "reset_account_limits", "retry_failed_campaign", "revoke_consent", "set_account_limits",
-    "set_global_automation_limits",
+    "set_global_automation_limits", "set_operation_limits", "operation_limits",
+    "create_schedule", "list_schedules", "set_schedule_status", "dispatch_due_schedules",
+    "resolve_uncertain_recipient", "schedule_reaction", "list_scheduled_reactions",
+    "cancel_scheduled_reaction", "process_due_reactions",
     "set_campaign_status",
 ]
 
@@ -627,6 +644,7 @@ __all__ = [
 async def set_operation_limits(
     operation: str, *, interval_seconds: int, daily_limit: int,
     account_id: int | None = None,
+    quiet_start_utc: str | None = None, quiet_end_utc: str | None = None,
 ) -> None:
     """Set independent broadcast/invite cadence and daily caps, globally or per account."""
     if operation not in {"broadcast", "invite"}:
@@ -635,6 +653,7 @@ async def set_operation_limits(
         raise ValueError("Интервал должен быть от 1 до 3600 секунд.")
     if not 1 <= int(daily_limit) <= 500:
         raise ValueError("Дневной лимит должен быть от 1 до 500.")
+    quiet_start, quiet_end = _normalize_quiet_hours(quiet_start_utc, quiet_end_utc)
     prefix = f"automation.{account_id}" if account_id is not None else "automation.default"
     async with SessionFactory() as db:
         if account_id is not None and not await db.get(Account, account_id):
@@ -642,6 +661,8 @@ async def set_operation_limits(
         for suffix, value in (
             (f"{operation}.interval_seconds", str(int(interval_seconds))),
             (f"{operation}.daily_limit", str(int(daily_limit))),
+            (f"{operation}.quiet_start_utc", quiet_start),
+            (f"{operation}.quiet_end_utc", quiet_end),
         ):
             key = f"{prefix}.{suffix}"
             row = await db.get(AppSetting, key)

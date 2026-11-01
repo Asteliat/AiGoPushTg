@@ -478,10 +478,10 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         "revokeconsent": "Отправьте @username получателя. Его согласия на рассылки и приглашения будут отозваны.",
         "consents": "Показать сохранённые согласия.",
         "campaign": "Формат: broadcast, invite или group_broadcast | now либо YYYY-MM-DD HH:MM UTC | @получатель1,@получатель2. Только получатели с активным согласием; максимум 500 за задачу.",
-        "broadcastlimits": "Отправьте интервал в секундах | максимум отправок за 24 часа. Пример: 60 | 40.",
-        "invitelimits": "Отправьте интервал в секундах | максимум приглашений за 24 часа. Пример: 120 | 15.",
-        "global-broadcast": "Глобальные значения по умолчанию для рассылок: интервал в секундах | максимум отправок за 24 часа. Пример: 60 | 40.",
-        "global-invite": "Глобальные значения по умолчанию для приглашений: интервал в секундах | максимум приглашений за 24 часа. Пример: 120 | 15.",
+        "broadcastlimits": "Формат: интервал в секундах | максимум за 24 часа | тихо с HH:MM UTC или - | тихо до HH:MM UTC или -. Пример: 60 | 40 | 23:00 | 08:00.",
+        "invitelimits": "Формат: интервал в секундах | максимум за 24 часа | тихо с HH:MM UTC или - | тихо до HH:MM UTC или -. Пример: 120 | 15 | 22:00 | 07:00.",
+        "global-broadcast": "Глобальные значения для рассылок: интервал | максимум за 24 часа | тихо с | тихо до (UTC). Пример: 60 | 40 | 23:00 | 08:00.",
+        "global-invite": "Глобальные значения для приглашений: интервал | максимум за 24 часа | тихо с | тихо до (UTC). Пример: 120 | 15 | 22:00 | 07:00.",
         "schedule": "Создание повторяющейся кампании. Формат: broadcast, invite или group_broadcast | старт now либо YYYY-MM-DD HH:MM UTC | интервал в часах (не менее 24) | число запусков (1–365) | @user1,@user2. Каждое повторение заново проверяет согласия.",
         "limits": "Формат: интервал_секунд | максимум_сообщений_за_24ч | тихо_с | тихо_до (UTC). Пример: 30 | 50 | 23:00 | 08:00. Без тихих часов: 30 | 50 | - | -.",
         "global-limits": "Глобальные значения по умолчанию для аккаунтов без индивидуального переопределения. Формат: интервал_секунд | максимум_сообщений_за_24ч | тихо_с | тихо_до (UTC). Пример: 30 | 50 | 23:00 | 08:00. Без тихих часов: 30 | 50 | - | -.",
@@ -514,6 +514,12 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         lines = [f"👥 Согласия аккаунта #{aid} · {len(items)}"]
         lines.extend(f"{item['peer_label']} · @{item['peer_ref'].lstrip('@')} · {item['scope']}" for item in items)
         await edit(c, "\n".join(lines)[:3900] or "Согласий пока нет.", kb([[("↩️ К инструментам аккаунта", f"tool:management:account:{aid}")]]))
+        return
+    if action == "reactions":
+        items = await telegram_automation.list_scheduled_reactions(aid, limit=20)
+        rows = [[(f"#{item['id']} · {item['emoji']} · {item['status']}", f"tool:reaction:status:{item['id']}")] for item in items]
+        rows.append([("↩️ К инструментам аккаунта", f"tool:management:account:{aid}")])
+        await edit(c, "📆 Запланированные реакции\n\nВыберите запись." if items else "Запланированных реакций пока нет.", kb(rows))
         return
     if action == "schedules":
         items = await telegram_automation.list_schedules(aid, limit=20)
@@ -879,13 +885,13 @@ async def management_input_received(m: Message, state: FSMContext):
             message = f"Согласие отозвано. Обновлено записей: {count}."
         elif action in {"broadcastlimits", "invitelimits", "global-broadcast", "global-invite"}:
             parts = [x.strip() for x in raw.split("|")]
-            if len(parts) != 2:
-                raise ValueError("Формат: интервал в секундах | максимум операций за 24 часа.")
+            if len(parts) != 4:
+                raise ValueError("Формат: интервал | максимум за 24 часа | тихо с | тихо до. Для отключения тихих часов укажите - в обоих последних полях.")
             operation = "invite" if "invite" in action else "broadcast"
             scoped_account = None if action.startswith("global-") else aid
             await telegram_automation.set_operation_limits(
                 operation, interval_seconds=int(parts[0]), daily_limit=int(parts[1]),
-                account_id=scoped_account,
+                account_id=scoped_account, quiet_start_utc=parts[2], quiet_end_utc=parts[3],
             )
             message = f"Отдельные лимиты {'глобально' if scoped_account is None else f'аккаунта #{aid}'} для {'приглашений' if operation == 'invite' else 'рассылок'} сохранены."
         elif action == "global-limits":
