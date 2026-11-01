@@ -2523,7 +2523,8 @@ def _candidate_keyboard(aid: int, candidates: list[dict], offset: int = 0):
         navigation.append(("➡️ Ещё результаты", f"chat:page:{aid}:{offset + 12}"))
     if navigation:
         rows.append(navigation)
-    rows.append([("🔗 Показать ссылками", f"chat:links:{aid}")])
+    if any(item.get("verified") and item.get("link") for item in candidates):
+        rows.append([("🔗 Показать ссылками", f"chat:links:{aid}")])
     rows += [[("⬅️ Инструменты", "tool:menu"), ("🏠 Главное меню", "nav:home")]]
     return kb(rows)
 
