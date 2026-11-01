@@ -500,6 +500,7 @@ async def manage_subscriptions_batch(
         raise ValueError("Укажите от 1 до 20 ссылок за одну операцию.")
     results = []
     flood_wait = 0
+    local_limit_wait = 0
     from app.services.automation import OperationRateLimitError, reserve_operation_slot
     async with _account_lock(account_id):
         async with isolated_account_client(account_id) as (_account, client):
@@ -537,7 +538,7 @@ async def manage_subscriptions_batch(
                             await client(LeaveChannelRequest(entity))
                     results.append({"link": value, "status": "done", "error": ""})
                 except OperationRateLimitError as exc:
-                    flood_wait = exc.retry_after
+                    local_limit_wait = exc.retry_after
                     results.append({"link": value, "status": "local_limit", "error": str(exc)})
                     break
                 except FloodWaitError as exc:
@@ -548,7 +549,8 @@ async def manage_subscriptions_batch(
                     results.append({"link": value, "status": "failed", "error": f"{type(exc).__name__}: {str(exc)[:250]}"})
     return {
         "action": action, "processed": len(results), "total": len(normalized),
-        "flood_wait_seconds": flood_wait, "results": results,
+        "flood_wait_seconds": flood_wait, "local_limit_seconds": local_limit_wait,
+        "results": results,
     }
 
 

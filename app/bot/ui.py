@@ -1110,6 +1110,8 @@ async def management_input_received(m: Message, state: FSMContext):
             message = f"Пакетная операция завершена: {completed}/{result['total']} успешно, ошибок: {failed}."
             if result["flood_wait_seconds"]:
                 message += f"\n\n⏳ Telegram установил FloodWait: {result['flood_wait_seconds']} сек. Операция остановлена; повторного обхода ограничения не было."
+            if result["local_limit_seconds"]:
+                message += f"\n\n⏱ Сработал локальный лимит AtcivPerson. Продолжить можно через {result['local_limit_seconds']} сек."
             details = [f"{item['status']} · {item['link']}" + (f" · {item['error']}" if item["error"] else "") for item in result["results"]]
             message += "\n\n" + "\n".join(details[:15])
         elif action == "chatinfo":
