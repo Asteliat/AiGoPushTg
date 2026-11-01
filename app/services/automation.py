@@ -51,7 +51,7 @@ def _has_invite_permission(permissions) -> bool:
 
 
 async def _resolve_campaign_peer(client, peer_id: int, peer_ref: str = ""):
-    """Resolve by stored username but verify it still belongs to the consented peer ID.
+    """Resolve a selected peer and verify its username still maps to the saved ID.
 
     The temporary session snapshot may not retain entities discovered by an earlier
     temporary client. Resolving the saved username keeps access hashes available, while
@@ -62,7 +62,7 @@ async def _resolve_campaign_peer(client, peer_id: int, peer_ref: str = ""):
         if int(utils.get_peer_id(entity)) != int(peer_id):
             raise ValueError(
                 "Username получателя изменился и теперь указывает на другой аккаунт. "
-                "Обновите согласие перед повторной отправкой."
+                "Повторно выберите пользователя по актуальному username."
             )
         return entity
     return await client.get_entity(int(peer_id))
@@ -101,143 +101,6 @@ def _validate_payload(kind: str, payload: dict) -> dict:
     return normalized
 
 
-async def grant_direct_invite_consent(
-    account_id: int, *, peer: dict, group: dict, consent_source: str,
-) -> None:
-    """Record a separate, group-specific request to be directly added."""
-    if not group.get("is_megagroup") or not int(group.get("peer_id") or 0):
-        raise ValueError("Прямое приглашение доступно только в выбранную супергруппу.")
-    if not int(peer.get("peer_id") or 0) or not str(consent_source).strip():
-        raise ValueError("Не хватает получателя или источника согласия.")
-    async with SessionFactory() as db:
-        if not await db.get(Account, account_id):
-            raise ValueError("Аккаунт не найден.")
-        row = await db.scalar(select(AutomationInviteConsent).where(
-            AutomationInviteConsent.account_id == account_id,
-            AutomationInviteConsent.peer_id == int(peer["peer_id"]),
-            AutomationInviteConsent.target_group_id == int(group["peer_id"]),
-        ))
-        values = {
-            "peer_ref": str(peer.get("peer_ref") or ""),
-            "peer_label": str(peer.get("peer_label") or ""),
-            "target_group_ref": str(group.get("peer_ref") or ""),
-            "target_group_label": str(group.get("peer_label") or ""),
-            "consent_source": str(consent_source).strip()[:255],
-            "granted_at": utcnow(),
-            "revoked_at": None,
-        }
-        if row:
-            for key, value in values.items():
-                setattr(row, key, value)
-        else:
-            db.add(AutomationInviteConsent(
-                account_id=account_id, peer_id=int(peer["peer_id"]),
-                target_group_id=int(group["peer_id"]), **values,
-            ))
-        await db.commit()
-
-
-async def revoke_direct_invite_consent(
-    account_id: int, *, peer_id: int, target_group_id: int,
-) -> int:
-    async with SessionFactory() as db:
-        rows = list((await db.scalars(select(AutomationInviteConsent).where(
-            AutomationInviteConsent.account_id == account_id,
-            AutomationInviteConsent.peer_id == int(peer_id),
-            AutomationInviteConsent.target_group_id == int(target_group_id),
-            AutomationInviteConsent.revoked_at.is_(None),
-        ))).all())
-        for row in rows:
-            row.revoked_at = utcnow()
-        await db.commit()
-        return len(rows)
-
-
-
-async def grant_consent(
-    account_id: int, peer_id: int, *, peer_ref: str = "", peer_label: str = "",
-    scope: str = "broadcast", consent_source: str = "operator-confirmed",
-) -> None:
-    if scope not in {"broadcast", "invite", "group_publish"}:
-        raise ValueError("Неизвестный тип согласия.")
-    if int(peer_id) == 0:
-        raise ValueError("Некорректный Telegram ID.")
-    async with SessionFactory() as db:
-        account = await db.get(Account, account_id)
-        if not account:
-            raise ValueError("Аккаунт не найден.")
-        item = await db.scalar(select(AutomationConsent).where(
-            AutomationConsent.account_id == account_id,
-            AutomationConsent.peer_id == int(peer_id),
-            AutomationConsent.scope == scope,
-        ))
-        if item:
-            item.peer_ref = peer_ref[:255]
-            item.peer_label = peer_label[:255]
-            item.consent_source = consent_source[:255]
-            item.granted_at = utcnow()
-            item.revoked_at = None
-        else:
-            db.add(AutomationConsent(
-                account_id=account_id, peer_id=int(peer_id), peer_ref=peer_ref[:255],
-                peer_label=peer_label[:255], scope=scope,
-                consent_source=consent_source[:255],
-            ))
-        await db.commit()
-
-
-async def revoke_consent(account_id: int, peer_id: int, *, scope: str | None = None) -> int:
-    async with SessionFactory() as db:
-        query = select(AutomationConsent).where(
-            AutomationConsent.account_id == account_id,
-            AutomationConsent.peer_id == int(peer_id),
-            AutomationConsent.revoked_at.is_(None),
-        )
-        if scope:
-            query = query.where(AutomationConsent.scope == scope)
-        rows = list((await db.scalars(query)).all())
-        now = utcnow()
-        for item in rows:
-            item.revoked_at = now
-        await db.commit()
-        return len(rows)
-
-
-async def list_consents(account_id: int, *, scope: str | None = None) -> list[dict]:
-    async with SessionFactory() as db:
-        result = []
-        if scope != "direct_invite":
-            query = select(AutomationConsent).where(
-                AutomationConsent.account_id == account_id,
-                AutomationConsent.revoked_at.is_(None),
-                # Legacy unscoped direct-invite grants are not valid anymore.
-                AutomationConsent.scope != "direct_invite",
-            ).order_by(AutomationConsent.granted_at.desc())
-            if scope:
-                query = query.where(AutomationConsent.scope == scope)
-            rows = list((await db.scalars(query.limit(MAX_RECIPIENTS))).all())
-            result.extend({
-                "peer_id": int(row.peer_id), "peer_ref": row.peer_ref,
-                "peer_label": row.peer_label, "scope": row.scope,
-                "target_group_id": None, "target_group_label": "",
-                "granted_at": row.granted_at.isoformat(),
-            } for row in rows)
-        if not scope or scope == "direct_invite":
-            direct_rows = list((await db.scalars(select(AutomationInviteConsent).where(
-                AutomationInviteConsent.account_id == account_id,
-                AutomationInviteConsent.revoked_at.is_(None),
-            ).order_by(AutomationInviteConsent.granted_at.desc()).limit(MAX_RECIPIENTS))).all())
-            result.extend({
-                "peer_id": int(row.peer_id), "peer_ref": row.peer_ref,
-                "peer_label": row.peer_label, "scope": "direct_invite",
-                "target_group_id": int(row.target_group_id),
-                "target_group_label": row.target_group_label,
-                "granted_at": row.granted_at.isoformat(),
-            } for row in direct_rows)
-        result.sort(key=lambda item: item["granted_at"], reverse=True)
-        return result[:MAX_RECIPIENTS]
-
-
 async def create_campaign(
     account_id: int, *, kind: str, recipients: list[int],
     payload: dict, scheduled_at: datetime | None = None,
@@ -251,7 +114,6 @@ async def create_campaign(
     due = _aware(scheduled_at or utcnow())
     if due < utcnow() - timedelta(minutes=1):
         raise ValueError("Время запуска уже прошло.")
-    scope = "invite" if kind == "invite" else ("group_publish" if kind == "group_broadcast" else "broadcast")
     async with SessionFactory() as db:
         account = await db.get(Account, account_id)
         if not account or not account.enabled:
@@ -601,7 +463,7 @@ async def _maintain_campaign_lease(task_id: int) -> None:
 
 
 async def process_due_campaigns(*, max_tasks: int = 1) -> int:
-    """Process due opt-in campaigns. Called repeatedly by the dedicated worker loop."""
+    """Process due campaigns. Called repeatedly by the dedicated worker loop."""
     from telethon.errors import FloodWaitError
     from app.telegram_gateway.management import isolated_account_client
 
@@ -845,9 +707,8 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
 
 
 __all__ = [
-    "campaign_status", "create_campaign", "grant_consent", "grant_direct_invite_consent",
-    "revoke_direct_invite_consent", "list_campaigns", "list_consents",
-    "process_due_campaigns", "reset_account_limits", "retry_failed_campaign", "revoke_consent", "set_account_limits",
+    "campaign_status", "create_campaign", "list_campaigns",
+    "process_due_campaigns", "reset_account_limits", "retry_failed_campaign", "set_account_limits",
     "set_global_automation_limits", "set_operation_limits", "operation_limits",
     "create_schedule", "list_schedules", "set_schedule_status", "dispatch_due_schedules",
     "resolve_uncertain_recipient", "schedule_reaction", "list_scheduled_reactions",
