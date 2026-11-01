@@ -828,7 +828,7 @@ async def management_input_received(m: Message, state: FSMContext):
                     f"Просмотры: {post['views']} · Пересылки: {post['forwards']} · Ответы: {post['replies']}\n"
                     f"Реакции: {reactions}\n{post['text'][:450] or '[медиа без текста]'}"
                 )
-            message = "\\n\\n".join(lines)[:3900]
+            message = "\n\n".join(lines)[:3900]
         elif action == "parseparticipants":
             parts = [x.strip() for x in raw.split("|")]
             if len(parts) not in {1, 2}:
@@ -850,9 +850,9 @@ async def management_input_received(m: Message, state: FSMContext):
             await m.answer_document(
                 document,
                 caption=(
-                    f"Участники: {result['title']}\\n"
+                    f"Участники: {result['title']}\n"
                     f"Получено от Telegram: {result['visible_count']} "
-                    f"(запрошено максимум {result['requested_limit']}).\\n"
+                    f"(запрошено максимум {result['requested_limit']}).\n"
                     "Выгружены только публичные поля, доступные этому аккаунту."
                 ),
             )
