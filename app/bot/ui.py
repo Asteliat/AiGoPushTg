@@ -29,6 +29,7 @@ from app.storage.db import SessionFactory
 from app.storage.models import Account, AIAgent, AppSetting, ChatBinding, ChannelBinding, ChannelAnalysis, Example, Persona, TriggerRule
 from app.services.triggers import format_trigger_duration, parse_trigger_terms
 from app.telegram_gateway.proxy import ProxyConfigurationError, encrypt_proxy, telethon_proxy
+from app.telegram_gateway.session import configure_telethon_sqlite_session
 from app.telegram_gateway import management as telegram_management
 from app.services import automation as telegram_automation
 
