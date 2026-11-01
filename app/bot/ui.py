@@ -2578,6 +2578,13 @@ async def _load_account_client(aid: int):
         raise RuntimeError("Сессия аккаунта не авторизована.")
     return account, client
 
+async def _verify_group_candidates_isolated(account, candidates: list[dict], concurrency: int = 4):
+    """Verify search results on a snapshot, never opening the worker's live session."""
+    async with isolated_telegram_client(account) as client:
+        if not await client.is_user_authorized():
+            raise RuntimeError("Сессия аккаунта не авторизована.")
+        return await verify_group_candidates(client, candidates, concurrency=concurrency)
+
 
 @router.callback_query(F.data.startswith("chat:search:"))
 async def chat_search_start(c, state: FSMContext):
@@ -2634,7 +2641,6 @@ async def chat_search_query(m: Message, state: FSMContext):
     )
 
     account = None
-    client = None
     try:
         async def search_one_account(search_aid: int):
             try:
@@ -2672,7 +2678,10 @@ async def chat_search_query(m: Message, state: FSMContext):
         )
         native_results = native_result if isinstance(native_result, list) else []
         web_results = web_result if isinstance(web_result, list) else []
-        account, client = await _load_account_client(aid)
+        async with SessionFactory() as db:
+            account = await db.get(Account, aid)
+        if not account or not account.enabled:
+            raise RuntimeError("Аккаунт не найден или отключён.")
         combined = {}
         for item in native_results + web_results:
             link = str(item.get("link") or "").strip()
@@ -2701,7 +2710,9 @@ async def chat_search_query(m: Message, state: FSMContext):
             "Каналы и нерабочие ссылки отбрасываются.",
             kb([[("⬅️ Инструменты", "tool:menu")]]),
         )
-        candidates = await verify_group_candidates(client, raw_candidates, concurrency=4)
+        candidates = await _verify_group_candidates_isolated(
+            account, raw_candidates, concurrency=4
+        )
     except Exception as exc:
         await edit_anchor(
             m.bot,
@@ -2718,10 +2729,6 @@ async def chat_search_query(m: Message, state: FSMContext):
             ]),
         )
         return
-    finally:
-        if client is not None and client.is_connected():
-            await client.disconnect()
-
     CHAT_CANDIDATES[(m.from_user.id, aid)] = candidates
     if not candidates:
         await edit_anchor(
