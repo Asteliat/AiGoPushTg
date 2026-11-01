@@ -426,6 +426,7 @@ async def management_accounts(c: CallbackQuery):
             select(Account).where(Account.enabled.is_(True)).order_by(Account.id)
         )).all())
     rows = [[(f"👤 {a.display_name[:30]} · #{a.id}", f"tool:management:account:{a.id}")] for a in accounts]
+    rows.append([("🌐 Глобальные лимиты рассылок", "tool:mg:global-limits:0")])
     rows.append([("⬅️ Инструменты", "tool:menu")])
     await edit(c, "🛠 Управление Telegram-аккаунтами\n\nВыберите аккаунт. Все операции выполняются через изолированную копию сессии.", kb(rows))
 
@@ -489,6 +490,7 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         "consents": "Показать сохранённые согласия.",
         "campaign": "Формат: broadcast или invite | now либо YYYY-MM-DD HH:MM UTC | @user1,@user2. Только получатели с активным согласием; максимум 100 за задачу.",
         "limits": "Формат: интервал_секунд | максимум_сообщений_за_24ч. По умолчанию 30 | 50; диапазоны 1–3600 и 1–500.",
+        "global-limits": "Глобальные значения по умолчанию для новых аккаунтов и аккаунтов без индивидуального переопределения. Формат: интервал_секунд | максимум_сообщений_за_24ч. Индивидуальные настройки аккаунта останутся без изменений.",
     }
     if action == "exportcontacts":
         try:
@@ -701,6 +703,14 @@ async def management_input_received(m: Message, state: FSMContext):
             peer = await telegram_management.resolve_peer_for_consent(aid, raw)
             count = await telegram_automation.revoke_consent(aid, peer["peer_id"])
             message = f"Согласие отозвано. Обновлено записей: {count}."
+        elif action == "global-limits":
+            parts = [x.strip() for x in raw.split("|")]
+            if len(parts) != 2:
+                raise ValueError("Формат: интервал | лимит за 24 часа.")
+            await telegram_automation.set_global_automation_limits(
+                interval_seconds=int(parts[0]), daily_limit=int(parts[1])
+            )
+            message = "Глобальные лимиты по умолчанию сохранены. Индивидуальные настройки аккаунтов не изменены."
         elif action == "limits":
             parts = [x.strip() for x in raw.split("|")]
             if len(parts) != 2:
