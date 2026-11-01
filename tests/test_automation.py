@@ -22,3 +22,7 @@ def test_campaign_rejects_empty_payload():
 def test_campaign_rejects_unknown_kind():
     with pytest.raises(ValueError, match="Поддерживаются"):
         _validate_payload("members", {"text": "hello"})
+
+
+def test_invitation_accepts_telegram_invite_link():
+    assert _validate_payload("invite", {"text": "Join us: https://t.me/example"})["text"].endswith("https://t.me/example")
