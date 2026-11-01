@@ -30,6 +30,7 @@ from app.storage.db import SessionFactory
 from app.storage.models import Account, AIAgent, AppSetting, ChatBinding, ChannelBinding, ChannelAnalysis, Example, Persona, TriggerRule
 from app.services.triggers import format_trigger_duration, parse_trigger_terms
 from app.telegram_gateway.proxy import ProxyConfigurationError, encrypt_proxy, telethon_proxy
+from app.telegram_gateway import management as telegram_management
 
 router = Router()
 
@@ -126,7 +127,7 @@ class Flow(StatesGroup):
     runtime_value=State(); channel_setting_value=State(); log_chat_id=State()
     phone_number=State(); phone_code=State(); phone_password=State(); qr_password=State()
     chat_search_query=State(); chat_join_link=State(); channel_search_query=State()
-    trigger_terms=State(); trigger_response=State(); trigger_cooldown=State(); trigger_message_cooldown=State(); trigger_edit_value=State()
+    trigger_terms=State(); trigger_response=State(); trigger_cooldown=State(); trigger_message_cooldown=State(); trigger_edit_value=State(); management_input=State()
 
 def admin(uid): return uid is not None and uid in cfg.admin_id_set
 def kb(rows):
@@ -321,9 +322,11 @@ async def cancel_cb(c: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "tool:menu")
 async def tools_menu(c: CallbackQuery):
     if not await check_cb(c): return
-    await edit(c, "🧰 Инструменты\n\nПоиск и дополнительные инструменты для Telegram-аккаунтов.", kb([
+    await edit(c, "🧰 Инструменты\n\nПоиск, управление аккаунтами и дополнительные инструменты Telegram.", kb([
         [("🔎 Поиск групп", "tool:groups")],
         [("📣 Поиск каналов", "tool:channels")],
+        [("🛠 Управление аккаунтами", "tool:management")],
+        [("🧪 Тест активности (симуляция)", "tool:simulation")],
         [("🎯 Глобальные триггеры", "trigger:global")],
         [("⬅️ Главное меню", "nav:home")],
     ]))
@@ -411,6 +414,192 @@ async def tool_groups_account(c: CallbackQuery, state: FSMContext):
         CANCEL,
     )
 
+
+
+# Telegram account management tools. Mutations use isolated SQLite snapshots.
+@router.callback_query(F.data == "tool:management")
+async def management_accounts(c: CallbackQuery):
+    if not await check_cb(c): return
+    async with SessionFactory() as db:
+        accounts = list((await db.scalars(
+            select(Account).where(Account.enabled.is_(True)).order_by(Account.id)
+        )).all())
+    rows = [[(f"👤 {a.display_name[:30]} · #{a.id}", f"tool:management:account:{a.id}")] for a in accounts]
+    rows.append([("⬅️ Инструменты", "tool:menu")])
+    await edit(c, "🛠 Управление Telegram-аккаунтами\n\nВыберите аккаунт. Все операции выполняются через изолированную копию сессии.", kb(rows))
+
+
+@router.callback_query(F.data.startswith("tool:management:account:"))
+async def management_account_menu(c: CallbackQuery):
+    if not await check_cb(c): return
+    aid = int(c.data.rsplit(":", 1)[1])
+    async with SessionFactory() as db:
+        account = await db.get(Account, aid)
+    if not account or not account.enabled:
+        await c.answer("Аккаунт не найден или выключен.", show_alert=True); return
+    await edit(c, f"🛠 Инструменты · {account.display_name} · #{aid}\n\nВыберите действие:", kb([
+        [("👤 Профиль", f"tool:mg:profile:{aid}"), ("📇 Контакты", f"tool:mg:contacts:{aid}")],
+        [("➕ Добавить контакт", f"tool:mg:addcontact:{aid}"), ("🗑 Удалить контакт", f"tool:mg:delcontact:{aid}")],
+        [("🔎 Информация о чате", f"tool:mg:chatinfo:{aid}")],
+        [("➕ Вступить в чат", f"tool:mg:join:{aid}"), ("➖ Выйти из чата", f"tool:mg:leave:{aid}")],
+        [("❤️ Реакция на публикацию", f"tool:mg:reaction:{aid}")],
+        [("✏️ Изменить профиль", f"tool:mg:editprofile:{aid}")],
+        [("⬅️ К аккаунтам", "tool:management")],
+    ]))
+
+
+async def management_prompt(c: CallbackQuery, state: FSMContext, action: str, aid: int, prompt: str):
+    await state.clear()
+    await state.update_data(
+        management_action=action, management_account_id=aid,
+        ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id,
+        return_callback=f"tool:management:account:{aid}",
+    )
+    await state.set_state(Flow.management_input)
+    await edit(c, prompt + "\n\nОтмена — кнопкой ниже.", CANCEL)
+
+
+@router.callback_query(F.data.startswith("tool:mg:"))
+async def management_action_start(c: CallbackQuery, state: FSMContext):
+    if not await check_cb(c): return
+    _, _, action, aid_raw = c.data.split(":")
+    aid = int(aid_raw)
+    prompts = {
+        "addcontact": "Отправьте номер телефона, имя и фамилию через |\nПример: +79990000000 | Иван | Иванов",
+        "delcontact": "Отправьте Telegram user ID контакта, которого нужно удалить.",
+        "chatinfo": "Отправьте @username или публичную ссылку t.me/…",
+        "join": "Отправьте @username или публичную ссылку t.me/… для вступления.",
+        "leave": "Отправьте @username или публичную ссылку t.me/… для выхода.",
+        "reaction": "Отправьте данные через |\nФормат: @username | ID_публикации | 👍",
+        "editprofile": "Отправьте новые поля через |\nФормат: имя | фамилия | BIO | username\nЧтобы оставить поле без изменений, укажите -",
+    }
+    if action == "profile":
+        try:
+            data = await telegram_management.get_profile(aid)
+            txt = (
+                f"👤 Профиль аккаунта #{aid}\n\n"
+                f"Имя: {data['first_name']}\nФамилия: {data['last_name']}\n"
+                f"Username: @{data['username'] or 'не задан'}\n"
+                f"Телефон: {data['phone'] or 'не доступен'}\nBIO: {data['about'] or 'не задано'}"
+            )
+            await edit(c, txt, kb([[("⬅️ К инструментам аккаунта", f"tool:management:account:{aid}")]]))
+        except Exception as exc:
+            await edit(c, f"Не удалось получить профиль: {type(exc).__name__}: {str(exc)[:250]}", back_home())
+        return
+    if action == "contacts":
+        try:
+            items = await telegram_management.list_contacts(aid, limit=100)
+            lines = [f"📇 Контакты аккаунта #{aid} · показано {len(items)}"]
+            lines.extend(
+                f"{i}. {item['first_name']} {item['last_name']} · "
+                f"@{item['username'] or '—'} · ID {item['id']}"
+                for i, item in enumerate(items, 1)
+            )
+            await edit(c, "\n".join(lines)[:3900], kb([[("⬅️ К инструментам аккаунта", f"tool:management:account:{aid}")]]))
+        except Exception as exc:
+            await edit(c, f"Не удалось получить контакты: {type(exc).__name__}: {str(exc)[:250]}", back_home())
+        return
+    if action not in prompts:
+        await c.answer("Неизвестное действие.", show_alert=True); return
+    await management_prompt(c, state, action, aid, prompts[action])
+
+
+@router.callback_query(F.data == "tool:simulation")
+async def management_simulation_start(c: CallbackQuery, state: FSMContext):
+    if not await check_cb(c): return
+    await state.clear()
+    await state.update_data(
+        management_action="simulation", management_account_id=0,
+        ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id,
+        return_callback="tool:menu",
+    )
+    await state.set_state(Flow.management_input)
+    await edit(c,
+        "🧪 Локальная симуляция активности\n\n"
+        "Отправьте: ID_тестового_поста | просмотры | реакции\n"
+        "Пример: demo-post-1 | 1200 | 35\n\n"
+        "Это синтетические значения только для проверки интерфейса и статистики. "
+        "Telegram API не вызывается, реальные публикации и счётчики не меняются.",
+        CANCEL,
+    )
+
+
+@router.message(Flow.management_input)
+async def management_input_received(m: Message, state: FSMContext):
+    if not await check_msg(m) or not await private(m): return
+    data = await state.get_data()
+    action = data.get("management_action")
+    aid = int(data.get("management_account_id") or 0)
+    raw = (m.text or "").strip()
+    await delete_msg(m)
+    try:
+        if action == "simulation":
+            parts = [x.strip() for x in raw.split("|")]
+            if len(parts) != 3: raise ValueError("Нужно три поля через |.")
+            result = await telegram_management.simulate_post_activity(
+                post_key=parts[0], requested_views=int(parts[1]), requested_reactions=int(parts[2])
+            )
+            message = (
+                "🧪 Симуляция завершена\n\n"
+                f"Тестовый пост: {result['post_key']}\n"
+                f"Смоделировано просмотров: {result['simulated_views']}\n"
+                f"Смоделировано реакций: {result['simulated_reactions']}\n\n"
+                f"ℹ️ {result['notice']}"
+            )
+            await finish_prompt(m, state, message, kb([[("⬅️ Инструменты", "tool:menu")]]))
+            return
+        if action == "addcontact":
+            parts = [x.strip() for x in raw.split("|")]
+            if len(parts) not in {2, 3}: raise ValueError("Формат: телефон | имя | фамилия.")
+            count = await telegram_management.add_contact(
+                aid, phone=parts[0], first_name=parts[1], last_name=parts[2] if len(parts) == 3 else ""
+            )
+            message = f"Импорт контакта выполнен. Telegram подтвердил добавление: {count}."
+        elif action == "delcontact":
+            await telegram_management.delete_contact(aid, int(raw))
+            message = "Контакт удалён."
+        elif action == "chatinfo":
+            item = await telegram_management.get_chat_overview(aid, raw)
+            message = (
+                f"🔎 {item.title}\nID: {item.chat_id}\n"
+                f"Username: @{item.username or '—'}\n"
+                f"Участников: {item.participants_count if item.participants_count is not None else 'нет данных'}\n"
+                f"Тип: {'канал' if item.is_channel else 'группа' if item.is_group else 'чат/другой'}"
+            )
+        elif action == "join":
+            await telegram_management.join_chat(aid, raw); message = "Аккаунт вступил в чат."
+        elif action == "leave":
+            await telegram_management.leave_chat(aid, raw); message = "Аккаунт вышел из чата."
+        elif action == "reaction":
+            parts = [x.strip() for x in raw.split("|")]
+            if len(parts) != 3: raise ValueError("Формат: чат | ID публикации | emoji.")
+            await telegram_management.react_to_message(
+                aid, chat=parts[0], message_id=int(parts[1]), emoji=parts[2]
+            )
+            message = "Реакция отправлена на выбранную публикацию."
+        elif action == "editprofile":
+            parts = [x.strip() for x in raw.split("|")]
+            if len(parts) != 4: raise ValueError("Нужно четыре поля через |.")
+            values = [None if x == "-" else x for x in parts]
+            await telegram_management.update_profile(
+                aid, first_name=values[0], last_name=values[1], about=values[2], username=values[3]
+            )
+            message = "Профиль обновлён."
+        else:
+            raise ValueError("Неизвестное действие.")
+        await finish_prompt(m, state, message, kb([
+            [("↩️ К инструментам аккаунта", f"tool:management:account:{aid}")],
+            [("🏠 Главное меню", "nav:home")],
+        ]))
+    except telegram_management.FloodWaitError as exc:
+        await finish_prompt(
+            m, state,
+            f"⏳ Telegram установил FloodWait: {int(exc.seconds)} сек.\n"
+            "Операция не повторялась автоматически. Повторите её после указанного времени.",
+            kb([[("↩️ К инструментам аккаунта", f"tool:management:account:{aid}")]]),
+        )
+    except Exception as exc:
+        await prompt_message(m, state, f"❌ {type(exc).__name__}: {str(exc)[:500]}\n\nПроверьте ввод и попробуйте ещё раз.")
 
 def trigger_back_callback(scope: str, account_id: int | None = None) -> str:
     return f"acc:view:{account_id}" if scope == "account" else "tool:menu"
