@@ -47,3 +47,31 @@ def test_quiet_hours_before_end():
 def test_quiet_hours_disabled():
     now = datetime(2026, 11, 1, 12, 0, tzinfo=timezone.utc)
     assert _quiet_until(now, None, None) is None
+
+
+
+def test_group_campaign_payload_accepts_text():
+    assert _validate_payload("group_broadcast", {"text": "Announcement"})["text"] == "Announcement"
+
+
+def test_scheduled_reaction_payload_is_validated():
+    payload = _validate_payload("reaction", {
+        "chat": "@publicgroup", "message_id": 123, "emoji": "🔥",
+    })
+    assert payload["chat"] == "@publicgroup"
+    assert payload["message_id"] == 123
+    assert payload["emoji"] == "🔥"
+
+
+def test_scheduled_reaction_rejects_unsupported_emoji():
+    with pytest.raises(ValueError, match="поддерживаемый emoji"):
+        _validate_payload("reaction", {
+            "chat": "@publicgroup", "message_id": 123, "emoji": "🚀",
+        })
+
+
+def test_scheduled_reaction_rejects_missing_message_id():
+    with pytest.raises(ValueError, match="корректный ID публикации"):
+        _validate_payload("reaction", {
+            "chat": "@publicgroup", "message_id": 0, "emoji": "👍",
+        })
