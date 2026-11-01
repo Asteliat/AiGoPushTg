@@ -1,6 +1,8 @@
 import sqlite3
 from types import SimpleNamespace
 
+from telethon import TelegramClient
+
 from app.telegram_gateway.session import (
     SESSION_BUSY_TIMEOUT_MS,
     configure_telethon_sqlite_session,
@@ -48,3 +50,12 @@ def test_wal_reader_does_not_block_worker_session_writes(tmp_path):
 def test_non_sqlite_session_is_left_unchanged():
     client = SimpleNamespace(session=SimpleNamespace())
     assert configure_telethon_sqlite_session(client) is False
+
+
+def test_real_telethon_client_session_is_configured(tmp_path):
+    client = TelegramClient(str(tmp_path / "telethon-account"), 12345, "0123456789abcdef0123456789abcdef")
+    try:
+        assert configure_telethon_sqlite_session(client) is True
+        assert client.session._conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+    finally:
+        client.session.close()
