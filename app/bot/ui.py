@@ -1,5 +1,5 @@
 from __future__ import annotations
-import asyncio, csv, io, os, re, secrets, sqlite3, tempfile, logging
+import asyncio, csv, io, os, re, secrets, tempfile, logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from aiogram import F, Router
@@ -15,7 +15,6 @@ from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.functions.messages import CheckChatInviteRequest, ImportChatInviteRequest
 from telethon.tl.types import ChatInviteAlready
 from app.telegram_gateway.discovery import search_public_groups, search_web_groups, verify_group_candidates, find_invite_links_in_dialogs, search_public_channels, search_web_channels, verify_channel_candidates
-from app.telegram_gateway.session import configure_telethon_sqlite_session
 from app.services.ai_responses import global_ai_enabled
 from app.services.chat_bindings import discovered_binding_values
 from app.services.channels import (
@@ -82,40 +81,9 @@ async def perform_join_request(aid: int, client, request, on_wait):
 
 @asynccontextmanager
 async def isolated_telegram_client(account):
-    """Use a consistent temporary copy of the Telethon session SQLite database."""
-    with tempfile.TemporaryDirectory(prefix=f"atciv-session-{account.id}-") as temp_dir:
-        snapshot_path = os.path.join(temp_dir, "account.session")
-        # Telethon appends ".session" when Account.session_path is stored
-        # without the suffix. Open that exact live database, never a new empty file.
-        source_path = str(account.session_path)
-        if not source_path.endswith(".session"):
-            source_path += ".session"
-        source_db = sqlite3.connect(source_path, timeout=30)
-        source_db.execute("PRAGMA busy_timeout = 30000")
-        snapshot_db = sqlite3.connect(snapshot_path, timeout=30)
-        snapshot_db.execute("PRAGMA busy_timeout = 30000")
-        try:
-            # SQLite backup includes committed WAL content without opening the
-            # worker's live session through another Telethon client.
-            source_db.backup(snapshot_db, pages=128, sleep=0.05)
-        finally:
-            snapshot_db.close()
-            source_db.close()
-
-        client = TelegramClient(
-            snapshot_path,
-            cfg.telegram_api_id,
-            cfg.telegram_api_hash,
-            proxy=telethon_proxy(account.proxy_config_encrypted),
-        )
-        configure_telethon_sqlite_session(client)
-        try:
-            await client.connect()
-            yield client
-        finally:
-            if client.is_connected():
-                await client.disconnect()
-
+    """Reuse the shared isolated-session manager and its cross-process account lock."""
+    async with telegram_management.isolated_account_client(int(account.id)) as (_account, client):
+        yield client
 
 # All navigation uses inline keyboards.
 
