@@ -410,6 +410,94 @@ async def parse_chat_participants(
             }
 
 
+async def list_account_dialogs(
+    account_id: int, *, limit: int = 200, kind: str = "all"
+) -> list[dict]:
+    """List Telegram dialogs visible to the account, with stable public metadata."""
+    if kind not in {"all", "groups", "channels"}:
+        raise ValueError("Фильтр должен быть all, groups или channels.")
+    limit = max(1, min(int(limit), 500))
+    async with _account_lock(account_id):
+        async with isolated_account_client(account_id) as (_account, client):
+            result = []
+            async for dialog in client.iter_dialogs(limit=limit):
+                entity = dialog.entity
+                is_channel = bool(getattr(entity, "broadcast", False))
+                is_group = bool(
+                    getattr(entity, "megagroup", False)
+                    or getattr(entity, "gigagroup", False)
+                    or entity.__class__.__name__ == "Chat"
+                )
+                if not (is_channel or is_group):
+                    continue
+                if kind == "groups" and not is_group:
+                    continue
+                if kind == "channels" and not is_channel:
+                    continue
+                result.append({
+                    "id": int(getattr(entity, "id", 0)),
+                    "peer_id": int(dialog.id),
+                    "title": str(getattr(entity, "title", "") or getattr(entity, "username", "") or "Без названия"),
+                    "username": getattr(entity, "username", None) or "",
+                    "kind": "channel" if is_channel else "group",
+                    "participants_count": getattr(entity, "participants_count", None),
+                    "unread_count": int(getattr(dialog, "unread_count", 0) or 0),
+                    "is_muted": bool(getattr(getattr(dialog, "dialog", None), "notify_settings", None)
+                                     and getattr(dialog.dialog.notify_settings, "mute_until", None)),
+                })
+            return result
+
+
+async def manage_subscriptions_batch(
+    account_id: int, links: list[str], *, action: str
+) -> dict:
+    """Join/leave an explicit list sequentially in one isolated client; never bypass FloodWait."""
+    if action not in {"join", "leave"}:
+        raise ValueError("Действие должно быть join или leave.")
+    normalized = list(dict.fromkeys(str(value).strip() for value in links if str(value).strip()))
+    if not normalized or len(normalized) > 20:
+        raise ValueError("Укажите от 1 до 20 ссылок за одну операцию.")
+    results = []
+    flood_wait = 0
+    async with _account_lock(account_id):
+        async with isolated_account_client(account_id) as (_account, client):
+            for value in normalized:
+                try:
+                    if action == "join":
+                        lowered = value.lower().rstrip("/")
+                        if "t.me/+" in lowered or "t.me/joinchat/" in lowered:
+                            invite_hash = value.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1].lstrip("+")
+                            if not invite_hash:
+                                raise ValueError("Некорректная приватная ссылка.")
+                            invite = await client(CheckChatInviteRequest(hash=invite_hash))
+                            if isinstance(invite, ChatInviteAlready):
+                                results.append({"link": value, "status": "already_member", "error": ""})
+                                continue
+                            await client(ImportChatInviteRequest(hash=invite_hash))
+                        else:
+                            target = value.rsplit("/", 1)[-1] if "t.me/" in lowered else value
+                            entity = await client.get_entity(target)
+                            await client(JoinChannelRequest(entity))
+                    else:
+                        target = value.split("t.me/", 1)[1].split("/", 1)[0].split("?", 1)[0] if "t.me/" in value.lower() else value
+                        entity = await client.get_entity(target)
+                        if entity.__class__.__name__ == "Chat":
+                            await client.delete_dialog(entity)
+                        else:
+                            await client(LeaveChannelRequest(entity))
+                    results.append({"link": value, "status": "done", "error": ""})
+                except FloodWaitError as exc:
+                    flood_wait = max(1, int(exc.seconds))
+                    results.append({"link": value, "status": "flood_wait", "error": f"{flood_wait}s"})
+                    break
+                except Exception as exc:
+                    results.append({"link": value, "status": "failed", "error": f"{type(exc).__name__}: {str(exc)[:250]}"})
+    return {
+        "action": action, "processed": len(results), "total": len(normalized),
+        "flood_wait_seconds": flood_wait, "results": results,
+    }
+
+
 async def react_to_message(
     account_id: int, *, chat: str, message_id: int, emoji: str
 ) -> None:

@@ -86,3 +86,59 @@ async def test_parse_chat_participants_rejects_non_group(monkeypatch):
     monkeypatch.setattr(management, "isolated_account_client", fake_client)
     with pytest.raises(ValueError, match="группу или канал"):
         await management.parse_chat_participants(1, "@user")
+
+
+
+@pytest.mark.asyncio
+async def test_list_account_dialogs_returns_groups_and_channels(monkeypatch):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from app.telegram_gateway import management
+
+    class FakeClient:
+        async def iter_dialogs(self, limit):
+            assert limit == 10
+            yield SimpleNamespace(
+                entity=SimpleNamespace(id=11, title="Group", username="group", megagroup=True),
+                id=-10011, unread_count=2, dialog=SimpleNamespace(notify_settings=None),
+            )
+            yield SimpleNamespace(
+                entity=SimpleNamespace(id=12, title="Channel", username="channel", broadcast=True),
+                id=-10012, unread_count=0, dialog=SimpleNamespace(notify_settings=None),
+            )
+
+    @asynccontextmanager
+    async def fake_client(_account_id):
+        yield SimpleNamespace(id=1), FakeClient()
+
+    monkeypatch.setattr(management, "isolated_account_client", fake_client)
+    result = await management.list_account_dialogs(1, limit=10)
+    assert [item["kind"] for item in result] == ["group", "channel"]
+
+
+@pytest.mark.asyncio
+async def test_batch_subscription_stops_on_floodwait(monkeypatch):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from telethon.errors import FloodWaitError
+    from app.telegram_gateway import management
+
+    class FakeClient:
+        async def get_entity(self, target):
+            if target == "second":
+                raise FloodWaitError(request=None, capture=17)
+            return SimpleNamespace(__class__=type("Channel", (), {}))
+
+        async def __call__(self, request):
+            return None
+
+    @asynccontextmanager
+    async def fake_client(_account_id):
+        yield SimpleNamespace(id=1), FakeClient()
+
+    monkeypatch.setattr(management, "isolated_account_client", fake_client)
+    result = await management.manage_subscriptions_batch(1, ["first", "second", "third"], action="join")
+    assert result["flood_wait_seconds"] == 17
+    assert result["processed"] == 2

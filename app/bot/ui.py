@@ -415,7 +415,9 @@ async def management_account_menu(c: CallbackQuery):
         [("➕ Добавить контакт", f"tool:mg:addcontact:{aid}"), ("🗑 Удалить контакт", f"tool:mg:delcontact:{aid}")],
         [("📥 Импорт контактов", f"tool:mg:importcontacts:{aid}"), ("📤 Экспорт контактов", f"tool:mg:exportcontacts:{aid}")],
         [("🔎 Информация о чате", f"tool:mg:chatinfo:{aid}")],
-        [("🔍 Парсер чата / канала", f"tool:mg:parsechannel:{aid}")],
+        [("🗂 Мои группы и каналы · парсер", f"tool:mg:parsechats:{aid}")],
+        [("🔍 Парсер истории чата / канала", f"tool:mg:parsechannel:{aid}")],
+        [("➕ Пакетная подписка", f"tool:mg:joinbatch:{aid}"), ("➖ Пакетная отписка", f"tool:mg:leavebatch:{aid}")],
         [("👥 Сбор участников (CSV)", f"tool:mg:parseparticipants:{aid}")],
         [("➕ Вступить в чат", f"tool:mg:join:{aid}"), ("➖ Выйти из чата", f"tool:mg:leave:{aid}")],
         [("❤️ Реакция на публикацию", f"tool:mg:reaction:{aid}")],
@@ -455,6 +457,9 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         "importcontacts": "Отправьте до 100 контактов, каждый с новой строки. Формат: телефон | имя | фамилия.\nПример:\n+79990000000 | Иван | Иванов\n+79991112233 | Анна | Петрова",
         "delcontact": "Отправьте Telegram user ID контакта, которого нужно удалить.",
         "chatinfo": "Отправьте @username или публичную ссылку t.me/…",
+        "parsechats": "Будет сформирован CSV со списком групп и каналов, в которых состоит аккаунт. Отправьте максимум диалогов (1–500), либо оставьте пустым для 200.",
+        "joinbatch": "Отправьте от 1 до 20 ссылок или @username, каждый с новой строки. Аккаунт будет вступать последовательно; при FloodWait остановится и покажет ожидание.",
+        "leavebatch": "Отправьте от 1 до 20 ссылок или @username, каждый с новой строки. Аккаунт будет выходить последовательно; при FloodWait остановится.",
         "parsechannel": "Отправьте @username канала и количество публикаций через |. Например: @telegram | 20. Максимум 100 последних сообщений; списки участников не собираются.",
         "parseparticipants": "Отправьте @username или ссылку на группу и лимит через |. Например: @mygroup | 200. Telegram возвращает только видимых участников; максимум 500. Будут выгружены только публичные поля профиля.",
         "join": "Отправьте @username или публичную ссылку t.me/… для вступления.",
@@ -899,6 +904,29 @@ async def management_input_received(m: Message, state: FSMContext):
         elif action == "delcontact":
             await telegram_management.delete_contact(aid, int(raw))
             message = "Контакт удалён."
+        elif action == "parsechats":
+            limit = int(raw) if raw else 200
+            items = await telegram_management.list_account_dialogs(aid, limit=limit)
+            output = io.StringIO()
+            writer = csv.writer(output)
+            writer.writerow(["telegram_peer_id", "entity_id", "type", "title", "username", "participants_count", "unread_count"])
+            for item in items:
+                writer.writerow([item["peer_id"], item["id"], item["kind"], item["title"], item["username"], item["participants_count"] or "", item["unread_count"]])
+            document = BufferedInputFile(output.getvalue().encode("utf-8-sig"), filename=f"dialogs-account-{aid}.csv")
+            await m.answer_document(document, caption=f"Группы и каналы аккаунта #{aid}: {len(items)} записей.")
+            message = f"CSV сформирован. Найдено групп и каналов: {len(items)}."
+        elif action in {"joinbatch", "leavebatch"}:
+            links = [line.strip() for line in raw.replace(",", "\n").splitlines() if line.strip()]
+            result = await telegram_management.manage_subscriptions_batch(
+                aid, links, action="join" if action == "joinbatch" else "leave"
+            )
+            completed = sum(1 for item in result["results"] if item["status"] in {"done", "already_member"})
+            failed = sum(1 for item in result["results"] if item["status"] == "failed")
+            message = f"Пакетная операция завершена: {completed}/{result['total']} успешно, ошибок: {failed}."
+            if result["flood_wait_seconds"]:
+                message += f"\n\n⏳ Telegram установил FloodWait: {result['flood_wait_seconds']} сек. Операция остановлена; повторного обхода ограничения не было."
+            details = [f"{item['status']} · {item['link']}" + (f" · {item['error']}" if item["error"] else "") for item in result["results"]]
+            message += "\n\n" + "\n".join(details[:15])
         elif action == "chatinfo":
             item = await telegram_management.get_chat_overview(aid, raw)
             message = (
