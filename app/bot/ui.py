@@ -426,10 +426,6 @@ async def management_account_menu(c: CallbackQuery):
         [("🕒 Запланировать реакцию", f"tool:mg:schedreaction:{aid}"), ("📆 Мои реакции", f"tool:mg:reactions:{aid}")],
         [("✏️ Изменить профиль", f"tool:mg:editprofile:{aid}")],
         [("📷 Изменить фото профиля", f"tool:mg:photo:{aid}")],
-        [("🤝 Согласие на сообщения", f"tool:mg:consent:{aid}"), ("🚫 Отозвать согласие", f"tool:mg:revokeconsent:{aid}")],
-        [("🛡 Разрешить публикации в своей группе", f"tool:mg:consentgroup:{aid}")],
-        [("🚫 Отозвать разрешение группы", f"tool:mg:revokegroup:{aid}")],
-        [("👥 Список согласий", f"tool:mg:consents:{aid}")],
         [("📨 Разовая рассылка / приглашение", f"tool:mg:campaign:{aid}")],
         [("🗓 Создать расписание", f"tool:mg:schedule:{aid}"), ("📅 Мои расписания", f"tool:mg:schedules:{aid}")],
         [("📋 Очередь и история задач", f"tool:mg:campaigns:{aid}")],
@@ -474,13 +470,7 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         "schedreaction": "Формат: @username | ID_публикации | emoji | now либо YYYY-MM-DD HH:MM UTC. Пример: @mychannel | 123 | 🔥 | 2026-11-03 18:00. Это одна реакция на одну выбранную публикацию, без накрутки.",
 
         "editprofile": "Отправьте новые поля через |\nФормат: имя | фамилия | BIO | username\nЧтобы оставить поле без изменений, укажите -",
-        "consent": "Добавить только пользователя с явным согласием. Формат: @username | broadcast или invite | источник согласия.",
-        "consentgroup": "Укажите @username, ссылку или Telegram peer ID группы, где аккаунт является администратором, затем через | источник разрешения. Пример: @mygroup | собственная группа, публикации разрешены администратором.",
-        "revokegroup": "Отправьте @username, ссылку или Telegram peer ID группы, для которой нужно отозвать разрешение на публикации.",
-
-        "revokeconsent": "Отправьте @username получателя. Его согласия на рассылки и приглашения будут отозваны.",
-        "consents": "Показать сохранённые согласия.",
-        "campaign": "Формат: broadcast, invite или group_broadcast | now либо YYYY-MM-DD HH:MM UTC | @получатель1,@получатель2. Только получатели с активным согласием; максимум 500 за задачу.",
+        "campaign": "Формат: broadcast, invite или group_broadcast | now либо YYYY-MM-DD HH:MM UTC | @получатель1,@получатель2. Выберите конкретных получателей; максимум 500 за задачу.",
         "broadcastlimits": "Формат: интервал в секундах | максимум за 24 часа | тихо с HH:MM UTC или - | тихо до HH:MM UTC или -. Пример: 60 | 40 | 23:00 | 08:00.",
         "invitelimits": "Формат: интервал в секундах | максимум за 24 часа | тихо с HH:MM UTC или - | тихо до HH:MM UTC или -. Пример: 120 | 15 | 22:00 | 07:00.",
         "global-broadcast": "Глобальные значения для рассылок: интервал | максимум за 24 часа | тихо с | тихо до (UTC). Пример: 60 | 40 | 23:00 | 08:00.",
@@ -515,16 +505,6 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
             ]))
         except Exception as exc:
             await edit(c, f"Не удалось сбросить лимиты: {type(exc).__name__}: {str(exc)[:250]}", back_home())
-        return
-    if action == "consents":
-        items = await telegram_automation.list_consents(aid)
-        lines = [f"👥 Согласия аккаунта #{aid} · {len(items)}"]
-        lines.extend(
-            f"{item['peer_label']} · @{item['peer_ref'].lstrip('@')} · {item['scope']}"
-            + (f" → {item['target_group_label']}" if item.get("target_group_label") else "")
-            for item in items
-        )
-        await edit(c, "\n".join(lines)[:3900] or "Согласий пока нет.", kb([[("↩️ К инструментам аккаунта", f"tool:management:account:{aid}")]]))
         return
     if action == "reactions":
         items = await telegram_automation.list_scheduled_reactions(aid, limit=20)
@@ -624,7 +604,7 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
             [("📣 Опубликовать в своей группе", f"tool:campaign:start:{aid}:group_broadcast:{mode}")],
             [("↩️ Назад", f"tool:management:account:{aid}")],
         ])
-        await edit(c, title + "\n\nДля личных сообщений и invite-ссылок нужно согласие получателей. Прямое добавление учитывает настройки приватности Telegram и право аккаунта приглашать участников.",
+        await edit(c, title + "\n\nВыберите конкретных получателей. Доступность личных сообщений и платные сообщения за Stars определяются самим Telegram; прямое добавление дополнительно проверяет приватность и право invite_users.",
             kb(type_rows))
         return
     if action not in prompts:
@@ -940,38 +920,7 @@ async def management_input_received(m: Message, state: FSMContext):
             )
             await finish_prompt(m, state, message, kb([[("⬅️ Инструменты", "tool:menu")]]))
             return
-        if action == "consentgroup":
-            parts = [x.strip() for x in raw.split("|", 1)]
-            if len(parts) != 2 or not parts[1]:
-                raise ValueError("Формат: @группа | источник разрешения.")
-            peer = await telegram_management.resolve_group_for_consent(aid, parts[0])
-            await telegram_automation.grant_consent(
-                aid, peer["peer_id"], peer_ref=peer["peer_ref"],
-                peer_label=peer["peer_label"], scope="group_publish", consent_source=parts[1],
-            )
-            message = f"Разрешение на публикации сохранено: {peer['peer_label']}."
-        elif action == "revokegroup":
-            peer = await telegram_management.resolve_group_reference(aid, raw)
-            count = await telegram_automation.revoke_consent(aid, peer["peer_id"], scope="group_publish")
-            message = f"Разрешение на публикации отозвано для «{peer['peer_label']}». Записей: {count}."
-        elif action == "consent":
-            parts = [x.strip() for x in raw.split("|", 2)]
-            if len(parts) != 3 or not parts[2]:
-                raise ValueError("Формат: @username | broadcast/invite | источник согласия.")
-            scope = parts[1].lower()
-            if scope not in {"broadcast", "invite"}:
-                raise ValueError("Тип согласия: broadcast или invite.")
-            peer = await telegram_management.resolve_peer_for_consent(aid, parts[0])
-            await telegram_automation.grant_consent(
-                aid, peer["peer_id"], peer_ref=peer["peer_ref"],
-                peer_label=peer["peer_label"], scope=scope, consent_source=parts[2],
-            )
-            message = f"Согласие сохранено: {peer['peer_label']} · {scope}."
-        elif action == "revokeconsent":
-            peer = await telegram_management.resolve_peer_for_consent(aid, raw)
-            count = await telegram_automation.revoke_consent(aid, peer["peer_id"])
-            message = f"Согласие отозвано. Обновлено записей: {count}."
-        elif action in {"broadcastlimits", "invitelimits", "subscriptionlimits", "reactionlimits", "global-broadcast", "global-invite", "global-subscription", "global-reaction"}:
+        if action in {"broadcastlimits", "invitelimits", "subscriptionlimits", "reactionlimits", "global-broadcast", "global-invite", "global-subscription", "global-reaction"}:
             parts = [x.strip() for x in raw.split("|")]
             if len(parts) != 4:
                 raise ValueError("Формат: интервал | максимум за 24 часа | тихо с | тихо до. Для отключения тихих часов укажите - в обоих последних полях.")
@@ -1061,26 +1010,16 @@ async def management_input_received(m: Message, state: FSMContext):
             return
         elif action == "campaign_recipients":
             kind = str(data.get("campaign_kind") or "")
-            if raw.strip().lower() in {"all", "все"}:
-                if kind == "direct_invite":
-                    raise ValueError("Для прямого добавления укажите конкретных пользователей через @username. ALL доступен только для списков с действующим согласием.")
-                scope = "group_publish" if kind == "group_broadcast" else "invite" if kind == "invite" else "broadcast"
-                consented = await telegram_automation.list_consents(aid, scope=scope)
-                peers = [
-                    {"peer_id": int(item["peer_id"]), "peer_label": item["peer_label"], "peer_ref": item["peer_ref"]}
-                    for item in consented
-                ]
-                if not peers:
-                    raise ValueError("Нет получателей с действующим согласием для этой задачи.")
-            else:
-                refs = [item.strip() for item in raw.replace(",", "\\n").splitlines() if item.strip()]
-                if not refs:
-                    raise ValueError("Добавьте хотя бы одного получателя или напишите ALL.")
-                peers = (
-                    await telegram_management.resolve_groups_for_consent(aid, refs)
-                    if kind == "group_broadcast"
-                    else await telegram_management.resolve_peers_for_consent(aid, refs)
-                )
+                if raw.strip().lower() in {"all", "все"}:
+                raise ValueError("Укажите конкретных получателей через @username. Массовый выбор всех диалогов не запускается автоматически.")
+            refs = [item.strip() for item in raw.replace(",", "\\n").splitlines() if item.strip()]
+            if not refs:
+                raise ValueError("Добавьте хотя бы одного получателя через @username.")
+            peers = (
+                await telegram_management.resolve_groups_for_consent(aid, refs)
+                if kind == "group_broadcast"
+                else await telegram_management.resolve_peers_for_consent(aid, refs)
+            )
             if kind == "direct_invite":
                 payload = {
                     "target_group_id": int(data["campaign_target_group_id"]),
@@ -1157,6 +1096,7 @@ async def management_input_received(m: Message, state: FSMContext):
                 campaign_kind=kind, campaign_scheduled_at=scheduled.isoformat(),
                 campaign_recipients=[peer["peer_id"] for peer in peers],
                 campaign_recipient_labels=[peer["peer_label"] for peer in peers],
+                campaign_recipient_refs=[peer.get("peer_ref", "") for peer in peers],
                 campaign_schedule_interval_seconds=interval_seconds,
                 campaign_schedule_max_runs=max_runs,
             )
@@ -1436,8 +1376,16 @@ async def management_campaign_confirm(c: CallbackQuery, state: FSMContext):
                 starts_at=datetime.fromisoformat(data["campaign_scheduled_at"]),
                 interval_seconds=int(data["campaign_schedule_interval_seconds"]),
                 max_runs=int(data.get("campaign_schedule_max_runs") or 1),
+                recipient_refs={
+                    int(peer_id): str(peer_ref)
+                    for peer_id, peer_ref in zip(data.get("campaign_recipients", []), data.get("campaign_recipient_refs", []))
+                },
+                recipient_labels={
+                    int(peer_id): str(label)
+                    for peer_id, label in zip(data.get("campaign_recipients", []), data.get("campaign_recipient_labels", []))
+                },
             )
-            success_text = f"✅ Повторяющееся расписание #{task_id} создано. Каждый запуск повторно проверяет согласия; минимальный интервал — 1 час; дневные лимиты и FloodWait сохраняются."
+            success_text = f"✅ Повторяющееся расписание #{task_id} создано. Telegram применяет приватность, ограничения аккаунта и требования Stars; локальные лимиты и FloodWait сохраняются."
         else:
             recipient_refs = {
                 int(peer_id): str(peer_ref)
@@ -1456,7 +1404,7 @@ async def management_campaign_confirm(c: CallbackQuery, state: FSMContext):
             success_text = (
                 f"✅ Задача #{task_id} поставлена в очередь. Telegram проверит приватность пользователей и право invite_users; лимиты и FloodWait соблюдаются."
                 if data["campaign_kind"] == "direct_invite"
-                else f"✅ Задача #{task_id} поставлена в очередь. Она выполняется последовательно с повторной проверкой согласий, лимита аккаунта и FloodWait Telegram."
+                else f"✅ Задача #{task_id} поставлена в очередь. Она выполняется последовательно с учётом ограничений Telegram, лимита аккаунта и FloodWait."
             )
         await state.clear()
         await edit(c, success_text, kb([
