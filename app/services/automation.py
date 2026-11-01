@@ -694,7 +694,6 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                             await db.commit()
                             break
                         peer_id = int(recipient.peer_id)
-                        peer_ref = recipient.peer_ref
                         recipient.status = "sending"
                         recipient.attempts += 1
                         current.started_at = utcnow()
