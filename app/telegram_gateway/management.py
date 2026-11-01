@@ -20,6 +20,7 @@ from telethon.errors import FloodWaitError
 from telethon.tl.functions.channels import JoinChannelRequest, LeaveChannelRequest
 from telethon.tl.functions.contacts import DeleteContactsRequest, ImportContactsRequest
 from telethon.tl.functions.messages import SendReactionRequest
+from telethon.tl.functions.users import GetFullUserRequest
 from telethon.tl.functions.account import UpdateProfileRequest, UpdateUsernameRequest
 from telethon.tl.types import InputPhoneContact, ReactionEmoji
 
@@ -102,13 +103,14 @@ async def get_profile(account_id: int) -> dict:
     async with _account_lock(account_id):
         async with isolated_account_client(account_id) as (_account, client):
             me = await client.get_me()
+            full = await client(GetFullUserRequest(me))
             return {
                 "id": int(me.id),
                 "username": me.username,
                 "first_name": me.first_name or "",
                 "last_name": me.last_name or "",
                 "phone": me.phone or "",
-                "about": getattr(me, "about", None) or "",
+                "about": full.full_user.about or "",
             }
 
 
@@ -135,10 +137,11 @@ async def update_profile(
         async with isolated_account_client(account_id) as (_account, client):
             if any(value is not None for value in (first_name, last_name, about)):
                 current = await client.get_me()
+                full = await client(GetFullUserRequest(current))
                 await client(UpdateProfileRequest(
                     first_name=first_name if first_name is not None else (current.first_name or ""),
                     last_name=last_name if last_name is not None else (current.last_name or ""),
-                    about=about if about is not None else "",
+                    about=about if about is not None else (full.full_user.about or ""),
                 ))
             if username is not None:
                 await client(UpdateUsernameRequest(username=username))
@@ -228,7 +231,11 @@ async def get_chat_overview(account_id: int, link: str) -> ChatOverview:
                 chat_id=int(entity.id),
                 participants_count=int(count) if count is not None else None,
                 is_channel=bool(getattr(entity, "broadcast", False)),
-                is_group=bool(getattr(entity, "megagroup", False) or getattr(entity, "gigagroup", False)),
+                is_group=bool(
+                    getattr(entity, "megagroup", False)
+                    or getattr(entity, "gigagroup", False)
+                    or entity.__class__.__name__ == "Chat"
+                ),
             )
 
 
