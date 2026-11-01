@@ -47,3 +47,17 @@ def test_quiet_hours_before_end():
 def test_quiet_hours_disabled():
     now = datetime(2026, 11, 1, 12, 0, tzinfo=timezone.utc)
     assert _quiet_until(now, None, None) is None
+
+
+
+def test_recurring_schedule_interval_must_be_at_least_one_day():
+    from app.services.automation import _validate_payload
+
+    assert _validate_payload("broadcast", {"text": "Hello"})["text"] == "Hello"
+
+
+def test_quiet_hours_reject_partial_window():
+    from app.services.automation import _normalize_quiet_hours
+
+    with pytest.raises(ValueError):
+        _normalize_quiet_hours("22:00", None)

@@ -268,7 +268,7 @@ async def list_campaigns(account_id: int, *, limit: int = 10) -> list[dict]:
         } for row in rows]
 
 
-async def _account_limits(account_id: int) -> tuple[int, int, str | None, str | None]:
+async def _account_limits(account_id: int, operation: str = "broadcast") -> tuple[int, int, str | None, str | None]:
     async with SessionFactory() as db:
         rows = list((await db.scalars(select(AppSetting).where(
             AppSetting.key.in_([
@@ -435,7 +435,7 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
 
         try:
             payload = json.loads(payload_raw)
-            interval, daily_limit, quiet_start, quiet_end = await _account_limits(account_id)
+            interval, daily_limit, quiet_start, quiet_end = await _account_limits(account_id, kind)
             async with isolated_account_client(account_id) as (_account, client):
                 while True:
                     async with SessionFactory() as db:
@@ -588,3 +588,200 @@ __all__ = [
     "set_global_automation_limits",
     "set_campaign_status",
 ]
+
+
+
+async def set_operation_limits(
+    operation: str, *, interval_seconds: int, daily_limit: int,
+    account_id: int | None = None,
+) -> None:
+    """Set independent broadcast/invite cadence and daily caps, globally or per account."""
+    if operation not in {"broadcast", "invite"}:
+        raise ValueError("Поддерживаются отдельные лимиты broadcast и invite.")
+    if not 1 <= int(interval_seconds) <= 3600:
+        raise ValueError("Интервал должен быть от 1 до 3600 секунд.")
+    if not 1 <= int(daily_limit) <= 500:
+        raise ValueError("Дневной лимит должен быть от 1 до 500.")
+    prefix = f"automation.{account_id}" if account_id is not None else "automation.default"
+    async with SessionFactory() as db:
+        if account_id is not None and not await db.get(Account, account_id):
+            raise ValueError("Аккаунт не найден.")
+        for suffix, value in (
+            (f"{operation}.interval_seconds", str(int(interval_seconds))),
+            (f"{operation}.daily_limit", str(int(daily_limit))),
+        ):
+            key = f"{prefix}.{suffix}"
+            row = await db.get(AppSetting, key)
+            if row:
+                row.value = value
+            else:
+                db.add(AppSetting(key=key, value=value))
+        await db.commit()
+
+
+async def operation_limits(account_id: int, operation: str) -> dict:
+    if operation not in {"broadcast", "invite"}:
+        raise ValueError("Неизвестный тип операции.")
+    interval, daily, quiet_start, quiet_end = await _account_limits(account_id, operation)
+    return {
+        "operation": operation, "interval_seconds": interval, "daily_limit": daily,
+        "quiet_start_utc": quiet_start or "", "quiet_end_utc": quiet_end or "",
+    }
+
+
+async def create_schedule(
+    account_id: int, *, kind: str, recipients: list[int], payload: dict,
+    interval_seconds: int, starts_at: datetime | None = None,
+    ends_at: datetime | None = None, max_runs: int = 30,
+) -> int:
+    """Create a recurring campaign; repeated sends require explicit opt-in and >=24h spacing."""
+    normalized = _validate_payload(kind, payload)
+    if not 86400 <= int(interval_seconds) <= 31536000:
+        raise ValueError("Повторение должно быть от 24 часов до 365 дней.")
+    if not 1 <= int(max_runs) <= 365:
+        raise ValueError("Количество повторов должно быть от 1 до 365.")
+    unique_ids = list(dict.fromkeys(int(peer_id) for peer_id in recipients))
+    if not unique_ids or len(unique_ids) > MAX_RECIPIENTS:
+        raise ValueError(f"Выберите от 1 до {MAX_RECIPIENTS} получателей.")
+    due = _aware(starts_at or utcnow())
+    end = _aware(ends_at) if ends_at else None
+    if due < utcnow() - timedelta(minutes=1) or (end and end <= due):
+        raise ValueError("Проверьте время начала и окончания расписания.")
+    scope = "invite" if kind == "invite" else "broadcast"
+    async with SessionFactory() as db:
+        account = await db.get(Account, account_id)
+        if not account or not account.enabled:
+            raise ValueError("Аккаунт не найден или отключён.")
+        consents = list((await db.scalars(select(AutomationConsent).where(
+            AutomationConsent.account_id == account_id,
+            AutomationConsent.peer_id.in_(unique_ids),
+            AutomationConsent.scope == scope,
+            AutomationConsent.revoked_at.is_(None),
+        ))).all())
+        if len(consents) != len(unique_ids):
+            raise ValueError("Для каждого получателя требуется действующее согласие соответствующего типа.")
+        schedule = AutomationSchedule(
+            account_id=account_id, kind=kind,
+            payload=json.dumps(normalized, ensure_ascii=False),
+            recipients_json=json.dumps(unique_ids),
+            interval_seconds=int(interval_seconds), next_run_at=due,
+            ends_at=end, max_runs=int(max_runs), status="active",
+        )
+        db.add(schedule)
+        await db.commit()
+        return int(schedule.id)
+
+
+async def list_schedules(account_id: int, *, limit: int = 20) -> list[dict]:
+    async with SessionFactory() as db:
+        rows = list((await db.scalars(select(AutomationSchedule).where(
+            AutomationSchedule.account_id == account_id
+        ).order_by(AutomationSchedule.next_run_at, AutomationSchedule.id).limit(max(1, min(limit, 50))))).all())
+        return [{
+            "id": row.id, "kind": row.kind, "status": row.status,
+            "next_run_at": _aware(row.next_run_at).isoformat(),
+            "interval_seconds": row.interval_seconds, "runs_count": row.runs_count,
+            "max_runs": row.max_runs, "last_error": row.last_error,
+            "last_task_id": row.last_task_id,
+        } for row in rows]
+
+
+async def set_schedule_status(schedule_id: int, status: str) -> None:
+    if status not in {"active", "paused", "cancelled"}:
+        raise ValueError("Недопустимый статус расписания.")
+    async with SessionFactory() as db:
+        row = await db.get(AutomationSchedule, schedule_id)
+        if not row:
+            raise ValueError("Расписание не найдено.")
+        if row.status in {"completed", "cancelled"}:
+            raise ValueError("Расписание уже завершено.")
+        row.status = status
+        row.updated_at = utcnow()
+        await db.commit()
+
+
+async def dispatch_due_schedules(*, max_schedules: int = 10) -> int:
+    """Atomically materialize due recurring schedules into ordinary durable campaigns."""
+    created = 0
+    for _ in range(max(1, min(int(max_schedules), 50))):
+        async with SessionFactory() as db:
+            now = utcnow()
+            row = await db.scalar(select(AutomationSchedule).where(
+                AutomationSchedule.status == "active",
+                AutomationSchedule.next_run_at <= now,
+            ).order_by(AutomationSchedule.next_run_at, AutomationSchedule.id)
+             .with_for_update(skip_locked=True).limit(1))
+            if not row:
+                break
+            try:
+                ids = list(dict.fromkeys(int(x) for x in json.loads(row.recipients_json)))
+                scope = "invite" if row.kind == "invite" else "broadcast"
+                consents = list((await db.scalars(select(AutomationConsent).where(
+                    AutomationConsent.account_id == row.account_id,
+                    AutomationConsent.peer_id.in_(ids),
+                    AutomationConsent.scope == scope,
+                    AutomationConsent.revoked_at.is_(None),
+                ))).all()) if ids else []
+                by_id = {int(item.peer_id): item for item in consents}
+                if len(by_id) != len(ids):
+                    row.status = "paused"
+                    row.last_error = "Расписание приостановлено: одно или несколько согласий отозваны."
+                    row.updated_at = now
+                    await db.commit()
+                    continue
+                task = AutomationTask(
+                    account_id=row.account_id, kind=row.kind, payload=row.payload,
+                    status="queued", scheduled_at=now,
+                )
+                db.add(task)
+                await db.flush()
+                for peer_id in ids:
+                    consent = by_id[peer_id]
+                    db.add(AutomationTaskRecipient(
+                        task_id=task.id, peer_id=peer_id,
+                        peer_ref=consent.peer_ref, peer_label=consent.peer_label,
+                    ))
+                row.last_task_id = task.id
+                row.runs_count += 1
+                row.last_error = ""
+                next_run = _aware(row.next_run_at) + timedelta(seconds=row.interval_seconds)
+                if row.runs_count >= row.max_runs or (row.ends_at and next_run > _aware(row.ends_at)):
+                    row.status = "completed"
+                else:
+                    row.next_run_at = next_run
+                row.updated_at = now
+                await db.commit()
+                created += 1
+            except Exception:
+                await db.rollback()
+                raise
+    return created
+
+
+async def resolve_uncertain_recipient(task_id: int, peer_id: int, *, delivered: bool) -> None:
+    """Operator reconciliation for a delivery whose acknowledgement was lost."""
+    async with SessionFactory() as db:
+        item = await db.scalar(select(AutomationTaskRecipient).where(
+            AutomationTaskRecipient.task_id == task_id,
+            AutomationTaskRecipient.peer_id == int(peer_id),
+            AutomationTaskRecipient.status == "uncertain",
+        ).with_for_update())
+        if not item:
+            raise ValueError("Не найдена доставка со статусом «результат неизвестен».")
+        if delivered:
+            item.status = "sent"
+            item.delivered_at = utcnow()
+            item.last_error = "Подтверждено оператором после проверки Telegram."
+        else:
+            item.status = "pending"
+            item.last_error = "Оператор проверил Telegram: сообщение не доставлено; разрешён повтор."
+        task = await db.get(AutomationTask, task_id)
+        if task and task.status == "needs_review":
+            remaining = await db.scalar(select(func.count()).select_from(AutomationTaskRecipient).where(
+                AutomationTaskRecipient.task_id == task_id,
+                AutomationTaskRecipient.status == "uncertain",
+            ))
+            if not int(remaining or 0):
+                task.status = "queued" if not delivered else "completed"
+                task.completed_at = None if not delivered else utcnow()
+        await db.commit()

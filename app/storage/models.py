@@ -307,3 +307,28 @@ class AutomationTaskRecipient(Base):
     attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     last_error: Mapped[str] = mapped_column(Text, default="", server_default="", nullable=False)
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+
+class AutomationSchedule(Base):
+    """Recurring opt-in campaign definition; each occurrence is materialized transactionally."""
+    __tablename__ = "automation_schedules"
+    __table_args__ = (
+        Index("ix_automation_schedules_due", "status", "next_run_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(24), nullable=False)
+    payload: Mapped[str] = mapped_column(Text, default="{}", server_default="{}", nullable=False)
+    recipients_json: Mapped[str] = mapped_column(Text, nullable=False)
+    interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+    next_run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    max_runs: Mapped[int] = mapped_column(Integer, default=30, server_default="30", nullable=False)
+    runs_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    last_task_id: Mapped[int | None] = mapped_column(ForeignKey("automation_tasks.id", ondelete="SET NULL"), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="active", server_default="active", nullable=False, index=True)
+    last_error: Mapped[str] = mapped_column(Text, default="", server_default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
