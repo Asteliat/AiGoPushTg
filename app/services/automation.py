@@ -1,8 +1,7 @@
-"""Opt-in campaign queue with durable scheduling and Telegram FloodWait handling.
+"""Durable Telegram campaign queue with scheduling and FloodWait handling.
 
-Only explicitly consented peers can be added to a campaign. The worker sends sequentially,
-records each acknowledgement, and resumes safely after restarts. This module does not
-scrape participants, add strangers to groups, or bypass Telegram limits.
+Recipients are selected explicitly by the operator. Telegram privacy, paid-message
+requirements, account restrictions and permissions remain authoritative.
 """
 from __future__ import annotations
 
@@ -21,9 +20,7 @@ from app.storage.db import SessionFactory
 from app.storage.models import (
     Account,
     AppSetting,
-    AutomationConsent,
-    AutomationInviteConsent,
-    AutomationSchedule,
+     AutomationSchedule,
     ScheduledReaction,
     AutomationOperationEvent,
     AutomationTask,
@@ -259,32 +256,20 @@ async def create_campaign(
         account = await db.get(Account, account_id)
         if not account or not account.enabled:
             raise ValueError("Аккаунт не найден или отключён.")
-        if kind == "direct_invite":
-            refs, labels = recipient_refs or {}, recipient_labels or {}
-            missing_refs = [peer_id for peer_id in unique_ids if not str(refs.get(peer_id) or "").strip()]
+        refs, labels = recipient_refs or {}, recipient_labels or {}
+        by_id = {
+            peer_id: {
+                "peer_ref": str(refs.get(peer_id) or "").strip(),
+                "peer_label": str(labels.get(peer_id) or refs.get(peer_id) or peer_id).strip(),
+            }
+            for peer_id in unique_ids
+        }
+        if kind != "group_broadcast":
+            missing_refs = [peer_id for peer_id, item in by_id.items() if not item["peer_ref"]]
             if missing_refs:
                 raise ValueError(
                     f"Для {len(missing_refs)} получателей не сохранён username. "
                     "Повторно выберите пользователей по @username."
-                )
-            by_id = {
-                peer_id: {"peer_ref": str(refs[peer_id]).strip(),
-                          "peer_label": str(labels.get(peer_id) or refs[peer_id]).strip()}
-                for peer_id in unique_ids
-            }
-        else:
-            consents = list((await db.scalars(select(AutomationConsent).where(
-                AutomationConsent.account_id == account_id,
-                AutomationConsent.peer_id.in_(unique_ids),
-                AutomationConsent.scope == scope,
-                AutomationConsent.revoked_at.is_(None),
-            ))).all())
-            by_id = {int(item.peer_id): item for item in consents}
-            missing = [peer_id for peer_id in unique_ids if peer_id not in by_id]
-            if missing:
-                raise ValueError(
-                    f"Нет действующего согласия для {len(missing)} получателей. "
-                    "Без подтверждённого opt-in рассылка не создаётся."
                 )
         task = AutomationTask(
             account_id=account_id, kind=kind,
@@ -297,8 +282,8 @@ async def create_campaign(
             recipient = by_id[peer_id]
             db.add(AutomationTaskRecipient(
                 task_id=task.id, peer_id=peer_id,
-                peer_ref=recipient.peer_ref if kind != "direct_invite" else recipient["peer_ref"],
-                peer_label=recipient.peer_label if kind != "direct_invite" else recipient["peer_label"],
+                peer_ref=recipient["peer_ref"],
+                peer_label=recipient["peer_label"],
             ))
         await db.commit()
         return int(task.id)
@@ -702,21 +687,6 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                             recipient.status = "pending"
                             await db.commit()
                             break
-                        # Opt-in remains mandatory for private messages and invite links.
-                        # Direct group invitations are checked by Telegram privacy and invite permissions.
-                        if kind != "direct_invite":
-                            scope = "invite" if kind == "invite" else ("group_publish" if kind == "group_broadcast" else "broadcast")
-                            consent = await db.scalar(select(AutomationConsent).where(
-                                AutomationConsent.account_id == account_id,
-                                AutomationConsent.peer_id == recipient.peer_id,
-                                AutomationConsent.scope == scope,
-                                AutomationConsent.revoked_at.is_(None),
-                            ))
-                            if not consent:
-                                recipient.status = "skipped"
-                                recipient.last_error = "Consent revoked before delivery."
-                                await db.commit()
-                                continue
                         sent_query = select(func.count()).select_from(
                             AutomationTaskRecipient
                         ).join(AutomationTask).where(
@@ -941,8 +911,10 @@ async def create_schedule(
     account_id: int, *, kind: str, recipients: list[int], payload: dict,
     interval_seconds: int, starts_at: datetime | None = None,
     ends_at: datetime | None = None, max_runs: int = 30,
+    recipient_refs: dict[int, str] | None = None,
+    recipient_labels: dict[int, str] | None = None,
 ) -> int:
-    """Create a recurring campaign with an explicit interval and recipient opt-in."""
+    """Create a recurring campaign for explicitly selected Telegram peers."""
     if kind == "direct_invite":
         raise ValueError("Прямое добавление можно запланировать однократно, но не повторять автоматически.")
     normalized = _validate_payload(kind, payload)
@@ -956,23 +928,25 @@ async def create_schedule(
     end = _aware(ends_at) if ends_at else None
     if due < utcnow() - timedelta(minutes=1) or (end and end <= due):
         raise ValueError("Проверьте время начала и окончания расписания.")
-    scope = "invite" if kind == "invite" else "broadcast"
+    refs, labels = recipient_refs or {}, recipient_labels or {}
+    schedule_recipients = [
+        {
+            "peer_id": peer_id,
+            "peer_ref": str(refs.get(peer_id) or "").strip(),
+            "peer_label": str(labels.get(peer_id) or refs.get(peer_id) or peer_id).strip(),
+        }
+        for peer_id in unique_ids
+    ]
+    if kind != "group_broadcast" and any(not item["peer_ref"] for item in schedule_recipients):
+        raise ValueError("Для каждого получателя сохраните username, повторно выбрав его по @username.")
     async with SessionFactory() as db:
         account = await db.get(Account, account_id)
         if not account or not account.enabled:
             raise ValueError("Аккаунт не найден или отключён.")
-        consents = list((await db.scalars(select(AutomationConsent).where(
-            AutomationConsent.account_id == account_id,
-            AutomationConsent.peer_id.in_(unique_ids),
-            AutomationConsent.scope == scope,
-            AutomationConsent.revoked_at.is_(None),
-        ))).all())
-        if len(consents) != len(unique_ids):
-            raise ValueError("Для каждого получателя требуется действующее согласие соответствующего типа.")
         schedule = AutomationSchedule(
             account_id=account_id, kind=kind,
             payload=json.dumps(normalized, ensure_ascii=False),
-            recipients_json=json.dumps(unique_ids),
+            recipients_json=json.dumps(schedule_recipients, ensure_ascii=False),
             interval_seconds=int(interval_seconds), next_run_at=due,
             ends_at=end, max_runs=int(max_runs), status="active",
         )
@@ -1047,30 +1021,17 @@ async def dispatch_due_schedules(*, max_schedules: int = 10) -> int:
                     await db.commit()
                     continue
             try:
-                ids = list(dict.fromkeys(int(x) for x in json.loads(row.recipients_json)))
-                scope = "invite" if row.kind == "invite" else ("group_publish" if row.kind == "group_broadcast" else "broadcast")
-                if row.kind == "direct_invite":
-                    target_group_id = int(json.loads(row.payload).get("target_group_id") or 0)
-                    consents = list((await db.scalars(select(AutomationInviteConsent).where(
-                        AutomationInviteConsent.account_id == row.account_id,
-                        AutomationInviteConsent.peer_id.in_(ids),
-                        AutomationInviteConsent.target_group_id == target_group_id,
-                        AutomationInviteConsent.revoked_at.is_(None),
-                    ))).all()) if ids else []
+                raw_recipients = json.loads(row.recipients_json)
+                if raw_recipients and isinstance(raw_recipients[0], dict):
+                    schedule_recipients = {
+                        int(item["peer_id"]): item for item in raw_recipients
+                    }
                 else:
-                    consents = list((await db.scalars(select(AutomationConsent).where(
-                        AutomationConsent.account_id == row.account_id,
-                        AutomationConsent.peer_id.in_(ids),
-                        AutomationConsent.scope == scope,
-                        AutomationConsent.revoked_at.is_(None),
-                    ))).all()) if ids else []
-                by_id = {int(item.peer_id): item for item in consents}
-                if len(by_id) != len(ids):
-                    row.status = "paused"
-                    row.last_error = "Расписание приостановлено: одно или несколько согласий отозваны."
-                    row.updated_at = now
-                    await db.commit()
-                    continue
+                    schedule_recipients = {
+                        int(peer_id): {"peer_id": int(peer_id), "peer_ref": "", "peer_label": str(peer_id)}
+                        for peer_id in raw_recipients
+                    }
+                ids = list(schedule_recipients)
                 task_payload = json.loads(row.payload)
                 task_payload["_schedule_id"] = int(row.id)
                 task = AutomationTask(
@@ -1081,10 +1042,11 @@ async def dispatch_due_schedules(*, max_schedules: int = 10) -> int:
                 db.add(task)
                 await db.flush()
                 for peer_id in ids:
-                    consent = by_id[peer_id]
+                    recipient = schedule_recipients[peer_id]
                     db.add(AutomationTaskRecipient(
                         task_id=task.id, peer_id=peer_id,
-                        peer_ref=consent.peer_ref, peer_label=consent.peer_label,
+                        peer_ref=str(recipient.get("peer_ref") or ""),
+                        peer_label=str(recipient.get("peer_label") or peer_id),
                     ))
                 row.last_task_id = task.id
                 row.runs_count += 1
