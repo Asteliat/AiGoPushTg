@@ -1467,6 +1467,7 @@ async def phone_number_received(m: Message, state: FSMContext):
     os.chmod(folder, 0o700)
     session_path = folder / ("account_" + secrets.token_hex(8))
     client = TelegramClient(str(session_path), cfg.telegram_api_id, cfg.telegram_api_hash, proxy=telethon_proxy(config=data["proxy_config"]))
+    configure_telethon_sqlite_session(client)
     data["client"], data["session_path"], data["phone"] = client, session_path, phone
     try:
         await client.connect()
@@ -1566,6 +1567,7 @@ async def qr_login(bot, uid, proxy_config=None, encrypted_proxy=None, ui_data=No
     folder=cfg.data_dir/"sessions"; folder.mkdir(parents=True,exist_ok=True); os.chmod(folder,0o700)
     session_path=folder/("account_"+secrets.token_hex(8))
     client=TelegramClient(str(session_path),cfg.telegram_api_id,cfg.telegram_api_hash, proxy=telethon_proxy(config=proxy_config))
+    configure_telethon_sqlite_session(client)
     success = False
     keep_client = False
     qr_message_id = None
