@@ -758,11 +758,11 @@ async def management_input_received(m: Message, state: FSMContext):
                 )
                 await state.set_state(Flow.management_campaign_confirm)
                 preview = (
-                    f"👥 Предпросмотр приглашения в группу\\n\\nЦель: {group['peer_label']}\\n"
-                    f"Получателей с согласием: {len(peers)}\\nЗапуск (UTC): {scheduled.isoformat()}\\n"
+                    f"👥 Предпросмотр приглашения в группу\n\nЦель: {group['peer_label']}\n"
+                    f"Получателей с согласием: {len(peers)}\nЗапуск (UTC): {scheduled.isoformat()}\n"
                     f"Пользователи: {', '.join(peer['peer_label'] for peer in peers[:12])}"
                     + (" и другие" if len(peers) > 12 else "")
-                    + "\\n\\nTelegram выполнит приглашение каждого пользователя отдельно. "
+                    + "\n\nTelegram выполнит приглашение каждого пользователя отдельно. "
                     "Нужны права администратора и действующее согласие каждого получателя."
                 )
                 await prompt_message(m, state, preview)
