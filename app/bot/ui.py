@@ -1012,7 +1012,7 @@ async def management_input_received(m: Message, state: FSMContext):
             kind = str(data.get("campaign_kind") or "")
             if raw.strip().lower() in {"all", "все"}:
                 raise ValueError("Укажите конкретных получателей через @username. Массовый выбор всех диалогов не запускается автоматически.")
-            refs = [item.strip() for item in raw.replace(",", "\\n").splitlines() if item.strip()]
+            refs = [item.strip() for item in raw.replace(",", "\n").splitlines() if item.strip()]
             if not refs:
                 raise ValueError("Добавьте хотя бы одного получателя через @username.")
             peers = (
