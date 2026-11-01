@@ -467,7 +467,7 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         "joinbatch": "Отправьте от 1 до 20 ссылок или @username, каждый с новой строки. Аккаунт будет вступать последовательно; при FloodWait остановится и покажет ожидание.",
         "leavebatch": "Отправьте от 1 до 20 ссылок или @username, каждый с новой строки. Аккаунт будет выходить последовательно; при FloodWait остановится.",
         "parsechannel": "Отправьте @username канала и количество публикаций через |. Например: @telegram | 20. Максимум 100 последних сообщений; списки участников не собираются.",
-        "parseparticipants": "Отправьте @username или ссылку на группу и лимит через |. Например: @mygroup | 200. Telegram возвращает только видимых участников; максимум 500. Будут выгружены только публичные поля профиля.",
+        "parseparticipants": "Отправьте @username или ссылку на собственную группу и лимит через |. Например: @mygroup | 200. Аккаунт должен быть администратором. Telegram возвращает только видимых участников; максимум 500. Будут выгружены только публичные поля профиля.",
         "join": "Отправьте @username или публичную ссылку t.me/… для вступления.",
         "leave": "Отправьте @username или публичную ссылку t.me/… для выхода.",
         "reaction": "Отправьте данные через |\nФормат: @username | ID_публикации | 👍",
@@ -1126,19 +1126,28 @@ async def management_input_received(m: Message, state: FSMContext):
                 raise ValueError("Формат: @username | количество.")
             limit = int(parts[1]) if len(parts) == 2 else 20
             result = await telegram_management.parse_chat_history(aid, parts[0], limit=limit)
-            lines = [
-                f"🔍 {result['title']} · публикаций: {len(result['posts'])}",
-                f"Username: @{result['username'] or '—'} · ID: {result['channel_id']}",
-                "",
-            ]
-            for post in result["posts"][:10]:
-                reactions = ", ".join(f"{item['emoji']} {item['count']}" for item in post["reactions"]) or "нет"
-                lines.append(
-                    f"#{post['id']} · {post['date']}\n"
-                    f"Просмотры: {post['views']} · Пересылки: {post['forwards']} · Ответы: {post['replies']}\n"
-                    f"Реакции: {reactions}\n{post['text'][:450] or '[медиа без текста]'}"
-                )
-            message = "\n\n".join(lines)[:3900]
+            output = io.StringIO()
+            writer = csv.writer(output)
+            writer.writerow(["message_id", "date", "views", "forwards", "replies", "reactions", "has_media", "text"])
+            for post in result["posts"]:
+                reactions = ", ".join(f"{item['emoji']}:{item['count']}" for item in post["reactions"])
+                writer.writerow([
+                    post["id"], post["date"], post["views"], post["forwards"],
+                    post["replies"], reactions, post["has_media"], post["text"],
+                ])
+            document = BufferedInputFile(
+                output.getvalue().encode("utf-8-sig"),
+                filename=f"history-account-{aid}-{result['channel_id']}.csv",
+            )
+            await m.answer_document(
+                document,
+                caption=f"История «{result['title']}»: выгружено {len(result['posts'])} публикаций. Только сообщения, доступные аккаунту.",
+            )
+            message = (
+                f"🔍 {result['title']} · выгружено публикаций: {len(result['posts'])}\n"
+                f"Username: @{result['username'] or '—'} · ID: {result['channel_id']}\n"
+                "Полная таблица сообщений отправлена в CSV."
+            )
         elif action == "parseparticipants":
             parts = [x.strip() for x in raw.split("|")]
             if len(parts) not in {1, 2}:

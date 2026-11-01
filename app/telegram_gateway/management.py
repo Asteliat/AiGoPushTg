@@ -749,6 +749,10 @@ async def simulate_post_activity(
 __all__ = [
     "ChatOverview", "FloodWaitError", "add_contact", "delete_contact",
     "get_chat_overview", "get_profile", "join_chat", "leave_chat",
-    "import_contacts", "list_contacts", "parse_chat_history", "react_to_message", "resolve_peer_for_consent", "resolve_peers_for_consent", "resolve_group_for_consent", "resolve_groups_for_consent", "resolve_group_reference", "set_profile_photo", "simulate_post_activity",
+    "import_contacts", "list_contacts", "list_account_dialogs", "manage_subscriptions_batch",
+    "parse_chat_history", "parse_chat_participants", "react_to_message",
+    "resolve_peer_for_consent", "resolve_peers_for_consent", "resolve_group_for_consent",
+    "resolve_groups_for_consent", "resolve_group_reference", "set_profile_photo",
+    "simulate_post_activity",
     "update_profile",
 ]
