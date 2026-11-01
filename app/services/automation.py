@@ -185,7 +185,7 @@ async def list_consents(account_id: int, *, scope: str | None = None) -> list[di
         rows = list((await db.scalars(query.limit(MAX_RECIPIENTS))).all())
         result = [{
             "peer_id": int(row.peer_id), "peer_ref": row.peer_ref, "peer_label": row.peer_label,
-            "scope": row.scope, "target_group_label": "",
+            "scope": row.scope, "target_group_id": None, "target_group_label": "",
             "granted_at": row.granted_at.isoformat(),
         } for row in rows]
         if not scope or scope == "direct_invite":
@@ -196,6 +196,7 @@ async def list_consents(account_id: int, *, scope: str | None = None) -> list[di
             result.extend({
                 "peer_id": int(row.peer_id), "peer_ref": row.peer_ref,
                 "peer_label": row.peer_label, "scope": "direct_invite",
+                "target_group_id": int(row.target_group_id),
                 "target_group_label": row.target_group_label,
                 "granted_at": row.granted_at.isoformat(),
             } for row in direct_rows)

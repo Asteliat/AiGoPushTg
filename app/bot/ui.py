@@ -1046,7 +1046,7 @@ async def management_input_received(m: Message, state: FSMContext):
                     await prompt_message(m, state, "Шаг 2 из 3 · Целевая группа\n\nУкажите peer ID или @username супергруппы, где аккаунт является администратором.")
                 else:
                     await state.update_data(management_action="campaign_recipients")
-                    await prompt_message(m, state, "Шаг 2 из 3 · Получатели\n\nОтправьте @username или ссылку каждого получателя через запятую или с новой строки. Для публикации в группе укажите группы, где аккаунт администратор (можно peer ID из списка групп).")
+                    await prompt_message(m, state, "Шаг 2 из 3 · Получатели\n\nОтправьте @username или ссылку каждого получателя через запятую или с новой строки. Напишите ALL, чтобы выбрать всех с действующим согласием. Для публикации в группе укажите группы, где аккаунт администратор (можно peer ID из списка групп).")
             return
         elif action == "campaign_interval":
             if not raw.isdigit() or not 24 <= int(raw) <= 8760:
@@ -1068,7 +1068,7 @@ async def management_input_received(m: Message, state: FSMContext):
             if next_action == "campaign_target_group":
                 await prompt_message(m, state, "Шаг 4 из 5 · Целевая группа\n\nУкажите peer ID или @username супергруппы, где аккаунт является администратором.")
             else:
-                await prompt_message(m, state, "Шаг 4 из 5 · Получатели\n\nОтправьте @username или ссылку каждого получателя через запятую или с новой строки. Для публикации в группе укажите группы, где аккаунт администратор.")
+                await prompt_message(m, state, "Шаг 4 из 5 · Получатели\n\nОтправьте @username или ссылку каждого получателя через запятую или с новой строки. Напишите ALL, чтобы выбрать всех с действующим согласием. Для публикации в группе укажите группы, где аккаунт администратор.")
             return
         elif action == "campaign_target_group":
             group = await telegram_management.resolve_group_for_consent(aid, raw)
@@ -1081,18 +1081,38 @@ async def management_input_received(m: Message, state: FSMContext):
                 management_action="campaign_recipients",
             )
             step = "5 из 5" if data.get("campaign_mode") == "recurring" else "3 из 3"
-            await prompt_message(m, state, f"Шаг {step} · Получатели\n\nОтправьте @username каждого человека, который явно попросил добавить его в эту группу. Можно через запятую или с новой строки.")
+            await prompt_message(m, state, f"Шаг {step} · Получатели\n\nОтправьте @username каждого человека, который явно попросил добавить его в эту группу. Можно через запятую или с новой строки. Напишите ALL, чтобы выбрать всех с действующим согласием именно на эту группу.")
             return
         elif action == "campaign_recipients":
-            refs = [item.strip() for item in raw.replace(",", "\\n").splitlines() if item.strip()]
-            if not refs:
-                raise ValueError("Добавьте хотя бы одного получателя.")
             kind = str(data.get("campaign_kind") or "")
-            peers = (
-                await telegram_management.resolve_groups_for_consent(aid, refs)
-                if kind == "group_broadcast"
-                else await telegram_management.resolve_peers_for_consent(aid, refs)
-            )
+            if raw.strip().lower() in {"all", "все"}:
+                scope = (
+                    "direct_invite" if kind == "direct_invite"
+                    else "group_publish" if kind == "group_broadcast"
+                    else "invite" if kind == "invite" else "broadcast"
+                )
+                consented = await telegram_automation.list_consents(aid, scope=scope)
+                if kind == "direct_invite":
+                    target_group_id = int(data.get("campaign_target_group_id") or 0)
+                    consented = [
+                        item for item in consented
+                        if int(item.get("target_group_id") or 0) == target_group_id
+                    ]
+                peers = [
+                    {"peer_id": int(item["peer_id"]), "peer_label": item["peer_label"]}
+                    for item in consented
+                ]
+                if not peers:
+                    raise ValueError("Нет получателей с действующим согласием для этой задачи.")
+            else:
+                refs = [item.strip() for item in raw.replace(",", "\\n").splitlines() if item.strip()]
+                if not refs:
+                    raise ValueError("Добавьте хотя бы одного получателя или напишите ALL.")
+                peers = (
+                    await telegram_management.resolve_groups_for_consent(aid, refs)
+                    if kind == "group_broadcast"
+                    else await telegram_management.resolve_peers_for_consent(aid, refs)
+                )
             if kind == "direct_invite":
                 payload = {
                     "target_group_id": int(data["campaign_target_group_id"]),
