@@ -353,3 +353,17 @@ class ScheduledReaction(Base):
     last_error: Mapped[str] = mapped_column(Text, default="", server_default="", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+
+class AutomationOperationEvent(Base):
+    """Persistent per-account operation ledger used for local rate policies."""
+    __tablename__ = "automation_operation_events"
+    __table_args__ = (
+        Index("ix_automation_operation_events_account_kind_time", "account_id", "operation", "occurred_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), index=True)
+    operation: Mapped[str] = mapped_column(String(24), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False, index=True)

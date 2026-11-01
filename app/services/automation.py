@@ -22,6 +22,7 @@ from app.storage.models import (
     AutomationConsent,
     AutomationSchedule,
     ScheduledReaction,
+    AutomationOperationEvent,
     AutomationTask,
     AutomationTaskRecipient,
     utcnow,
@@ -635,7 +636,8 @@ __all__ = [
     "set_global_automation_limits", "set_operation_limits", "operation_limits",
     "create_schedule", "list_schedules", "set_schedule_status", "dispatch_due_schedules",
     "resolve_uncertain_recipient", "schedule_reaction", "list_scheduled_reactions",
-    "cancel_scheduled_reaction", "process_due_reactions",
+    "cancel_scheduled_reaction", "process_due_reactions", "reserve_operation_slot",
+    "OperationRateLimitError",
     "set_campaign_status",
 ]
 
@@ -647,8 +649,8 @@ async def set_operation_limits(
     quiet_start_utc: str | None = None, quiet_end_utc: str | None = None,
 ) -> None:
     """Set independent broadcast/invite cadence and daily caps, globally or per account."""
-    if operation not in {"broadcast", "invite"}:
-        raise ValueError("Поддерживаются отдельные лимиты broadcast и invite.")
+    if operation not in {"broadcast", "invite", "subscription", "reaction"}:
+        raise ValueError("Операция должна быть broadcast, invite, subscription или reaction.")
     if not 1 <= int(interval_seconds) <= 3600:
         raise ValueError("Интервал должен быть от 1 до 3600 секунд.")
     if not 1 <= int(daily_limit) <= 500:
@@ -674,7 +676,7 @@ async def set_operation_limits(
 
 
 async def operation_limits(account_id: int, operation: str) -> dict:
-    if operation not in {"broadcast", "invite"}:
+    if operation not in {"broadcast", "invite", "subscription", "reaction"}:
         raise ValueError("Неизвестный тип операции.")
     interval, daily, quiet_start, quiet_end = await _account_limits(account_id, operation)
     return {
@@ -968,3 +970,60 @@ async def process_due_reactions(*, max_jobs: int = 5) -> int:
                     await db.commit()
         processed += 1
     return processed
+
+
+
+class OperationRateLimitError(RuntimeError):
+    def __init__(self, operation: str, retry_after: int, reason: str):
+        self.operation = operation
+        self.retry_after = max(1, int(retry_after))
+        super().__init__(f"{reason} Повторите через {self.retry_after} сек.")
+
+
+async def reserve_operation_slot(account_id: int, operation: str) -> None:
+    """Atomically reserve one local operation slot before touching Telegram."""
+    if operation not in {"subscription", "reaction"}:
+        raise ValueError("Для прямого резервирования поддерживаются subscription и reaction.")
+    defaults = {"subscription": (5, 20), "reaction": (30, 50)}
+    default_interval, default_daily = defaults[operation]
+    async with SessionFactory() as db:
+        account = await db.scalar(select(Account).where(Account.id == account_id).with_for_update())
+        if not account or not account.enabled:
+            raise ValueError("Аккаунт не найден или отключён.")
+        keys = [
+            f"automation.default.{operation}.interval_seconds",
+            f"automation.default.{operation}.daily_limit",
+            f"automation.{account_id}.{operation}.interval_seconds",
+            f"automation.{account_id}.{operation}.daily_limit",
+        ]
+        values = {row.key: row.value for row in (await db.scalars(
+            select(AppSetting).where(AppSetting.key.in_(keys))
+        )).all()}
+        interval = max(1, min(3600, int(values.get(
+            f"automation.{account_id}.{operation}.interval_seconds",
+            values.get(f"automation.default.{operation}.interval_seconds", str(default_interval)),
+        ))))
+        daily = max(1, min(500, int(values.get(
+            f"automation.{account_id}.{operation}.daily_limit",
+            values.get(f"automation.default.{operation}.daily_limit", str(default_daily)),
+        ))))
+        now = utcnow()
+        latest = await db.scalar(select(AutomationOperationEvent).where(
+            AutomationOperationEvent.account_id == account_id,
+            AutomationOperationEvent.operation == operation,
+        ).order_by(AutomationOperationEvent.occurred_at.desc()).limit(1))
+        if latest:
+            elapsed = int((now - _aware(latest.occurred_at)).total_seconds())
+            if elapsed < interval:
+                raise OperationRateLimitError(operation, interval - elapsed, "Сработал локальный интервал операции.")
+        window_start = now - timedelta(hours=24)
+        events = list((await db.scalars(select(AutomationOperationEvent).where(
+            AutomationOperationEvent.account_id == account_id,
+            AutomationOperationEvent.operation == operation,
+            AutomationOperationEvent.occurred_at >= window_start,
+        ).order_by(AutomationOperationEvent.occurred_at))).all())
+        if len(events) >= daily:
+            retry_after = int((_aware(events[0].occurred_at) + timedelta(hours=24) - now).total_seconds())
+            raise OperationRateLimitError(operation, max(1, retry_after), "Достигнут локальный лимит за 24 часа.")
+        db.add(AutomationOperationEvent(account_id=account_id, operation=operation, occurred_at=now))
+        await db.commit()

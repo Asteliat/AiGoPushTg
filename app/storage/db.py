@@ -92,6 +92,8 @@ async def init_db() -> None:
             "CREATE TABLE IF NOT EXISTS scheduled_reactions (id SERIAL PRIMARY KEY, account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE, chat_ref VARCHAR(255) NOT NULL, message_id BIGINT NOT NULL, emoji VARCHAR(32) NOT NULL, run_at TIMESTAMPTZ NOT NULL, status VARCHAR(20) NOT NULL DEFAULT 'queued', started_at TIMESTAMPTZ NULL, last_error TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
             "CREATE INDEX IF NOT EXISTS ix_scheduled_reactions_account_id ON scheduled_reactions (account_id)",
             "CREATE INDEX IF NOT EXISTS ix_scheduled_reactions_due ON scheduled_reactions (status, run_at)",
+            "CREATE TABLE IF NOT EXISTS automation_operation_events (id SERIAL PRIMARY KEY, account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE, operation VARCHAR(24) NOT NULL, occurred_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
+            "CREATE INDEX IF NOT EXISTS ix_automation_operation_events_account_kind_time ON automation_operation_events (account_id, operation, occurred_at)",
             "ALTER TABLE automation_consents ADD COLUMN IF NOT EXISTS peer_ref VARCHAR(255) NOT NULL DEFAULT ''",
             "ALTER TABLE automation_task_recipients ADD COLUMN IF NOT EXISTS peer_ref VARCHAR(255) NOT NULL DEFAULT ''",
             "ALTER TABLE ai_agents ADD COLUMN IF NOT EXISTS channel_reply_probability_override INTEGER NULL",

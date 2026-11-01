@@ -263,6 +263,8 @@ async def join_chat(account_id: int, link: str) -> None:
     value = link.strip()
     if not value:
         raise ValueError("Укажите ссылку или @username.")
+    from app.services.automation import reserve_operation_slot
+    await reserve_operation_slot(account_id, "subscription")
     async with _account_lock(account_id):
         async with isolated_account_client(account_id) as (_account, client):
             lowered = value.lower().rstrip("/")
@@ -286,6 +288,8 @@ async def leave_chat(account_id: int, link: str) -> None:
     value = link.strip()
     if not value:
         raise ValueError("Укажите ссылку или @username.")
+    from app.services.automation import reserve_operation_slot
+    await reserve_operation_slot(account_id, "subscription")
     async with _account_lock(account_id):
         async with isolated_account_client(account_id) as (_account, client):
             target = value.split("t.me/", 1)[1].split("/", 1)[0].split("?", 1)[0] if "t.me/" in value.lower() else value
@@ -459,10 +463,12 @@ async def manage_subscriptions_batch(
         raise ValueError("Укажите от 1 до 20 ссылок за одну операцию.")
     results = []
     flood_wait = 0
+    from app.services.automation import OperationRateLimitError, reserve_operation_slot
     async with _account_lock(account_id):
         async with isolated_account_client(account_id) as (_account, client):
             for value in normalized:
                 try:
+                    await reserve_operation_slot(account_id, "subscription")
                     if action == "join":
                         lowered = value.lower().rstrip("/")
                         if "t.me/+" in lowered or "t.me/joinchat/" in lowered:
@@ -486,6 +492,10 @@ async def manage_subscriptions_batch(
                         else:
                             await client(LeaveChannelRequest(entity))
                     results.append({"link": value, "status": "done", "error": ""})
+                except OperationRateLimitError as exc:
+                    flood_wait = exc.retry_after
+                    results.append({"link": value, "status": "local_limit", "error": str(exc)})
+                    break
                 except FloodWaitError as exc:
                     flood_wait = max(1, int(exc.seconds))
                     results.append({"link": value, "status": "flood_wait", "error": f"{flood_wait}s"})
@@ -507,6 +517,8 @@ async def react_to_message(
         raise ValueError("Эта реакция не входит в список поддерживаемых.")
     if int(message_id) <= 0:
         raise ValueError("Некорректный ID публикации.")
+    from app.services.automation import reserve_operation_slot
+    await reserve_operation_slot(account_id, "reaction")
     async with _account_lock(account_id):
         async with isolated_account_client(account_id) as (_account, client):
             entity = await client.get_entity(chat.strip())
