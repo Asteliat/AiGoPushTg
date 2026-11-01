@@ -11,7 +11,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from sqlalchemy import func, or_, select
-from sqlalchemy.exc import IntegrityError
 
 from app.settings import get_settings
 from app.storage.db import SessionFactory
@@ -323,7 +322,6 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                             await db.commit()
                             break
                         peer_id = int(recipient.peer_id)
-                        label = recipient.peer_label
                         peer_ref = recipient.peer_ref
                         recipient.status = "sending"
                         recipient.attempts += 1
