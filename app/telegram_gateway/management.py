@@ -426,21 +426,42 @@ async def react_to_message(
             ))
 
 
-async def resolve_peer_for_consent(account_id: int, peer_ref: str) -> dict:
-    """Resolve an explicitly opted-in Telegram peer and retain a reusable reference."""
+async def resolve_peer_for_consent(
+    account_id: int, peer_ref: str, *, allow_group: bool = False
+) -> dict:
+    """Resolve a public user or (when requested) a public group for explicit opt-in."""
     value = peer_ref.strip()
     if not value:
-        raise ValueError("Укажите @username или ссылку на пользователя.")
+        raise ValueError("Укажите @username или публичную ссылку t.me.")
     if value.startswith("https://t.me/"):
         value = value.removeprefix("https://t.me/").split("/", 1)[0]
     value = value.lstrip("@")
     if not value or value.startswith("+") or value.startswith("joinchat"):
-        raise ValueError("Для личного согласия нужен публичный username пользователя.")
+        raise ValueError("Нужен публичный username; приватные invite-ссылки здесь не принимаются.")
     async with _account_lock(account_id):
         async with isolated_account_client(account_id) as (_account, client):
             entity = await client.get_entity(value)
-            if not getattr(entity, "id", None) or entity.__class__.__name__ in {"Channel", "Chat"}:
-                raise ValueError("Для рассылки можно добавить только личный Telegram-аккаунт.")
+            if not getattr(entity, "id", None):
+                raise ValueError("Telegram не вернул корректный объект получателя.")
+            is_group = entity.__class__.__name__ == "Chat" or (
+                entity.__class__.__name__ == "Channel" and bool(getattr(entity, "megagroup", False))
+            )
+            is_channel = entity.__class__.__name__ == "Channel" and bool(getattr(entity, "broadcast", False))
+            if is_group:
+                if not allow_group:
+                    raise ValueError("Для личной рассылки укажите пользователя, а не группу.")
+                username = getattr(entity, "username", None)
+                if not username:
+                    raise ValueError("Для групповой рассылки нужна публичная группа с username.")
+                from telethon import utils
+                return {
+                    "peer_id": int(utils.get_peer_id(entity)),
+                    "peer_ref": f"@{username}",
+                    "peer_label": str(getattr(entity, "title", None) or f"@{username}"),
+                    "peer_type": "group",
+                }
+            if is_channel:
+                raise ValueError("Канал не является группой для рассылки сообщений.")
             username = getattr(entity, "username", None)
             if not username:
                 raise ValueError("У пользователя нет публичного username; добавьте его через контакты.")
@@ -451,11 +472,14 @@ async def resolve_peer_for_consent(account_id: int, peer_ref: str) -> dict:
                     getattr(entity, "first_name", None),
                     getattr(entity, "last_name", None),
                 ])) or f"@{username}",
+                "peer_type": "user",
             }
 
 
-async def resolve_peers_for_consent(account_id: int, peer_refs: list[str]) -> list[dict]:
-    """Resolve several explicitly selected personal accounts in one isolated session."""
+async def resolve_peers_for_consent(
+    account_id: int, peer_refs: list[str], *, allow_groups: bool = False
+) -> list[dict]:
+    """Resolve explicitly selected public users or groups in one isolated session."""
     values = []
     for raw in peer_refs:
         value = raw.strip()
@@ -472,18 +496,37 @@ async def resolve_peers_for_consent(account_id: int, peer_refs: list[str]) -> li
             result = []
             for value in values:
                 entity = await client.get_entity(value)
-                if not getattr(entity, "id", None) or entity.__class__.__name__ in {"Channel", "Chat"}:
-                    raise ValueError(f"@{value} не является личным Telegram-аккаунтом.")
-                username = getattr(entity, "username", None)
-                if not username:
-                    raise ValueError(f"У @{value} нет публичного username.")
-                result.append({
-                    "peer_id": int(entity.id),
-                    "peer_ref": f"@{username}",
-                    "peer_label": " ".join(filter(None, [
+                if not getattr(entity, "id", None):
+                    raise ValueError(f"@{value} не найден в Telegram.")
+                is_group = entity.__class__.__name__ == "Chat" or (
+                    entity.__class__.__name__ == "Channel" and bool(getattr(entity, "megagroup", False))
+                )
+                is_channel = entity.__class__.__name__ == "Channel" and bool(getattr(entity, "broadcast", False))
+                if is_group:
+                    if not allow_groups:
+                        raise ValueError(f"@{value} — группа. Для неё выберите тип group_broadcast.")
+                    username = getattr(entity, "username", None)
+                    if not username:
+                        raise ValueError(f"Группа @{value} должна иметь публичный username.")
+                    from telethon import utils
+                    peer_id = int(utils.get_peer_id(entity))
+                    label = str(getattr(entity, "title", None) or f"@{username}")
+                else:
+                    if is_channel:
+                        raise ValueError(f"@{value} — канал, а не группа.")
+                    username = getattr(entity, "username", None)
+                    if not username:
+                        raise ValueError(f"У @{value} нет публичного username.")
+                    peer_id = int(entity.id)
+                    label = " ".join(filter(None, [
                         getattr(entity, "first_name", None),
                         getattr(entity, "last_name", None),
-                    ])) or f"@{username}",
+                    ])) or f"@{username}"
+                result.append({
+                    "peer_id": peer_id,
+                    "peer_ref": f"@{username}",
+                    "peer_label": label,
+                    "peer_type": "group" if is_group else "user",
                 })
             return result
 
