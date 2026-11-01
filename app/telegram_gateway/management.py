@@ -221,7 +221,6 @@ async def get_chat_overview(account_id: int, link: str) -> ChatOverview:
     async with _account_lock(account_id):
         async with isolated_account_client(account_id) as (_account, client):
             entity = await client.get_entity(link.strip())
-            full = await client.get_entity(entity)
             count = getattr(entity, "participants_count", None)
             return ChatOverview(
                 title=str(getattr(entity, "title", "") or getattr(entity, "username", "") or "Чат"),
