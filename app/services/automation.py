@@ -888,9 +888,23 @@ async def dispatch_due_schedules(*, max_schedules: int = 10) -> int:
                         int(item["peer_id"]): item for item in raw_recipients
                     }
                 else:
+                    # Legacy schedules stored only peer IDs. Reuse old saved references
+                    # for compatibility; these rows are not checked as permission gates.
+                    legacy_ids = [int(peer_id) for peer_id in raw_recipients]
+                    legacy_rows = list((await db.scalars(select(AutomationConsent).where(
+                        AutomationConsent.account_id == row.account_id,
+                        AutomationConsent.peer_id.in_(legacy_ids),
+                    ).order_by(AutomationConsent.granted_at.desc()))).all()) if legacy_ids else []
+                    legacy_refs = {}
+                    for legacy in legacy_rows:
+                        legacy_refs.setdefault(int(legacy.peer_id), legacy)
                     schedule_recipients = {
-                        int(peer_id): {"peer_id": int(peer_id), "peer_ref": "", "peer_label": str(peer_id)}
-                        for peer_id in raw_recipients
+                        peer_id: {
+                            "peer_id": peer_id,
+                            "peer_ref": str(legacy_refs[peer_id].peer_ref) if peer_id in legacy_refs else "",
+                            "peer_label": str(legacy_refs[peer_id].peer_label) if peer_id in legacy_refs else str(peer_id),
+                        }
+                        for peer_id in legacy_ids
                     }
                 ids = list(schedule_recipients)
                 task_payload = json.loads(row.payload)
