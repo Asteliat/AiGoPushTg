@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
@@ -421,13 +422,18 @@ async def _maintain_campaign_lease(task_id: int) -> None:
     """Refresh the durable task lease while a Telegram request is in flight."""
     while True:
         await asyncio.sleep(20)
-        async with SessionFactory() as db:
-            task = await db.get(AutomationTask, task_id)
-            if not task or task.status != "running":
-                return
-            task.started_at = utcnow()
-            task.updated_at = utcnow()
-            await db.commit()
+        try:
+            async with SessionFactory() as db:
+                task = await db.get(AutomationTask, task_id)
+                if not task or task.status != "running":
+                    return
+                task.started_at = utcnow()
+                task.updated_at = utcnow()
+                await db.commit()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logging.exception("Could not refresh automation task lease: task=%s", task_id)
 
 
 async def process_due_campaigns(*, max_tasks: int = 1) -> int:
