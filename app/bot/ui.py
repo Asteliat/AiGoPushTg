@@ -2585,8 +2585,8 @@ async def chat_search_query(m: Message, state: FSMContext):
         m.bot,
         anchor,
         f"🔎 Ищу группы по запросу «{query}»\n\n"
-        "1/3 · Собираю результаты Telegram и поисковых систем…\n"
-        "2/3 · Проверяю каждую ссылку через Telegram API.\n"
+        "1/3 · Ищу по нескольким поисковикам и страницам выдачи…\n"
+        "2/3 · Собираю кандидатов и проверяю ссылки через Telegram API.\n"
         "Каналы в выдачу не попадут.",
         kb([[("⬅️ Инструменты", "tool:menu")]]),
     )
@@ -2596,7 +2596,7 @@ async def chat_search_query(m: Message, state: FSMContext):
     try:
         account, client = await _load_account_client(aid)
         native_task = asyncio.create_task(search_public_groups(client, query, limit=100))
-        web_task = asyncio.create_task(search_web_groups(query, limit=220))
+        web_task = asyncio.create_task(search_web_groups(query, limit=600, pages_per_query=5))
         native_result, web_result = await asyncio.gather(
             native_task, web_task, return_exceptions=True
         )
@@ -2619,7 +2619,7 @@ async def chat_search_query(m: Message, state: FSMContext):
             else:
                 combined[key] = item
 
-        raw_candidates = list(combined.values())[:300]
+        raw_candidates = list(combined.values())[:500]
         await edit_anchor(
             m.bot,
             anchor,
