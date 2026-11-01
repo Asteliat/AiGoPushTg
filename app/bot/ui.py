@@ -1016,9 +1016,9 @@ async def management_input_received(m: Message, state: FSMContext):
             if not refs:
                 raise ValueError("Добавьте хотя бы одного получателя через @username.")
             peers = (
-                await telegram_management.resolve_groups_for_consent(aid, refs)
+                await telegram_management.resolve_groups(aid, refs)
                 if kind == "group_broadcast"
-                else await telegram_management.resolve_peers_for_consent(aid, refs)
+                else await telegram_management.resolve_peers(aid, refs)
             )
             if kind == "direct_invite":
                 payload = {
@@ -1087,9 +1087,9 @@ async def management_input_received(m: Message, state: FSMContext):
                 refs_raw = parts[4]
             refs = [item.strip() for item in refs_raw.split(",") if item.strip()]
             peers = (
-                await telegram_management.resolve_groups_for_consent(aid, refs)
+                await telegram_management.resolve_groups(aid, refs)
                 if kind == "group_broadcast"
-                else await telegram_management.resolve_peers_for_consent(aid, refs)
+                else await telegram_management.resolve_peers(aid, refs)
             )
             await state.update_data(
                 management_action="campaign_content", management_account_id=aid,
