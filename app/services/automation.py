@@ -706,21 +706,22 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                             from telethon.errors import UserAlreadyParticipantError
                             from telethon.tl.functions.channels import InviteToChannelRequest
 
-                            target_group = await client.get_entity(
-                                payload.get("target_group_ref") or int(payload["target_group_id"])
-                            )
+                            # Resolve by the stable Telegram peer ID, never by a mutable username.
+                            target_group = await client.get_entity(int(payload["target_group_id"]))
                             if not getattr(target_group, "megagroup", False):
                                 raise ValueError("Прямое приглашение поддерживается только в супергруппы.")
                             permissions = await client.get_permissions(target_group, "me")
                             if not (getattr(permissions, "is_admin", False) or getattr(permissions, "is_creator", False)):
                                 raise PermissionError("Аккаунт больше не является администратором целевой группы.")
-                            user = await client.get_entity(peer_ref or peer_id)
+                            # The consent is bound to peer_id. A username can be reassigned later.
+                            user = await client.get_entity(peer_id)
                             try:
                                 await client(InviteToChannelRequest(channel=target_group, users=[user]))
                             except UserAlreadyParticipantError:
                                 pass
                         else:
-                            entity = await client.get_entity(peer_ref or peer_id)
+                            # Keep delivery bound to the exact peer that granted consent.
+                            entity = await client.get_entity(peer_id)
                             if kind == "group_broadcast":
                                 permissions = await client.get_permissions(entity, "me")
                                 if not (getattr(permissions, "is_admin", False) or getattr(permissions, "is_creator", False)):
