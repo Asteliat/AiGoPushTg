@@ -445,7 +445,7 @@ async def management_account_menu(c: CallbackQuery):
         [("➕ Вступить в чат", f"tool:mg:join:{aid}"), ("➖ Выйти из чата", f"tool:mg:leave:{aid}")],
         [("❤️ Реакция на публикацию", f"tool:mg:reaction:{aid}")],
         [("✏️ Изменить профиль", f"tool:mg:editprofile:{aid}")],
-        [("🤝 Согласия получателей", f"tool:mg:consent:{aid}")],
+        [("🤝 Добавить согласие", f"tool:mg:consent:{aid}"), ("🚫 Отозвать согласие", f"tool:mg:revokeconsent:{aid}")],
         [("📨 Создать рассылку / приглашение", f"tool:mg:campaign:{aid}")],
         [("⏱ Лимиты отправки", f"tool:mg:limits:{aid}")],
         [("⬅️ К аккаунтам", "tool:management")],
@@ -477,6 +477,7 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         "reaction": "Отправьте данные через |\nФормат: @username | ID_публикации | 👍",
         "editprofile": "Отправьте новые поля через |\nФормат: имя | фамилия | BIO | username\nЧтобы оставить поле без изменений, укажите -",
         "consent": "Добавить только пользователя, который явно согласился получать сообщения. Формат: @username | broadcast или invite | источник согласия.",
+        "revokeconsent": "Отправьте @username получателя. Его согласия на рассылки и приглашения будут отозваны.",
         "campaign": "Формат: broadcast или invite | now либо YYYY-MM-DD HH:MM UTC | @user1,@user2. Только получатели с активным согласием; максимум 100 за задачу.",
         "limits": "Формат: интервал_секунд | максимум_сообщений_за_24ч. По умолчанию 30 | 50; диапазоны 1–3600 и 1–500.",
     }
@@ -696,10 +697,13 @@ async def management_campaign_content_received(m: Message, state: FSMContext):
         "Подтвердите запуск только если каждый адресат действительно дал согласие."
     )
     await delete_msg(m)
-    await finish_prompt(m, state, preview, kb([
+    keyboard = kb([
         [("✅ Подтвердить и поставить в очередь", "tool:campaign:confirm")],
         [("❌ Отменить", "tool:campaign:cancel")],
-    ]))
+    ])
+    anchor = await state.get_data()
+    if not await edit_anchor(m.bot, anchor, preview, keyboard):
+        await m.answer(preview, reply_markup=keyboard)
 
 
 @router.callback_query(F.data == "tool:campaign:confirm")
