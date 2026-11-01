@@ -131,6 +131,50 @@ async def init_db() -> None:
             ") UPDATE chat_bindings SET enabled = TRUE, auto_discovered = TRUE "
             "WHERE auto_discovered = FALSE AND EXISTS (SELECT 1 FROM first_run)"
         )
+        # One-time cleanup: consent tables are no longer used by campaign delivery.
+        # First preserve recipient references for legacy recurring schedules, then pause
+        # schedules whose old consent rows did not contain a usable Telegram username.
+        cleanup = await connection.exec_driver_sql(
+            "INSERT INTO schema_migrations(version) VALUES (3) "
+            "ON CONFLICT (version) DO NOTHING RETURNING version"
+        )
+        if cleanup.scalar_one_or_none() is not None:
+            await connection.exec_driver_sql(
+                "UPDATE automation_schedules AS s SET recipients_json = ("
+                "SELECT COALESCE(jsonb_agg(jsonb_build_object("
+                "'peer_id', item.peer_id::BIGINT, "
+                "'peer_ref', COALESCE(NULLIF(ac.peer_ref, ''), NULLIF(ai.peer_ref, ''), ''), "
+                "'peer_label', COALESCE(NULLIF(ac.peer_label, ''), NULLIF(ai.peer_label, ''), item.peer_id)"
+                ") ORDER BY item.ordinality), '[]'::jsonb)::text "
+                "FROM jsonb_array_elements_text(s.recipients_json::jsonb) WITH ORDINALITY "
+                "AS item(peer_id, ordinality) "
+                "LEFT JOIN LATERAL ("
+                "SELECT peer_ref, peer_label FROM automation_consents "
+                "WHERE account_id = s.account_id AND peer_id = item.peer_id::BIGINT "
+                "ORDER BY granted_at DESC LIMIT 1"
+                ") ac ON TRUE "
+                "LEFT JOIN LATERAL ("
+                "SELECT peer_ref, peer_label FROM automation_invite_consents "
+                "WHERE account_id = s.account_id AND peer_id = item.peer_id::BIGINT "
+                "ORDER BY granted_at DESC LIMIT 1"
+                ") ai ON TRUE"
+                ") "
+                "WHERE jsonb_typeof(s.recipients_json::jsonb) = 'array' "
+                "AND NOT EXISTS ("
+                "SELECT 1 FROM jsonb_array_elements(s.recipients_json::jsonb) AS old_item(value) "
+                "WHERE jsonb_typeof(old_item.value) = 'object'"
+                ")"
+            )
+            await connection.exec_driver_sql(
+                "UPDATE automation_schedules SET status = 'paused', "
+                "last_error = 'Старое расписание приостановлено: username получателя не удалось восстановить. Выберите получателей заново.' "
+                "WHERE jsonb_typeof(recipients_json::jsonb) = 'array' AND EXISTS ("
+                "SELECT 1 FROM jsonb_array_elements(recipients_json::jsonb) AS recipient(value) "
+                "WHERE COALESCE(recipient.value ->> 'peer_ref', '') = ''"
+                ")"
+            )
+            await connection.exec_driver_sql("DELETE FROM automation_consents")
+            await connection.exec_driver_sql("DELETE FROM automation_invite_consents")
         await connection.exec_driver_sql(
             "INSERT INTO app_settings (key, value) VALUES ('ai_global_enabled', 'false') ON CONFLICT (key) DO NOTHING"
         )
