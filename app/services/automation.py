@@ -226,13 +226,9 @@ async def reset_account_limits(account_id: int) -> None:
     async with SessionFactory() as db:
         if not await db.get(Account, account_id):
             raise ValueError("Аккаунт не найден.")
-        keys = [
-            f"automation.{account_id}.interval_seconds",
-            f"automation.{account_id}.daily_limit",
-            f"automation.{account_id}.quiet_start_utc",
-            f"automation.{account_id}.quiet_end_utc",
-        ]
-        rows = list((await db.scalars(select(AppSetting).where(AppSetting.key.in_(keys)))).all())
+        rows = list((await db.scalars(select(AppSetting).where(
+            AppSetting.key.startswith(f"automation.{account_id}.")
+        ))).all())
         for row in rows:
             await db.delete(row)
         await db.commit()
@@ -707,7 +703,7 @@ async def set_operation_limits(
     account_id: int | None = None,
     quiet_start_utc: str | None = None, quiet_end_utc: str | None = None,
 ) -> None:
-    """Set independent broadcast/invite cadence and daily caps, globally or per account."""
+    """Set independent cadence, daily caps and quiet hours, globally or per account."""
     if operation not in {"broadcast", "invite", "subscription", "reaction"}:
         raise ValueError("Операция должна быть broadcast, invite, subscription или reaction.")
     if not 1 <= int(interval_seconds) <= 3600:
