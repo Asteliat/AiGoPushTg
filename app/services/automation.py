@@ -676,6 +676,7 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                                 uncertain = isinstance(exc, (TimeoutError, ConnectionError, OSError))
                                 item.status = "uncertain" if uncertain else "failed"
                                 item.last_error = f"{type(exc).__name__}: {str(exc)[:500]}"
+                            stop_direct_invite = False
                             if isinstance(exc, PermissionError):
                                 try:
                                     schedule_id = int(json.loads(payload_raw).get("_schedule_id") or 0)
@@ -687,8 +688,15 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                                         schedule.status = "paused"
                                         schedule.last_error = f"Расписание приостановлено: {str(exc)[:500]}"
                                         schedule.updated_at = utcnow()
+                                if kind == "direct_invite":
+                                    current = await db.get(AutomationTask, task_id)
+                                    if current and current.status == "running":
+                                        current.status = "failed"
+                                        current.completed_at = utcnow()
+                                        current.last_error = f"{type(exc).__name__}: {str(exc)[:500]}"
+                                    stop_direct_invite = True
                             await db.commit()
-                        if isinstance(exc, PermissionError):
+                        if stop_direct_invite:
                             break
                     else:
                         async with SessionFactory() as db:
