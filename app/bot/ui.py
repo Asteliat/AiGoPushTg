@@ -616,14 +616,18 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
             return_callback=f"tool:management:account:{aid}",
         )
         title = "Выберите тип задачи" if mode == "once" else "Выберите тип повторяющейся задачи"
+        type_rows = [
+            [("📨 Личное сообщение", f"tool:campaign:start:{aid}:broadcast:{mode}")],
+            [("🔗 Отправить ссылку-приглашение", f"tool:campaign:start:{aid}:invite:{mode}")],
+        ]
+        if mode == "once":
+            type_rows.append([("👥 Добавить в группу по согласию", f"tool:campaign:start:{aid}:direct_invite:{mode}")])
+        type_rows.extend([
+            [("📣 Опубликовать в своей группе", f"tool:campaign:start:{aid}:group_broadcast:{mode}")],
+            [("↩️ Назад", f"tool:management:account:{aid}")],
+        ])
         await edit(c, title + "\n\nПолучатели должны иметь активное согласие. Публикации в группах доступны только если аккаунт — администратор.",
-            kb([
-                [("📨 Личное сообщение", f"tool:campaign:start:{aid}:broadcast:{mode}")],
-                [("🔗 Отправить ссылку-приглашение", f"tool:campaign:start:{aid}:invite:{mode}")],
-                [("👥 Добавить в группу по согласию", f"tool:campaign:start:{aid}:direct_invite:{mode}")],
-                [("📣 Опубликовать в своей группе", f"tool:campaign:start:{aid}:group_broadcast:{mode}")],
-                [("↩️ Назад", f"tool:management:account:{aid}")],
-            ]))
+            kb(type_rows))
         return
     if action not in prompts:
         await c.answer("Неизвестное действие.", show_alert=True); return
@@ -702,6 +706,9 @@ async def management_campaign_wizard_start(c: CallbackQuery, state: FSMContext):
     aid, kind, mode = int(parts[3]), parts[4], parts[5]
     if kind not in {"broadcast", "invite", "direct_invite", "group_broadcast"} or mode not in {"once", "recurring"}:
         await c.answer("Неизвестный тип задачи.", show_alert=True)
+        return
+    if kind == "direct_invite" and mode == "recurring":
+        await c.answer("Прямое добавление можно запланировать один раз. Повторять его автоматически нельзя.", show_alert=True)
         return
     async with SessionFactory() as db:
         account = await db.get(Account, aid)
