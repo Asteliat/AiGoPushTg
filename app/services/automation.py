@@ -900,8 +900,8 @@ async def create_schedule(
     if kind == "direct_invite":
         raise ValueError("Прямое добавление можно запланировать однократно, но не повторять автоматически.")
     normalized = _validate_payload(kind, payload)
-    if not 86400 <= int(interval_seconds) <= 31536000:
-        raise ValueError("Повторение должно быть от 24 часов до 365 дней.")
+    if not 3600 <= int(interval_seconds) <= 31536000:
+        raise ValueError("Интервал повторения должен быть от 1 часа до 365 дней.")
     if not 1 <= int(max_runs) <= 365:
         raise ValueError("Количество повторов должно быть от 1 до 365.")
     unique_ids = list(dict.fromkeys(int(peer_id) for peer_id in recipients))

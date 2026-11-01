@@ -1039,7 +1039,7 @@ async def management_input_received(m: Message, state: FSMContext):
             await state.update_data(campaign_scheduled_at=scheduled.isoformat())
             if data.get("campaign_mode") == "recurring":
                 await state.update_data(management_action="campaign_interval")
-                await prompt_message(m, state, "Шаг 2 из 5 · Интервал\n\nЧерез сколько часов повторять отправку? Минимум 24 часа. Пример: 24.")
+                await prompt_message(m, state, "Шаг 2 из 5 · Интервал\n\nЧерез сколько часов повторять отправку? Минимум 1 час. Частота также ограничивается дневным лимитом аккаунта и FloodWait Telegram. Пример: 24.")
             else:
                 if data.get("campaign_kind") == "direct_invite":
                     await state.update_data(management_action="campaign_target_group")
@@ -1049,8 +1049,8 @@ async def management_input_received(m: Message, state: FSMContext):
                     await prompt_message(m, state, "Шаг 2 из 3 · Получатели\n\nОтправьте @username или ссылку каждого получателя через запятую или с новой строки. Напишите ALL, чтобы выбрать всех с действующим согласием. Для публикации в группе укажите группы, где аккаунт администратор (можно peer ID из списка групп).")
             return
         elif action == "campaign_interval":
-            if not raw.isdigit() or not 24 <= int(raw) <= 8760:
-                raise ValueError("Интервал должен быть от 24 до 8760 часов.")
+            if not raw.isdigit() or not 1 <= int(raw) <= 8760:
+                raise ValueError("Интервал должен быть от 1 до 8760 часов.")
             await state.update_data(
                 campaign_schedule_interval_seconds=int(raw) * 3600,
                 management_action="campaign_runs",
@@ -1467,7 +1467,7 @@ async def management_campaign_confirm(c: CallbackQuery, state: FSMContext):
                 interval_seconds=int(data["campaign_schedule_interval_seconds"]),
                 max_runs=int(data.get("campaign_schedule_max_runs") or 1),
             )
-            success_text = f"✅ Повторяющееся расписание #{task_id} создано. Каждый запуск повторно проверяет согласия; минимальный интервал — 24 часа."
+            success_text = f"✅ Повторяющееся расписание #{task_id} создано. Каждый запуск повторно проверяет согласия; минимальный интервал — 1 час; дневные лимиты и FloodWait сохраняются."
         else:
             task_id = await telegram_automation.create_campaign(
                 int(data["management_account_id"]), kind=data["campaign_kind"],
