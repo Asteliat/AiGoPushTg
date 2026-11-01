@@ -288,6 +288,40 @@ async def resolve_peer_for_consent(account_id: int, peer_ref: str) -> dict:
             }
 
 
+async def resolve_peers_for_consent(account_id: int, peer_refs: list[str]) -> list[dict]:
+    """Resolve several explicitly selected personal accounts in one isolated session."""
+    values = []
+    for raw in peer_refs:
+        value = raw.strip()
+        if value.startswith("https://t.me/"):
+            value = value.removeprefix("https://t.me/").split("/", 1)[0]
+        value = value.lstrip("@")
+        if not value or value.startswith("+") or value.startswith("joinchat"):
+            raise ValueError(f"Некорректный username получателя: {raw}")
+        values.append(value)
+    if not values or len(values) > 100:
+        raise ValueError("Укажите от 1 до 100 получателей за одну задачу.")
+    async with _account_lock(account_id):
+        async with isolated_account_client(account_id) as (_account, client):
+            result = []
+            for value in values:
+                entity = await client.get_entity(value)
+                if not getattr(entity, "id", None) or entity.__class__.__name__ in {"Channel", "Chat"}:
+                    raise ValueError(f"{raw} не является личным Telegram-аккаунтом.")
+                username = getattr(entity, "username", None)
+                if not username:
+                    raise ValueError(f"У @{value} нет публичного username.")
+                result.append({
+                    "peer_id": int(entity.id),
+                    "peer_ref": f"@{username}",
+                    "peer_label": " ".join(filter(None, [
+                        getattr(entity, "first_name", None),
+                        getattr(entity, "last_name", None),
+                    ])) or f"@{username}",
+                })
+            return result
+
+
 async def simulate_post_activity(
     *, post_key: str, requested_views: int, requested_reactions: int
 ) -> dict:
@@ -309,6 +343,6 @@ async def simulate_post_activity(
 __all__ = [
     "ChatOverview", "FloodWaitError", "add_contact", "delete_contact",
     "get_chat_overview", "get_profile", "join_chat", "leave_chat",
-    "list_contacts", "react_to_message", "resolve_peer_for_consent", "simulate_post_activity",
+    "list_contacts", "react_to_message", "resolve_peer_for_consent", "resolve_peers_for_consent", "simulate_post_activity",
     "update_profile",
 ]
