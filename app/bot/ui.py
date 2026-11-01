@@ -1347,7 +1347,7 @@ async def management_campaign_content_received(m: Message, state: FSMContext):
         f"Запуск (UTC): {data.get('campaign_scheduled_at')}\nПолучатели: {', '.join(recipients[:12])}"
         + (" и другие" if len(recipients) > 12 else "")
         + f"\n\nТекст: {(payload['text'] or payload['caption'] or 'Файл без подписи')[:700]}\n\n"
-        ("Для прямого добавления Telegram проверит приватность и invite_users; " if kind == "direct_invite" else "Проверьте список выбранных получателей перед запуском. ")
+        + ("Для прямого добавления Telegram проверит приватность и invite_users; " if kind == "direct_invite" else "Проверьте список выбранных получателей перед запуском. ")
         + ("Для group_broadcast аккаунт должен быть администратором каждой группы." if kind == "group_broadcast" else "")
     )
     await delete_msg(m)
