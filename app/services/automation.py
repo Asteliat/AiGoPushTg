@@ -668,7 +668,20 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                                 uncertain = isinstance(exc, (TimeoutError, ConnectionError, OSError))
                                 item.status = "uncertain" if uncertain else "failed"
                                 item.last_error = f"{type(exc).__name__}: {str(exc)[:500]}"
+                            if isinstance(exc, PermissionError):
+                                try:
+                                    schedule_id = int(json.loads(payload_raw).get("_schedule_id") or 0)
+                                except (ValueError, TypeError):
+                                    schedule_id = 0
+                                if schedule_id:
+                                    schedule = await db.get(AutomationSchedule, schedule_id)
+                                    if schedule and schedule.status == "active":
+                                        schedule.status = "paused"
+                                        schedule.last_error = f"Расписание приостановлено: {str(exc)[:500]}"
+                                        schedule.updated_at = utcnow()
                             await db.commit()
+                        if isinstance(exc, PermissionError):
+                            break
                     else:
                         async with SessionFactory() as db:
                             item = await db.scalar(select(AutomationTaskRecipient).where(
@@ -877,8 +890,11 @@ async def dispatch_due_schedules(*, max_schedules: int = 10) -> int:
                     row.updated_at = now
                     await db.commit()
                     continue
+                task_payload = json.loads(row.payload)
+                task_payload["_schedule_id"] = int(row.id)
                 task = AutomationTask(
-                    account_id=row.account_id, kind=row.kind, payload=row.payload,
+                    account_id=row.account_id, kind=row.kind,
+                    payload=json.dumps(task_payload, ensure_ascii=False),
                     status="queued", scheduled_at=now,
                 )
                 db.add(task)
