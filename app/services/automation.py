@@ -10,7 +10,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 
 from app.settings import get_settings
@@ -241,8 +241,13 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
             task = await db.scalar(
                 select(AutomationTask)
                 .where(
-                    AutomationTask.status == "queued",
-                    AutomationTask.scheduled_at <= now,
+                    or_(
+                        (AutomationTask.status == "queued") & (AutomationTask.scheduled_at <= now),
+                        (AutomationTask.status == "running") & (
+                            AutomationTask.started_at.is_(None)
+                            | (AutomationTask.started_at <= now - timedelta(minutes=10))
+                        ),
+                    ),
                 )
                 .order_by(AutomationTask.scheduled_at, AutomationTask.id)
                 .with_for_update(skip_locked=True)
@@ -255,6 +260,14 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
             task.updated_at = now
             await db.commit()
             task_id, account_id, kind, payload_raw = task.id, task.account_id, task.kind, task.payload
+            stale_sending = list((await db.scalars(select(AutomationTaskRecipient).where(
+                AutomationTaskRecipient.task_id == task_id,
+                AutomationTaskRecipient.status == "sending",
+            ))).all())
+            for stale_item in stale_sending:
+                stale_item.status = "pending"
+                stale_item.last_error = "Recovered after worker restart; delivery may be retried."
+            await db.commit()
 
         try:
             payload = json.loads(payload_raw)
@@ -362,7 +375,6 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                                 item.last_error = ""
                             await db.commit()
                     await __import__("asyncio").sleep(interval)
-            processed += 1
         except Exception as exc:
             async with SessionFactory() as db:
                 current = await db.get(AutomationTask, task_id)
