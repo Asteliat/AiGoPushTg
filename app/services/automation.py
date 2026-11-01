@@ -268,6 +268,21 @@ async def set_account_limits(account_id: int, *, interval_seconds: int, daily_li
         await db.commit()
 
 
+async def _sleep_with_task_heartbeat(task_id: int, seconds: int) -> None:
+    remaining = max(0, int(seconds))
+    while remaining:
+        step = min(15, remaining)
+        await asyncio.sleep(step)
+        remaining -= step
+        async with SessionFactory() as db:
+            task = await db.get(AutomationTask, task_id)
+            if not task or task.status != "running":
+                return
+            task.started_at = utcnow()
+            task.updated_at = utcnow()
+            await db.commit()
+
+
 async def process_due_campaigns(*, max_tasks: int = 1) -> int:
     """Process due opt-in campaigns. Called repeatedly by the dedicated worker loop."""
     from telethon.errors import FloodWaitError
@@ -415,7 +430,7 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                                 item.delivered_at = utcnow()
                                 item.last_error = ""
                             await db.commit()
-                    await asyncio.sleep(interval)
+                    await _sleep_with_task_heartbeat(task_id, interval)
         except Exception as exc:
             async with SessionFactory() as db:
                 current = await db.get(AutomationTask, task_id)
