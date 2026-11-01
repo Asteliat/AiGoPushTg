@@ -25,7 +25,7 @@ from app.storage.models import (
     utcnow,
 )
 
-ALLOWED_KINDS = {"broadcast", "group_broadcast", "invite", "group_invite", "reaction"}
+ALLOWED_KINDS = {"broadcast", "invite"}
 MAX_RECIPIENTS = 500
 MAX_TEXT = 4096
 
@@ -42,21 +42,6 @@ def _validate_payload(kind: str, payload: dict) -> dict:
         "file_path": str(payload.get("file_path") or "").strip(),
         "caption": str(payload.get("caption") or "").strip(),
     }
-    if kind == "reaction":
-        normalized.update({
-            "chat": str(payload.get("chat") or "").strip(),
-            "message_id": int(payload.get("message_id") or 0),
-            "emoji": str(payload.get("emoji") or "").strip(),
-        })
-        allowed = {"👍", "👎", "❤️", "🔥", "🥰", "👏", "😁", "🤔", "🤯", "😱", "🎉", "💩", "🙏"}
-        if not normalized["chat"] or normalized["message_id"] <= 0 or normalized["emoji"] not in allowed:
-            raise ValueError("Для реакции нужны чат, корректный ID публикации и поддерживаемый emoji.")
-        return normalized
-    if kind == "group_invite":
-        normalized["target_group"] = str(payload.get("target_group") or "").strip()
-        if not normalized["target_group"]:
-            raise ValueError("Укажите публичную супергруппу, в которую нужно пригласить участников.")
-        return normalized
     if len(normalized["text"]) > MAX_TEXT or len(normalized["caption"]) > MAX_TEXT:
         raise ValueError("Текст сообщения не должен превышать 4096 символов.")
     if not normalized["text"] and not normalized["file_path"]:
@@ -76,7 +61,7 @@ async def grant_consent(
     account_id: int, peer_id: int, *, peer_ref: str = "", peer_label: str = "",
     scope: str = "broadcast", consent_source: str = "operator-confirmed",
 ) -> None:
-    if scope not in {"broadcast", "invite", "group_broadcast"}:
+    if scope not in {"broadcast", "invite"}:
         raise ValueError("Неизвестный тип согласия.")
     if int(peer_id) == 0:
         raise ValueError("Некорректный Telegram ID.")
@@ -147,7 +132,7 @@ async def create_campaign(
     due = _aware(scheduled_at or utcnow())
     if due < utcnow() - timedelta(minutes=1):
         raise ValueError("Время запуска уже прошло.")
-    scope = "invite" if kind in {"invite", "group_invite"} else "group_broadcast" if kind == "group_broadcast" else "broadcast"
+    scope = "invite" if kind == "invite" else "broadcast"
     async with SessionFactory() as db:
         account = await db.get(Account, account_id)
         if not account or not account.enabled:
@@ -177,35 +162,6 @@ async def create_campaign(
             db.add(AutomationTaskRecipient(
                 task_id=task.id, peer_id=peer_id, peer_ref=consent.peer_ref, peer_label=consent.peer_label,
             ))
-        await db.commit()
-        return int(task.id)
-
-
-async def create_reaction_task(
-    account_id: int, *, chat: str, message_id: int, emoji: str,
-    scheduled_at: datetime | None = None,
-) -> int:
-    payload = _validate_payload("reaction", {
-        "chat": chat, "message_id": message_id, "emoji": emoji,
-    })
-    due = _aware(scheduled_at or utcnow())
-    if due < utcnow() - timedelta(minutes=1):
-        raise ValueError("Время запуска уже прошло.")
-    async with SessionFactory() as db:
-        account = await db.get(Account, account_id)
-        if not account or not account.enabled:
-            raise ValueError("Аккаунт не найден или отключён.")
-        task = AutomationTask(
-            account_id=account_id, kind="reaction",
-            payload=json.dumps(payload, ensure_ascii=False),
-            status="queued", scheduled_at=due,
-        )
-        db.add(task)
-        await db.flush()
-        db.add(AutomationTaskRecipient(
-            task_id=task.id, peer_id=0, peer_ref=payload["chat"],
-            peer_label=f"{payload['chat']} · публикация {payload['message_id']}",
-        ))
         await db.commit()
         return int(task.id)
 
@@ -440,9 +396,6 @@ async def _sleep_with_task_heartbeat(task_id: int, seconds: int) -> None:
 async def process_due_campaigns(*, max_tasks: int = 1) -> int:
     """Process due opt-in campaigns. Called repeatedly by the dedicated worker loop."""
     from telethon.errors import FloodWaitError
-    from telethon.tl.functions.messages import SendReactionRequest
-    from telethon.tl.functions.channels import InviteToChannelRequest
-    from telethon.tl.types import ReactionEmoji
     from app.telegram_gateway.management import isolated_account_client
 
     processed = 0
@@ -514,19 +467,18 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                             await db.commit()
                             break
                         # Consent is checked again immediately before each send.
-                        if kind != "reaction":
-                            scope = "invite" if kind in {"invite", "group_invite"} else "group_broadcast" if kind == "group_broadcast" else "broadcast"
-                            consent = await db.scalar(select(AutomationConsent).where(
-                                AutomationConsent.account_id == account_id,
-                                AutomationConsent.peer_id == recipient.peer_id,
-                                AutomationConsent.scope == scope,
-                                AutomationConsent.revoked_at.is_(None),
-                            ))
-                            if not consent:
-                                recipient.status = "skipped"
-                                recipient.last_error = "Consent revoked before delivery."
-                                await db.commit()
-                                continue
+                        scope = "invite" if kind == "invite" else "broadcast"
+                        consent = await db.scalar(select(AutomationConsent).where(
+                            AutomationConsent.account_id == account_id,
+                            AutomationConsent.peer_id == recipient.peer_id,
+                            AutomationConsent.scope == scope,
+                            AutomationConsent.revoked_at.is_(None),
+                        ))
+                        if not consent:
+                            recipient.status = "skipped"
+                            recipient.last_error = "Consent revoked before delivery."
+                            await db.commit()
+                            continue
                         sent_today = await db.scalar(select(func.count()).select_from(
                             AutomationTaskRecipient
                         ).join(AutomationTask).where(
@@ -550,28 +502,14 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                         await db.commit()
 
                     try:
-                        if kind == "reaction":
-                            entity = await client.get_entity(payload["chat"])
-                            await client(SendReactionRequest(
-                                peer=entity, msg_id=int(payload["message_id"]),
-                                reaction=[ReactionEmoji(emoticon=payload["emoji"])],
-                                big=False, add_to_recent=False,
-                            ))
-                        elif kind == "group_invite":
-                            group = await client.get_entity(payload["target_group"])
-                            if group.__class__.__name__ != "Channel" or not bool(getattr(group, "megagroup", False) or getattr(group, "gigagroup", False)):
-                                raise ValueError("Цель приглашения больше не является супергруппой.")
-                            user = await client.get_entity(peer_ref or peer_id)
-                            await client(InviteToChannelRequest(channel=group, users=[user]))
+                        entity = await client.get_entity(peer_ref or peer_id)
+                        if payload.get("file_path"):
+                            await client.send_file(
+                                entity, payload["file_path"],
+                                caption=payload.get("caption") or payload.get("text") or None,
+                            )
                         else:
-                            entity = await client.get_entity(peer_ref or peer_id)
-                            if payload.get("file_path"):
-                                await client.send_file(
-                                    entity, payload["file_path"],
-                                    caption=payload.get("caption") or payload.get("text") or None,
-                                )
-                            else:
-                                await client.send_message(entity, payload["text"])
+                            await client.send_message(entity, payload["text"])
                     except FloodWaitError as exc:
                         seconds = max(1, int(exc.seconds))
                         async with SessionFactory() as db:
@@ -596,12 +534,8 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                                 AutomationTaskRecipient.peer_id == peer_id,
                             ))
                             if item:
-                                if kind == "group_invite" and type(exc).__name__ == "UserAlreadyParticipantError":
-                                    item.status = "skipped"
-                                    item.last_error = "User is already a member of the target group."
-                                else:
-                                    item.status = "failed"
-                                    item.last_error = f"{type(exc).__name__}: {str(exc)[:500]}"
+                                item.status = "failed"
+                                item.last_error = f"{type(exc).__name__}: {str(exc)[:500]}"
                             await db.commit()
                     else:
                         async with SessionFactory() as db:
@@ -649,7 +583,7 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
 
 
 __all__ = [
-    "campaign_status", "create_campaign", "create_reaction_task", "grant_consent", "list_campaigns", "list_consents",
+    "campaign_status", "create_campaign", "grant_consent", "list_campaigns", "list_consents",
     "process_due_campaigns", "reset_account_limits", "retry_failed_campaign", "revoke_consent", "set_account_limits",
     "set_global_automation_limits",
     "set_campaign_status",
