@@ -57,7 +57,7 @@ def _validate_payload(kind: str, payload: dict) -> dict:
 
 
 async def grant_consent(
-    account_id: int, peer_id: int, *, peer_label: str = "",
+    account_id: int, peer_id: int, *, peer_ref: str = "", peer_label: str = "",
     scope: str = "broadcast", consent_source: str = "operator-confirmed",
 ) -> None:
     if scope not in {"broadcast", "invite"}:
@@ -74,13 +74,14 @@ async def grant_consent(
             AutomationConsent.scope == scope,
         ))
         if item:
+            item.peer_ref = peer_ref[:255]
             item.peer_label = peer_label[:255]
             item.consent_source = consent_source[:255]
             item.granted_at = utcnow()
             item.revoked_at = None
         else:
             db.add(AutomationConsent(
-                account_id=account_id, peer_id=int(peer_id),
+                account_id=account_id, peer_id=int(peer_id), peer_ref=peer_ref[:255],
                 peer_label=peer_label[:255], scope=scope,
                 consent_source=consent_source[:255],
             ))
@@ -114,7 +115,7 @@ async def list_consents(account_id: int, *, scope: str | None = None) -> list[di
             query = query.where(AutomationConsent.scope == scope)
         rows = list((await db.scalars(query.limit(MAX_RECIPIENTS))).all())
         return [{
-            "peer_id": int(row.peer_id), "peer_label": row.peer_label,
+            "peer_id": int(row.peer_id), "peer_ref": row.peer_ref, "peer_label": row.peer_label,
             "scope": row.scope, "granted_at": row.granted_at.isoformat(),
         } for row in rows]
 
@@ -158,7 +159,7 @@ async def create_campaign(
         for peer_id in unique_ids:
             consent = by_id[peer_id]
             db.add(AutomationTaskRecipient(
-                task_id=task.id, peer_id=peer_id, peer_label=consent.peer_label,
+                task_id=task.id, peer_id=peer_id, peer_ref=consent.peer_ref, peer_label=consent.peer_label,
             ))
         await db.commit()
         return int(task.id)
@@ -323,12 +324,13 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                             break
                         peer_id = int(recipient.peer_id)
                         label = recipient.peer_label
+                        peer_ref = recipient.peer_ref
                         recipient.status = "sending"
                         recipient.attempts += 1
                         await db.commit()
 
                     try:
-                        entity = await client.get_entity(peer_id)
+                        entity = await client.get_entity(peer_ref or peer_id)
                         if payload.get("file_path"):
                             await client.send_file(
                                 entity, payload["file_path"],
