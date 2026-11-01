@@ -21,6 +21,7 @@ from app.storage.models import (
     AppSetting,
     AutomationConsent,
     AutomationSchedule,
+    ScheduledReaction,
     AutomationTask,
     AutomationTaskRecipient,
     utcnow,
@@ -829,3 +830,120 @@ async def resolve_uncertain_recipient(task_id: int, peer_id: int, *, delivered: 
                     task.status = "failed" if int(remaining_failed or 0) else "completed"
                     task.completed_at = utcnow()
         await db.commit()
+
+
+
+ALLOWED_REACTIONS = {"👍", "👎", "❤️", "🔥", "🥰", "👏", "😁", "🤔", "🤯", "😱", "🎉", "💩", "🙏"}
+
+
+async def schedule_reaction(
+    account_id: int, *, chat_ref: str, message_id: int, emoji: str,
+    run_at: datetime | None = None,
+) -> int:
+    chat = str(chat_ref or "").strip()
+    if not chat or len(chat) > 255:
+        raise ValueError("Укажите @username или ссылку на чат.")
+    if int(message_id) <= 0:
+        raise ValueError("ID публикации должен быть положительным числом.")
+    if emoji not in ALLOWED_REACTIONS:
+        raise ValueError("Реакция не поддерживается.")
+    due = _aware(run_at or utcnow())
+    if due < utcnow() - timedelta(minutes=1):
+        raise ValueError("Время запуска уже прошло.")
+    async with SessionFactory() as db:
+        account = await db.get(Account, account_id)
+        if not account or not account.enabled:
+            raise ValueError("Аккаунт не найден или отключён.")
+        row = ScheduledReaction(
+            account_id=account_id, chat_ref=chat, message_id=int(message_id),
+            emoji=emoji, run_at=due, status="queued",
+        )
+        db.add(row)
+        await db.commit()
+        return int(row.id)
+
+
+async def list_scheduled_reactions(account_id: int, *, limit: int = 20) -> list[dict]:
+    async with SessionFactory() as db:
+        rows = list((await db.scalars(select(ScheduledReaction).where(
+            ScheduledReaction.account_id == account_id
+        ).order_by(ScheduledReaction.run_at, ScheduledReaction.id).limit(max(1, min(limit, 50))))).all())
+        return [{
+            "id": row.id, "chat_ref": row.chat_ref, "message_id": row.message_id,
+            "emoji": row.emoji, "run_at": _aware(row.run_at).isoformat(),
+            "status": row.status, "last_error": row.last_error,
+        } for row in rows]
+
+
+async def cancel_scheduled_reaction(reaction_id: int) -> None:
+    async with SessionFactory() as db:
+        row = await db.get(ScheduledReaction, reaction_id)
+        if not row:
+            raise ValueError("Запланированная реакция не найдена.")
+        if row.status != "queued":
+            raise ValueError("Можно отменить только ожидающую реакцию.")
+        row.status = "cancelled"
+        row.updated_at = utcnow()
+        await db.commit()
+
+
+async def process_due_reactions(*, max_jobs: int = 5) -> int:
+    """Execute one-shot reactions; stale in-flight jobs become uncertain, never duplicated."""
+    from app.telegram_gateway.management import react_to_message
+
+    processed = 0
+    for _ in range(max(1, min(int(max_jobs), 20))):
+        async with SessionFactory() as db:
+            now = utcnow()
+            row = await db.scalar(select(ScheduledReaction).where(
+                or_(
+                    (ScheduledReaction.status == "queued") & (ScheduledReaction.run_at <= now),
+                    (ScheduledReaction.status == "running") & (
+                        ScheduledReaction.started_at.is_(None)
+                        | (ScheduledReaction.started_at <= now - timedelta(minutes=10))
+                    ),
+                )
+            ).order_by(ScheduledReaction.run_at, ScheduledReaction.id)
+             .with_for_update(skip_locked=True).limit(1))
+            if not row:
+                break
+            if row.status == "running":
+                row.status = "uncertain"
+                row.last_error = "Результат неизвестен после перезапуска. Проверьте публикацию вручную."
+                row.updated_at = now
+                await db.commit()
+                processed += 1
+                continue
+            row.status = "running"
+            row.started_at = now
+            row.updated_at = now
+            snapshot = (row.id, row.account_id, row.chat_ref, row.message_id, row.emoji)
+            await db.commit()
+        reaction_id, account_id, chat_ref, message_id, emoji = snapshot
+        try:
+            await react_to_message(account_id, chat=chat_ref, message_id=message_id, emoji=emoji)
+        except Exception as exc:
+            from telethon.errors import FloodWaitError
+            async with SessionFactory() as db:
+                row = await db.get(ScheduledReaction, reaction_id)
+                if row and row.status == "running":
+                    if isinstance(exc, FloodWaitError):
+                        row.status = "queued"
+                        row.run_at = utcnow() + timedelta(seconds=max(1, int(exc.seconds)))
+                    elif isinstance(exc, (TimeoutError, ConnectionError, OSError)):
+                        row.status = "uncertain"
+                    else:
+                        row.status = "failed"
+                    row.last_error = f"{type(exc).__name__}: {str(exc)[:500]}"
+                    row.updated_at = utcnow()
+                    await db.commit()
+        else:
+            async with SessionFactory() as db:
+                row = await db.get(ScheduledReaction, reaction_id)
+                if row and row.status == "running":
+                    row.status = "sent"
+                    row.last_error = ""
+                    row.updated_at = utcnow()
+                    await db.commit()
+        processed += 1
+    return processed

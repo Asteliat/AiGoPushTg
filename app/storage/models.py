@@ -332,3 +332,24 @@ class AutomationSchedule(Base):
     last_error: Mapped[str] = mapped_column(Text, default="", server_default="", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+
+class ScheduledReaction(Base):
+    """One explicitly selected reaction scheduled for one message."""
+    __tablename__ = "scheduled_reactions"
+    __table_args__ = (
+        Index("ix_scheduled_reactions_due", "status", "run_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), index=True)
+    chat_ref: Mapped[str] = mapped_column(String(255), nullable=False)
+    message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    emoji: Mapped[str] = mapped_column(String(32), nullable=False)
+    run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(20), default="queued", server_default="queued", nullable=False, index=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str] = mapped_column(Text, default="", server_default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)

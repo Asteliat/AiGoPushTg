@@ -421,6 +421,7 @@ async def management_account_menu(c: CallbackQuery):
         [("👥 Сбор участников (CSV)", f"tool:mg:parseparticipants:{aid}")],
         [("➕ Вступить в чат", f"tool:mg:join:{aid}"), ("➖ Выйти из чата", f"tool:mg:leave:{aid}")],
         [("❤️ Реакция на публикацию", f"tool:mg:reaction:{aid}")],
+        [("🕒 Запланировать реакцию", f"tool:mg:schedreaction:{aid}"), ("📆 Мои реакции", f"tool:mg:reactions:{aid}")],
         [("✏️ Изменить профиль", f"tool:mg:editprofile:{aid}")],
         [("📷 Изменить фото профиля", f"tool:mg:photo:{aid}")],
         [("🤝 Согласие пользователя", f"tool:mg:consent:{aid}"), ("🚫 Отозвать согласие", f"tool:mg:revokeconsent:{aid}")],
@@ -467,6 +468,8 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         "join": "Отправьте @username или публичную ссылку t.me/… для вступления.",
         "leave": "Отправьте @username или публичную ссылку t.me/… для выхода.",
         "reaction": "Отправьте данные через |\nФормат: @username | ID_публикации | 👍",
+        "schedreaction": "Формат: @username | ID_публикации | emoji | now либо YYYY-MM-DD HH:MM UTC. Пример: @mychannel | 123 | 🔥 | 2026-11-03 18:00. Это одна реакция на одну выбранную публикацию, без накрутки.",
+
         "editprofile": "Отправьте новые поля через |\nФормат: имя | фамилия | BIO | username\nЧтобы оставить поле без изменений, укажите -",
         "consent": "Добавить только пользователя, который явно согласился получать сообщения. Формат: @username | broadcast или invite | источник согласия.",
         "consentgroup": "Укажите @username или ссылку на группу, где аккаунт является администратором, затем через | источник разрешения. Пример: @mygroup | собственная группа, публикации разрешены администратором.",
@@ -697,6 +700,48 @@ async def management_campaign_status(c: CallbackQuery):
         await edit(c, text_value, kb(rows))
     except Exception as exc:
         await edit(c, f"Не удалось получить задачу: {type(exc).__name__}: {str(exc)[:250]}", back_home())
+
+
+@router.callback_query(F.data.startswith("tool:reaction:status:"))
+async def management_reaction_status(c: CallbackQuery):
+    if not await check_cb(c):
+        return
+    reaction_id = int(c.data.rsplit(":", 1)[1])
+    async with SessionFactory() as db:
+        from app.storage.models import ScheduledReaction
+        row = await db.get(ScheduledReaction, reaction_id)
+        if row:
+            aid = row.account_id
+            snapshot = {"id": row.id, "chat_ref": row.chat_ref, "message_id": row.message_id,
+                        "emoji": row.emoji, "run_at": row.run_at.isoformat(),
+                        "status": row.status, "last_error": row.last_error}
+        else:
+            snapshot = None
+    if not snapshot:
+        await c.answer("Реакция не найдена.", show_alert=True)
+        return
+    rows = []
+    if snapshot["status"] == "queued":
+        rows.append([("⛔ Отменить", f"tool:reaction:cancel:{reaction_id}")])
+    rows.append([("↩️ К реакциям", f"tool:mg:reactions:{aid}")])
+    detail = (f"❤️ Реакция #{reaction_id}\nЧат: {snapshot['chat_ref']}\nПубликация: {snapshot['message_id']}\n"
+              f"Emoji: {snapshot['emoji']}\nВремя UTC: {snapshot['run_at']}\nСтатус: {snapshot['status']}")
+    if snapshot["last_error"]:
+        detail += f"\nИнформация: {snapshot['last_error'][:500]}"
+    await edit(c, detail, kb(rows))
+
+
+@router.callback_query(F.data.startswith("tool:reaction:cancel:"))
+async def management_reaction_cancel(c: CallbackQuery):
+    if not await check_cb(c):
+        return
+    reaction_id = int(c.data.rsplit(":", 1)[1])
+    try:
+        await telegram_automation.cancel_scheduled_reaction(reaction_id)
+        await c.answer("Реакция отменена.")
+        await management_reaction_status(c)
+    except Exception as exc:
+        await c.answer(str(exc)[:180], show_alert=True)
 
 
 @router.callback_query(F.data.startswith("tool:campaign:resolve:"))
@@ -1009,6 +1054,20 @@ async def management_input_received(m: Message, state: FSMContext):
             await telegram_management.join_chat(aid, raw); message = "Аккаунт вступил в чат."
         elif action == "leave":
             await telegram_management.leave_chat(aid, raw); message = "Аккаунт вышел из чата."
+        elif action == "schedreaction":
+            parts = [x.strip() for x in raw.split("|")]
+            if len(parts) != 4:
+                raise ValueError("Формат: чат | ID публикации | emoji | время UTC или now.")
+            run_at = datetime.now(timezone.utc)
+            if parts[3].lower() != "now":
+                try:
+                    run_at = datetime.strptime(parts[3], "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+                except ValueError as exc:
+                    raise ValueError("Время должно быть YYYY-MM-DD HH:MM UTC.") from exc
+            reaction_id = await telegram_automation.schedule_reaction(
+                aid, chat_ref=parts[0], message_id=int(parts[1]), emoji=parts[2], run_at=run_at,
+            )
+            message = f"Реакция #{reaction_id} запланирована на {run_at.isoformat()} UTC."
         elif action == "reaction":
             parts = [x.strip() for x in raw.split("|")]
             if len(parts) != 3: raise ValueError("Формат: чат | ID публикации | emoji.")
