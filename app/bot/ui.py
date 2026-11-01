@@ -442,6 +442,7 @@ async def management_account_menu(c: CallbackQuery):
         [("👤 Профиль", f"tool:mg:profile:{aid}"), ("📇 Контакты", f"tool:mg:contacts:{aid}")],
         [("➕ Добавить контакт", f"tool:mg:addcontact:{aid}"), ("🗑 Удалить контакт", f"tool:mg:delcontact:{aid}")],
         [("🔎 Информация о чате", f"tool:mg:chatinfo:{aid}")],
+        [("🔍 Парсер публикаций канала", f"tool:mg:parsechannel:{aid}")],
         [("➕ Вступить в чат", f"tool:mg:join:{aid}"), ("➖ Выйти из чата", f"tool:mg:leave:{aid}")],
         [("❤️ Реакция на публикацию", f"tool:mg:reaction:{aid}")],
         [("✏️ Изменить профиль", f"tool:mg:editprofile:{aid}")],
@@ -474,6 +475,7 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         "addcontact": "Отправьте номер телефона, имя и фамилию через |\nПример: +79990000000 | Иван | Иванов",
         "delcontact": "Отправьте Telegram user ID контакта, которого нужно удалить.",
         "chatinfo": "Отправьте @username или публичную ссылку t.me/…",
+        "parsechannel": "Отправьте @username канала и количество публикаций через |. Например: @telegram | 20. Максимум 100 последних публикаций; участники канала не собираются.",
         "join": "Отправьте @username или публичную ссылку t.me/… для вступления.",
         "leave": "Отправьте @username или публичную ссылку t.me/… для выхода.",
         "reaction": "Отправьте данные через |\nФормат: @username | ID_публикации | 👍",
@@ -705,6 +707,25 @@ async def management_input_received(m: Message, state: FSMContext):
                 f"Участников: {item.participants_count if item.participants_count is not None else 'нет данных'}\n"
                 f"Тип: {'канал' if item.is_channel else 'группа' if item.is_group else 'чат/другой'}"
             )
+        elif action == "parsechannel":
+            parts = [x.strip() for x in raw.split("|")]
+            if len(parts) not in {1, 2}:
+                raise ValueError("Формат: @username | количество.")
+            limit = int(parts[1]) if len(parts) == 2 else 20
+            result = await telegram_management.parse_public_channel_posts(aid, parts[0], limit=limit)
+            lines = [
+                f"🔍 {result['title']} · публикаций: {len(result['posts'])}",
+                f"Username: @{result['username'] or '—'} · ID: {result['channel_id']}",
+                "",
+            ]
+            for post in result["posts"][:10]:
+                reactions = ", ".join(f"{item['emoji']} {item['count']}" for item in post["reactions"]) or "нет"
+                lines.append(
+                    f"#{post['id']} · {post['date']}\n"
+                    f"Просмотры: {post['views']} · Пересылки: {post['forwards']} · Ответы: {post['replies']}\n"
+                    f"Реакции: {reactions}\n{post['text'][:450] or '[медиа без текста]'}"
+                )
+            message = "\n\n".join(lines)[:3900]
         elif action == "join":
             await telegram_management.join_chat(aid, raw); message = "Аккаунт вступил в чат."
         elif action == "leave":
