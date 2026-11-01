@@ -335,6 +335,51 @@ async def parse_chat_history(
             }
 
 
+async def parse_chat_participants(
+    account_id: int, chat: str, *, limit: int = 200
+) -> dict:
+    """Return Telegram-visible public participant fields for an accessible group.
+
+    Telegram decides which members are visible. The result is deliberately capped and
+    excludes phone numbers, private profile fields, and any attempt to bypass API limits.
+    """
+    limit = max(1, min(int(limit), 500))
+    target = chat.strip()
+    if not target:
+        raise ValueError("Укажите @username или ссылку на группу.")
+    async with _account_lock(account_id):
+        async with isolated_account_client(account_id) as (_account, client):
+            entity = await client.get_entity(target)
+            is_group = bool(
+                getattr(entity, "megagroup", False)
+                or getattr(entity, "gigagroup", False)
+                or entity.__class__.__name__ == "Chat"
+            )
+            is_channel = bool(getattr(entity, "broadcast", False))
+            if not (is_group or is_channel):
+                raise ValueError("Укажите группу или канал.")
+            participants = []
+            async for user in client.iter_participants(entity, limit=limit):
+                if not getattr(user, "id", None):
+                    continue
+                participants.append({
+                    "id": int(user.id),
+                    "username": getattr(user, "username", None) or "",
+                    "first_name": getattr(user, "first_name", None) or "",
+                    "last_name": getattr(user, "last_name", None) or "",
+                    "is_bot": bool(getattr(user, "bot", False)),
+                    "is_deleted": bool(getattr(user, "deleted", False)),
+                })
+            return {
+                "chat_id": int(entity.id),
+                "title": str(getattr(entity, "title", "") or getattr(entity, "username", "") or target),
+                "username": getattr(entity, "username", None),
+                "visible_count": len(participants),
+                "requested_limit": limit,
+                "participants": participants,
+            }
+
+
 async def react_to_message(
     account_id: int, *, chat: str, message_id: int, emoji: str
 ) -> None:
