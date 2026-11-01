@@ -14,6 +14,7 @@ from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 
 from sqlalchemy import delete, func, or_, select
+from telethon import utils
 
 from app.settings import get_settings
 from app.storage.db import SessionFactory
@@ -37,6 +38,24 @@ MAX_TEXT = 4096
 
 def _aware(value: datetime) -> datetime:
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+
+
+async def _resolve_campaign_peer(client, peer_id: int, peer_ref: str = ""):
+    """Resolve by stored username but verify it still belongs to the consented peer ID.
+
+    The temporary session snapshot may not retain entities discovered by an earlier
+    temporary client. Resolving the saved username keeps access hashes available, while
+    the ID comparison prevents a reassigned username from receiving the campaign.
+    """
+    if peer_ref:
+        entity = await client.get_entity(peer_ref)
+        if int(utils.get_peer_id(entity)) != int(peer_id):
+            raise ValueError(
+                "Username получателя изменился и теперь указывает на другой аккаунт. "
+                "Обновите согласие перед повторной отправкой."
+            )
+        return entity
+    return await client.get_entity(int(peer_id))
 
 
 def _validate_payload(kind: str, payload: dict) -> dict:
@@ -712,22 +731,22 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                             from telethon.errors import UserAlreadyParticipantError
                             from telethon.tl.functions.channels import InviteToChannelRequest
 
-                            # Resolve by the stable Telegram peer ID, never by a mutable username.
-                            target_group = await client.get_entity(int(payload["target_group_id"]))
+                            target_group = await _resolve_campaign_peer(
+                                client, int(payload["target_group_id"]),
+                                str(payload.get("target_group_ref") or ""),
+                            )
                             if not getattr(target_group, "megagroup", False):
                                 raise ValueError("Прямое приглашение поддерживается только в супергруппы.")
                             permissions = await client.get_permissions(target_group, "me")
                             if not (getattr(permissions, "is_admin", False) or getattr(permissions, "is_creator", False)):
                                 raise PermissionError("Аккаунт больше не является администратором целевой группы.")
-                            # The consent is bound to peer_id. A username can be reassigned later.
-                            user = await client.get_entity(peer_id)
+                            user = await _resolve_campaign_peer(client, peer_id, recipient.peer_ref)
                             try:
                                 await client(InviteToChannelRequest(channel=target_group, users=[user]))
                             except UserAlreadyParticipantError:
                                 pass
                         else:
-                            # Keep delivery bound to the exact peer that granted consent.
-                            entity = await client.get_entity(peer_id)
+                            entity = await _resolve_campaign_peer(client, peer_id, recipient.peer_ref)
                             if kind == "group_broadcast":
                                 permissions = await client.get_permissions(entity, "me")
                                 if not (getattr(permissions, "is_admin", False) or getattr(permissions, "is_creator", False)):
