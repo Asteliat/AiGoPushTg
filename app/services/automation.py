@@ -417,6 +417,19 @@ async def _sleep_with_task_heartbeat(task_id: int, seconds: int) -> None:
             await db.commit()
 
 
+async def _maintain_campaign_lease(task_id: int) -> None:
+    """Refresh the durable task lease while a Telegram request is in flight."""
+    while True:
+        await asyncio.sleep(20)
+        async with SessionFactory() as db:
+            task = await db.get(AutomationTask, task_id)
+            if not task or task.status != "running":
+                return
+            task.started_at = utcnow()
+            task.updated_at = utcnow()
+            await db.commit()
+
+
 async def process_due_campaigns(*, max_tasks: int = 1) -> int:
     """Process due opt-in campaigns. Called repeatedly by the dedicated worker loop."""
     from telethon.errors import FloodWaitError
@@ -459,6 +472,7 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                 stale_item.last_error = "Результат неизвестен после перезапуска: проверьте Telegram перед ручным повтором."
             await db.commit()
 
+        heartbeat_task = asyncio.create_task(_maintain_campaign_lease(task_id))
         try:
             payload = json.loads(payload_raw)
             interval, daily_limit, quiet_start, quiet_end = await _account_limits(account_id, "invite" if kind == "invite" else "broadcast")
@@ -605,6 +619,9 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                     current.last_error = f"{type(exc).__name__}: {str(exc)[:1000]}"
                     current.updated_at = utcnow()
                     await db.commit()
+        finally:
+            heartbeat_task.cancel()
+            await asyncio.gather(heartbeat_task, return_exceptions=True)
 
         async with SessionFactory() as db:
             final_task = await db.get(AutomationTask, task_id)
