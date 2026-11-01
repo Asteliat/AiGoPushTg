@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 
 from sqlalchemy import func, or_, select
@@ -252,14 +252,18 @@ async def list_campaigns(account_id: int, *, limit: int = 10) -> list[dict]:
         } for row in rows]
 
 
-async def _account_limits(account_id: int) -> tuple[int, int]:
+async def _account_limits(account_id: int) -> tuple[int, int, str | None, str | None]:
     async with SessionFactory() as db:
         rows = list((await db.scalars(select(AppSetting).where(
             AppSetting.key.in_([
                 "automation.default.interval_seconds",
                 "automation.default.daily_limit",
+                "automation.default.quiet_start_utc",
+                "automation.default.quiet_end_utc",
                 f"automation.{account_id}.interval_seconds",
                 f"automation.{account_id}.daily_limit",
+                f"automation.{account_id}.quiet_start_utc",
+                f"automation.{account_id}.quiet_end_utc",
             ])
         ))).all())
     values = {row.key: row.value for row in rows}
@@ -267,18 +271,62 @@ async def _account_limits(account_id: int) -> tuple[int, int]:
     default_daily = max(1, min(500, int(values.get("automation.default.daily_limit", "50"))))
     interval = max(1, min(3600, int(values.get(f"automation.{account_id}.interval_seconds", str(default_interval)))))
     daily = max(1, min(500, int(values.get(f"automation.{account_id}.daily_limit", str(default_daily)))))
-    return interval, daily
+    quiet_start = values.get(f"automation.{account_id}.quiet_start_utc", values.get("automation.default.quiet_start_utc", "")) or None
+    quiet_end = values.get(f"automation.{account_id}.quiet_end_utc", values.get("automation.default.quiet_end_utc", "")) or None
+    return interval, daily, quiet_start, quiet_end
 
 
-async def set_global_automation_limits(*, interval_seconds: int, daily_limit: int) -> None:
+def _normalize_quiet_hours(start: str | None, end: str | None) -> tuple[str, str]:
+    start_value = (start or "").strip()
+    end_value = (end or "").strip()
+    if start_value in {"", "-"} and end_value in {"", "-"}:
+        return "", ""
+    try:
+        time.fromisoformat(start_value)
+        time.fromisoformat(end_value)
+    except ValueError as exc:
+        raise ValueError("Тихие часы укажите как HH:MM UTC или поставьте - в обоих полях.") from exc
+    if len(start_value) != 5 or len(end_value) != 5:
+        raise ValueError("Тихие часы укажите в формате HH:MM UTC.")
+    return start_value, end_value
+
+
+def _quiet_until(now: datetime, start: str | None, end: str | None) -> datetime | None:
+    if not start or not end:
+        return None
+    start_time = time.fromisoformat(start)
+    end_time = time.fromisoformat(end)
+    current_time = now.time().replace(tzinfo=None)
+    if start_time == end_time:
+        return None
+    active = (
+        start_time <= current_time < end_time
+        if start_time < end_time
+        else current_time >= start_time or current_time < end_time
+    )
+    if not active:
+        return None
+    target = now.replace(hour=end_time.hour, minute=end_time.minute, second=0, microsecond=0)
+    if target <= now:
+        target += timedelta(days=1)
+    return target
+
+
+async def set_global_automation_limits(
+    *, interval_seconds: int, daily_limit: int,
+    quiet_start_utc: str | None = None, quiet_end_utc: str | None = None,
+) -> None:
     if not 1 <= int(interval_seconds) <= 3600:
         raise ValueError("Интервал должен быть от 1 до 3600 секунд.")
     if not 1 <= int(daily_limit) <= 500:
         raise ValueError("Дневной лимит должен быть от 1 до 500 сообщений.")
+    quiet_start, quiet_end = _normalize_quiet_hours(quiet_start_utc, quiet_end_utc)
     async with SessionFactory() as db:
         for key, value in (
             ("automation.default.interval_seconds", str(int(interval_seconds))),
             ("automation.default.daily_limit", str(int(daily_limit))),
+            ("automation.default.quiet_start_utc", quiet_start),
+            ("automation.default.quiet_end_utc", quiet_end),
         ):
             row = await db.get(AppSetting, key)
             if row:
@@ -288,17 +336,23 @@ async def set_global_automation_limits(*, interval_seconds: int, daily_limit: in
         await db.commit()
 
 
-async def set_account_limits(account_id: int, *, interval_seconds: int, daily_limit: int) -> None:
+async def set_account_limits(
+    account_id: int, *, interval_seconds: int, daily_limit: int,
+    quiet_start_utc: str | None = None, quiet_end_utc: str | None = None,
+) -> None:
     if not 1 <= int(interval_seconds) <= 3600:
         raise ValueError("Интервал должен быть от 1 до 3600 секунд.")
     if not 1 <= int(daily_limit) <= 500:
         raise ValueError("Дневной лимит должен быть от 1 до 500 сообщений.")
+    quiet_start, quiet_end = _normalize_quiet_hours(quiet_start_utc, quiet_end_utc)
     async with SessionFactory() as db:
         if not await db.get(Account, account_id):
             raise ValueError("Аккаунт не найден.")
         for key, value in (
             (f"automation.{account_id}.interval_seconds", str(int(interval_seconds))),
             (f"automation.{account_id}.daily_limit", str(int(daily_limit))),
+            (f"automation.{account_id}.quiet_start_utc", quiet_start),
+            (f"automation.{account_id}.quiet_end_utc", quiet_end),
         ):
             row = await db.get(AppSetting, key)
             if row:
@@ -365,7 +419,7 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
 
         try:
             payload = json.loads(payload_raw)
-            interval, daily_limit = await _account_limits(account_id)
+            interval, daily_limit, quiet_start, quiet_end = await _account_limits(account_id)
             async with isolated_account_client(account_id) as (_account, client):
                 while True:
                     async with SessionFactory() as db:
@@ -386,6 +440,14 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                             current.status = "completed"
                             current.completed_at = utcnow()
                             current.updated_at = utcnow()
+                            await db.commit()
+                            break
+                        quiet_until = _quiet_until(utcnow(), quiet_start, quiet_end)
+                        if quiet_until:
+                            current.status = "queued"
+                            current.scheduled_at = quiet_until
+                            current.last_error = f"Quiet hours until {quiet_until.isoformat()} UTC."
+                            recipient.status = "pending"
                             await db.commit()
                             break
                         # Consent is checked again immediately before each send.
