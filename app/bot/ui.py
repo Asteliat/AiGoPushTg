@@ -398,6 +398,8 @@ async def management_accounts(c: CallbackQuery):
     rows.append([("🌐 Общие лимиты", "tool:mg:global-limits:0")])
     rows.append([("📨 Глобальный лимит рассылок", "tool:mg:global-broadcast:0")])
     rows.append([("🔗 Глобальный лимит приглашений", "tool:mg:global-invite:0")])
+    rows.append([("➕ Глобальный лимит подписок", "tool:mg:global-subscription:0")])
+    rows.append([("❤️ Глобальный лимит реакций", "tool:mg:global-reaction:0")])
     rows.append([("⬅️ Инструменты", "tool:menu")])
     await edit(c, "🛠 Управление Telegram-аккаунтами\n\nВыберите аккаунт. Все операции выполняются через изолированную копию сессии.", kb(rows))
 
@@ -432,6 +434,7 @@ async def management_account_menu(c: CallbackQuery):
         [("🗓 Создать расписание", f"tool:mg:schedule:{aid}"), ("📅 Мои расписания", f"tool:mg:schedules:{aid}")],
         [("📋 Очередь и история задач", f"tool:mg:campaigns:{aid}")],
         [("📨 Лимит рассылок", f"tool:mg:broadcastlimits:{aid}"), ("🔗 Лимит приглашений", f"tool:mg:invitelimits:{aid}")],
+        [("➕ Лимит подписок", f"tool:mg:subscriptionlimits:{aid}"), ("❤️ Лимит реакций", f"tool:mg:reactionlimits:{aid}")],
         [("⏱ Общие лимиты", f"tool:mg:limits:{aid}")],
         [("♻️ Сбросить лимиты к глобальным", f"tool:mg:resetlimits:{aid}")],
         [("🎯 Автоответчики и триггеры", f"trigger:account:{aid}")],
@@ -482,6 +485,10 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         "invitelimits": "Формат: интервал в секундах | максимум за 24 часа | тихо с HH:MM UTC или - | тихо до HH:MM UTC или -. Пример: 120 | 15 | 22:00 | 07:00.",
         "global-broadcast": "Глобальные значения для рассылок: интервал | максимум за 24 часа | тихо с | тихо до (UTC). Пример: 60 | 40 | 23:00 | 08:00.",
         "global-invite": "Глобальные значения для приглашений: интервал | максимум за 24 часа | тихо с | тихо до (UTC). Пример: 120 | 15 | 22:00 | 07:00.",
+        "subscriptionlimits": "Лимиты вступления/выхода: интервал в секундах | максимум операций за 24 часа | тихо с | тихо до (UTC). Пример: 10 | 20 | 23:00 | 07:00.",
+        "reactionlimits": "Лимиты реакций: интервал в секундах | максимум за 24 часа | тихо с | тихо до (UTC). Пример: 30 | 50 | - | -.",
+        "global-subscription": "Глобальные лимиты подписок: интервал | максимум за 24 часа | тихо с | тихо до (UTC). Пример: 10 | 20 | 23:00 | 07:00.",
+        "global-reaction": "Глобальные лимиты реакций: интервал | максимум за 24 часа | тихо с | тихо до (UTC). Пример: 30 | 50 | - | -.",
         "schedule": "Создание повторяющейся кампании. Формат: broadcast, invite или group_broadcast | старт now либо YYYY-MM-DD HH:MM UTC | интервал в часах (не менее 24) | число запусков (1–365) | @user1,@user2. Каждое повторение заново проверяет согласия.",
         "limits": "Формат: интервал_секунд | максимум_сообщений_за_24ч | тихо_с | тихо_до (UTC). Пример: 30 | 50 | 23:00 | 08:00. Без тихих часов: 30 | 50 | - | -.",
         "global-limits": "Глобальные значения по умолчанию для аккаунтов без индивидуального переопределения. Формат: интервал_секунд | максимум_сообщений_за_24ч | тихо_с | тихо_до (UTC). Пример: 30 | 50 | 23:00 | 08:00. Без тихих часов: 30 | 50 | - | -.",
@@ -564,7 +571,7 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         except Exception as exc:
             await edit(c, f"Не удалось получить контакты: {type(exc).__name__}: {str(exc)[:250]}", back_home())
         return
-    if action in {"broadcastlimits", "invitelimits", "global-broadcast", "global-invite"}:
+    if action in {"broadcastlimits", "invitelimits", "subscriptionlimits", "reactionlimits", "global-broadcast", "global-invite", "global-subscription", "global-reaction"}:
         await state.clear()
         await state.update_data(
             management_action=action, management_account_id=aid,
@@ -883,11 +890,15 @@ async def management_input_received(m: Message, state: FSMContext):
             peer = await telegram_management.resolve_peer_for_consent(aid, raw)
             count = await telegram_automation.revoke_consent(aid, peer["peer_id"])
             message = f"Согласие отозвано. Обновлено записей: {count}."
-        elif action in {"broadcastlimits", "invitelimits", "global-broadcast", "global-invite"}:
+        elif action in {"broadcastlimits", "invitelimits", "subscriptionlimits", "reactionlimits", "global-broadcast", "global-invite", "global-subscription", "global-reaction"}:
             parts = [x.strip() for x in raw.split("|")]
             if len(parts) != 4:
                 raise ValueError("Формат: интервал | максимум за 24 часа | тихо с | тихо до. Для отключения тихих часов укажите - в обоих последних полях.")
-            operation = "invite" if "invite" in action else "broadcast"
+            operation = (
+                "invite" if "invite" in action else
+                "subscription" if "subscription" in action else
+                "reaction" if "reaction" in action else "broadcast"
+            )
             scoped_account = None if action.startswith("global-") else aid
             await telegram_automation.set_operation_limits(
                 operation, interval_seconds=int(parts[0]), daily_limit=int(parts[1]),

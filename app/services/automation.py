@@ -953,6 +953,9 @@ async def process_due_reactions(*, max_jobs: int = 5) -> int:
                     if isinstance(exc, FloodWaitError):
                         row.status = "queued"
                         row.run_at = utcnow() + timedelta(seconds=max(1, int(exc.seconds)))
+                    elif isinstance(exc, OperationRateLimitError):
+                        row.status = "queued"
+                        row.run_at = utcnow() + timedelta(seconds=exc.retry_after)
                     elif isinstance(exc, (TimeoutError, ConnectionError, OSError)):
                         row.status = "uncertain"
                     else:
@@ -995,6 +998,10 @@ async def reserve_operation_slot(account_id: int, operation: str) -> None:
             f"automation.default.{operation}.daily_limit",
             f"automation.{account_id}.{operation}.interval_seconds",
             f"automation.{account_id}.{operation}.daily_limit",
+            f"automation.default.{operation}.quiet_start_utc",
+            f"automation.default.{operation}.quiet_end_utc",
+            f"automation.{account_id}.{operation}.quiet_start_utc",
+            f"automation.{account_id}.{operation}.quiet_end_utc",
         ]
         values = {row.key: row.value for row in (await db.scalars(
             select(AppSetting).where(AppSetting.key.in_(keys))
@@ -1008,6 +1015,18 @@ async def reserve_operation_slot(account_id: int, operation: str) -> None:
             values.get(f"automation.default.{operation}.daily_limit", str(default_daily)),
         ))))
         now = utcnow()
+        quiet_start = values.get(
+            f"automation.{account_id}.{operation}.quiet_start_utc",
+            values.get(f"automation.default.{operation}.quiet_start_utc", ""),
+        ) or None
+        quiet_end = values.get(
+            f"automation.{account_id}.{operation}.quiet_end_utc",
+            values.get(f"automation.default.{operation}.quiet_end_utc", ""),
+        ) or None
+        quiet_until = _quiet_until(now, quiet_start, quiet_end)
+        if quiet_until:
+            wait_seconds = int((quiet_until - now).total_seconds())
+            raise OperationRateLimitError(operation, max(1, wait_seconds), "Сейчас действуют тихие часы.")
         latest = await db.scalar(select(AutomationOperationEvent).where(
             AutomationOperationEvent.account_id == account_id,
             AutomationOperationEvent.operation == operation,

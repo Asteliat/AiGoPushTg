@@ -468,7 +468,14 @@ async def manage_subscriptions_batch(
         async with isolated_account_client(account_id) as (_account, client):
             for value in normalized:
                 try:
-                    await reserve_operation_slot(account_id, "subscription")
+                    try:
+                        await reserve_operation_slot(account_id, "subscription")
+                    except OperationRateLimitError as limit_error:
+                        if "интервал" in str(limit_error).lower() and limit_error.retry_after <= 30:
+                            await asyncio.sleep(limit_error.retry_after)
+                            await reserve_operation_slot(account_id, "subscription")
+                        else:
+                            raise
                     if action == "join":
                         lowered = value.lower().rstrip("/")
                         if "t.me/+" in lowered or "t.me/joinchat/" in lowered:
