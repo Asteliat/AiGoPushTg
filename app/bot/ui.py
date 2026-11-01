@@ -443,7 +443,7 @@ async def management_account_menu(c: CallbackQuery):
         [("➕ Добавить контакт", f"tool:mg:addcontact:{aid}"), ("🗑 Удалить контакт", f"tool:mg:delcontact:{aid}")],
         [("📥 Импорт контактов", f"tool:mg:importcontacts:{aid}"), ("📤 Экспорт контактов", f"tool:mg:exportcontacts:{aid}")],
         [("🔎 Информация о чате", f"tool:mg:chatinfo:{aid}")],
-        [("🔍 Парсер публикаций канала", f"tool:mg:parsechannel:{aid}")],
+        [("🔍 Парсер чата / канала", f"tool:mg:parsechannel:{aid}")],
         [("➕ Вступить в чат", f"tool:mg:join:{aid}"), ("➖ Выйти из чата", f"tool:mg:leave:{aid}")],
         [("❤️ Реакция на публикацию", f"tool:mg:reaction:{aid}")],
         [("✏️ Изменить профиль", f"tool:mg:editprofile:{aid}")],
@@ -479,7 +479,7 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         "importcontacts": "Отправьте до 100 контактов, каждый с новой строки. Формат: телефон | имя | фамилия.\nПример:\n+79990000000 | Иван | Иванов\n+79991112233 | Анна | Петрова",
         "delcontact": "Отправьте Telegram user ID контакта, которого нужно удалить.",
         "chatinfo": "Отправьте @username или публичную ссылку t.me/…",
-        "parsechannel": "Отправьте @username канала и количество публикаций через |. Например: @telegram | 20. Максимум 100 последних публикаций; участники канала не собираются.",
+        "parsechannel": "Отправьте @username канала и количество публикаций через |. Например: @telegram | 20. Максимум 100 последних сообщений; списки участников не собираются.",
         "join": "Отправьте @username или публичную ссылку t.me/… для вступления.",
         "leave": "Отправьте @username или публичную ссылку t.me/… для выхода.",
         "reaction": "Отправьте данные через |\nФормат: @username | ID_публикации | 👍",
@@ -770,7 +770,7 @@ async def management_input_received(m: Message, state: FSMContext):
             if len(parts) not in {1, 2}:
                 raise ValueError("Формат: @username | количество.")
             limit = int(parts[1]) if len(parts) == 2 else 20
-            result = await telegram_management.parse_public_channel_posts(aid, parts[0], limit=limit)
+            result = await telegram_management.parse_chat_history(aid, parts[0], limit=limit)
             lines = [
                 f"🔍 {result['title']} · публикаций: {len(result['posts'])}",
                 f"Username: @{result['username'] or '—'} · ID: {result['channel_id']}",
