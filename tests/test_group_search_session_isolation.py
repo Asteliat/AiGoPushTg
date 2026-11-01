@@ -51,6 +51,8 @@ async def test_group_candidate_verification_rejects_unauthorized_snapshot(monkey
 
     @asynccontextmanager
     async def fake_isolated_client(aid):
+        if not await client.is_user_authorized():
+            raise RuntimeError("Сессия аккаунта не авторизована.")
         yield SimpleNamespace(id=aid), client
 
     async def unexpected_verify(*_args, **_kwargs):
