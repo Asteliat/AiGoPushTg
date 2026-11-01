@@ -726,20 +726,22 @@ async def management_input_received(m: Message, state: FSMContext):
             message = f"Согласие отозвано. Обновлено записей: {count}."
         elif action == "global-limits":
             parts = [x.strip() for x in raw.split("|")]
-            if len(parts) != 2:
-                raise ValueError("Формат: интервал | лимит за 24 часа.")
+            if len(parts) != 4:
+                raise ValueError("Формат: интервал | лимит за 24 часа | тихо с | тихо до.")
             await telegram_automation.set_global_automation_limits(
-                interval_seconds=int(parts[0]), daily_limit=int(parts[1])
+                interval_seconds=int(parts[0]), daily_limit=int(parts[1]),
+                quiet_start_utc=parts[2], quiet_end_utc=parts[3],
             )
-            message = "Глобальные лимиты по умолчанию сохранены. Индивидуальные настройки аккаунтов не изменены."
+            message = "Глобальные лимиты и тихие часы по умолчанию сохранены. Индивидуальные настройки аккаунтов не изменены."
         elif action == "limits":
             parts = [x.strip() for x in raw.split("|")]
-            if len(parts) != 2:
-                raise ValueError("Формат: интервал | лимит за 24 часа.")
+            if len(parts) != 4:
+                raise ValueError("Формат: интервал | лимит за 24 часа | тихо с | тихо до.")
             await telegram_automation.set_account_limits(
-                aid, interval_seconds=int(parts[0]), daily_limit=int(parts[1])
+                aid, interval_seconds=int(parts[0]), daily_limit=int(parts[1]),
+                quiet_start_utc=parts[2], quiet_end_utc=parts[3],
             )
-            message = "Лимиты сохранены."
+            message = "Лимиты и тихие часы аккаунта сохранены."
         elif action == "campaign_header":
             parts = [x.strip() for x in raw.split("|", 2)]
             if len(parts) != 3:
