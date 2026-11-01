@@ -691,7 +691,7 @@ __all__ = [
     "set_global_automation_limits", "set_operation_limits", "operation_limits",
     "create_schedule", "list_schedules", "set_schedule_status", "dispatch_due_schedules",
     "resolve_uncertain_recipient", "schedule_reaction", "list_scheduled_reactions",
-    "cancel_scheduled_reaction", "process_due_reactions", "reserve_operation_slot",
+    "cancel_scheduled_reaction", "resolve_scheduled_reaction", "process_due_reactions", "reserve_operation_slot",
     "OperationRateLimitError",
     "set_campaign_status",
 ]
@@ -975,6 +975,26 @@ async def cancel_scheduled_reaction(reaction_id: int) -> None:
         if row.status != "queued":
             raise ValueError("Можно отменить только ожидающую реакцию.")
         row.status = "cancelled"
+        row.updated_at = utcnow()
+        await db.commit()
+
+
+async def resolve_scheduled_reaction(reaction_id: int, *, delivered: bool) -> None:
+    """Reconcile an uncertain reaction after the operator checks the target message."""
+    async with SessionFactory() as db:
+        row = await db.scalar(select(ScheduledReaction).where(
+            ScheduledReaction.id == reaction_id,
+            ScheduledReaction.status == "uncertain",
+        ).with_for_update())
+        if not row:
+            raise ValueError("Не найдена реакция с неопределённым результатом.")
+        if delivered:
+            row.status = "sent"
+            row.last_error = "Оператор подтвердил реакцию после проверки Telegram."
+        else:
+            row.status = "queued"
+            row.run_at = utcnow()
+            row.last_error = "Оператор проверил публикацию: реакции нет; разрешён повтор."
         row.updated_at = utcnow()
         await db.commit()
 

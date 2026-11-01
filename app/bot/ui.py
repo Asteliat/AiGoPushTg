@@ -783,6 +783,9 @@ async def management_reaction_status(c: CallbackQuery):
     rows = []
     if snapshot["status"] == "queued":
         rows.append([("⛔ Отменить", f"tool:reaction:cancel:{reaction_id}")])
+    elif snapshot["status"] == "uncertain":
+        rows.append([("✅ Проверил: реакция есть", f"tool:reaction:resolve:{reaction_id}:sent")])
+        rows.append([("↻ Проверил: реакции нет, повторить", f"tool:reaction:resolve:{reaction_id}:retry")])
     rows.append([("↩️ К реакциям", f"tool:mg:reactions:{aid}")])
     detail = (f"❤️ Реакция #{reaction_id}\nЧат: {snapshot['chat_ref']}\nПубликация: {snapshot['message_id']}\n"
               f"Emoji: {snapshot['emoji']}\nВремя UTC: {snapshot['run_at']}\nСтатус: {snapshot['status']}")
@@ -799,6 +802,23 @@ async def management_reaction_cancel(c: CallbackQuery):
     try:
         await telegram_automation.cancel_scheduled_reaction(reaction_id)
         await c.answer("Реакция отменена.")
+        await management_reaction_status(c)
+    except Exception as exc:
+        await c.answer(str(exc)[:180], show_alert=True)
+
+
+
+
+@router.callback_query(F.data.startswith("tool:reaction:resolve:"))
+async def management_reaction_resolve(c: CallbackQuery):
+    if not await check_cb(c):
+        return
+    _, _, _, reaction_raw, decision = c.data.split(":")
+    try:
+        await telegram_automation.resolve_scheduled_reaction(
+            int(reaction_raw), delivered=(decision == "sent")
+        )
+        await c.answer("Результат реакции обновлён.")
         await management_reaction_status(c)
     except Exception as exc:
         await c.answer(str(exc)[:180], show_alert=True)
