@@ -443,10 +443,14 @@ async def resolve_peer_for_consent(
             entity = await client.get_entity(value)
             if not getattr(entity, "id", None):
                 raise ValueError("Telegram не вернул корректный объект получателя.")
+            is_channel_entity = entity.__class__.__name__ == "Channel"
             is_group = entity.__class__.__name__ == "Chat" or (
-                entity.__class__.__name__ == "Channel" and bool(getattr(entity, "megagroup", False))
+                is_channel_entity and bool(
+                    getattr(entity, "megagroup", False) or getattr(entity, "gigagroup", False)
+                )
             )
-            is_channel = entity.__class__.__name__ == "Channel" and bool(getattr(entity, "broadcast", False))
+            if is_channel_entity and not is_group:
+                raise ValueError("Каналы вещания нельзя использовать как групповые получатели.")
             if is_group:
                 if not allow_group:
                     raise ValueError("Для личной рассылки укажите пользователя, а не группу.")
@@ -498,10 +502,14 @@ async def resolve_peers_for_consent(
                 entity = await client.get_entity(value)
                 if not getattr(entity, "id", None):
                     raise ValueError(f"@{value} не найден в Telegram.")
+                is_channel_entity = entity.__class__.__name__ == "Channel"
                 is_group = entity.__class__.__name__ == "Chat" or (
-                    entity.__class__.__name__ == "Channel" and bool(getattr(entity, "megagroup", False))
+                    is_channel_entity and bool(
+                        getattr(entity, "megagroup", False) or getattr(entity, "gigagroup", False)
+                    )
                 )
-                is_channel = entity.__class__.__name__ == "Channel" and bool(getattr(entity, "broadcast", False))
+                if is_channel_entity and not is_group:
+                    raise ValueError(f"@{value} — канал вещания, а не группа.")
                 if is_group:
                     if not allow_groups:
                         raise ValueError(f"@{value} — группа. Для неё выберите тип group_broadcast.")
