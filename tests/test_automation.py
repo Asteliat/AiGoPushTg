@@ -129,3 +129,34 @@ def test_recurring_schedule_interval_boundaries():
         _validate_schedule_interval(3599)
     with pytest.raises(ValueError, match="365 дней"):
         _validate_schedule_interval(31536001)
+
+
+
+@pytest.mark.asyncio
+async def test_campaign_peer_resolution_rejects_reassigned_username():
+    from telethon.tl.types import PeerUser
+    from app.services.automation import _resolve_campaign_peer
+
+    class FakeClient:
+        async def get_entity(self, reference):
+            assert reference == "@old_username"
+            return PeerUser(user_id=999)
+
+    with pytest.raises(ValueError, match="Username получателя изменился"):
+        await _resolve_campaign_peer(FakeClient(), 123, "@old_username")
+
+
+@pytest.mark.asyncio
+async def test_campaign_peer_resolution_accepts_matching_username_id():
+    from telethon.tl.types import PeerUser
+    from app.services.automation import _resolve_campaign_peer
+
+    expected = PeerUser(user_id=123)
+
+    class FakeClient:
+        async def get_entity(self, reference):
+            assert reference == "@current_username"
+            return expected
+
+    result = await _resolve_campaign_peer(FakeClient(), 123, "@current_username")
+    assert result == expected
