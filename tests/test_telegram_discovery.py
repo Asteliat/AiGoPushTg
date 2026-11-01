@@ -1,7 +1,7 @@
 from app.telegram_gateway.discovery import _is_group, _normalize_telegram_link, _quality
 
 
-class BasicChat:
+class Chat:
     title = "Python Community"
     username = None
     participants_count = 120
@@ -59,7 +59,7 @@ def test_telegram_link_normalization_rejects_non_chat_routes_and_bad_usernames()
 
 
 def test_only_basic_groups_and_supergroups_pass_group_filter():
-    assert _is_group(BasicChat())
+    assert _is_group(Chat())
     assert _is_group(Supergroup())
     assert not _is_group(BroadcastChannel())
 
