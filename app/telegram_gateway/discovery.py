@@ -180,7 +180,7 @@ def _engine_search(engine: str, template: str, query: str, page: int = 0) -> tup
     lowered = body.casefold()
     captcha_markers = (
         "captcha", "unusual traffic", "verify you are human",
-        "подтвердите, что вы не робот", "робот", "challenge-form",
+        "подтвердите, что вы не робот", "challenge-form",
         "g-recaptcha", "h-captcha", "cf-challenge",
     )
     if any(marker in lowered for marker in captcha_markers):
