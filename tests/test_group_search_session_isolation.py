@@ -18,8 +18,8 @@ async def test_group_candidate_verification_uses_isolated_session(monkeypatch):
         return True
 
     @asynccontextmanager
-    async def fake_isolated_client(received_account):
-        calls["account"] = received_account
+    async def fake_isolated_client(received_aid):
+        calls["account_id"] = received_aid
         yield client
 
     async def fake_verify(received_client, received_candidates, concurrency):
@@ -28,14 +28,14 @@ async def test_group_candidate_verification_uses_isolated_session(monkeypatch):
         calls["concurrency"] = concurrency
         return expected
 
-    monkeypatch.setattr(ui, "isolated_telegram_client", fake_isolated_client)
+    monkeypatch.setattr(ui, "isolated_account_client", fake_isolated_client)
     monkeypatch.setattr(ui, "verify_group_candidates", fake_verify)
 
     result = await ui._verify_group_candidates_isolated(account, candidates, concurrency=3)
 
     assert result == expected
     assert calls == {
-        "account": account,
+        "account_id": account.id,
         "client": client,
         "candidates": candidates,
         "concurrency": 3,
@@ -50,13 +50,13 @@ async def test_group_candidate_verification_rejects_unauthorized_snapshot(monkey
     client = SimpleNamespace(is_user_authorized=_unauthorized)
 
     @asynccontextmanager
-    async def fake_isolated_client(_account):
+    async def fake_isolated_client(_aid):
         yield client
 
     async def unexpected_verify(*_args, **_kwargs):
         pytest.fail("Verification must not run for an unauthorized session")
 
-    monkeypatch.setattr(ui, "isolated_telegram_client", fake_isolated_client)
+    monkeypatch.setattr(ui, "isolated_account_client", fake_isolated_client)
     monkeypatch.setattr(ui, "verify_group_candidates", unexpected_verify)
 
     with pytest.raises(RuntimeError, match="Сессия аккаунта не авторизована"):
