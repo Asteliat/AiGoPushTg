@@ -172,3 +172,22 @@ async def test_parse_chat_participants_requires_group_admin(monkeypatch):
     monkeypatch.setattr(management, "isolated_account_client", fake_client)
     with pytest.raises(PermissionError, match="администраторам"):
         await management.parse_chat_participants(1, "@privategroup")
+
+
+
+def test_sqlite_session_snapshot_is_valid_and_independent(tmp_path):
+    import sqlite3
+
+    from app.telegram_gateway.management import _copy_sqlite_session
+
+    source = tmp_path / "source.session"
+    snapshot = tmp_path / "snapshot.session"
+    with sqlite3.connect(source) as db:
+        db.execute("CREATE TABLE session_data (value TEXT NOT NULL)")
+        db.execute("INSERT INTO session_data(value) VALUES ('original')")
+    _copy_sqlite_session(str(source), str(snapshot))
+    with sqlite3.connect(source) as db:
+        db.execute("UPDATE session_data SET value = 'changed'")
+    with sqlite3.connect(snapshot) as db:
+        assert db.execute("SELECT value FROM session_data").fetchone()[0] == "original"
+        assert db.execute("PRAGMA quick_check").fetchone()[0] == "ok"
