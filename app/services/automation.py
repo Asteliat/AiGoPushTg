@@ -341,6 +341,8 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                         peer_ref = recipient.peer_ref
                         recipient.status = "sending"
                         recipient.attempts += 1
+                        current.started_at = utcnow()
+                        current.updated_at = utcnow()
                         await db.commit()
 
                     try:
@@ -399,6 +401,18 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                     current.last_error = f"{type(exc).__name__}: {str(exc)[:1000]}"
                     current.updated_at = utcnow()
                     await db.commit()
+
+        async with SessionFactory() as db:
+            final_task = await db.get(AutomationTask, task_id)
+            if final_task and final_task.status in {"completed", "cancelled", "failed"}:
+                try:
+                    final_payload = json.loads(final_task.payload)
+                    file_path = Path(final_payload.get("file_path") or "")
+                    upload_root = (Path(get_settings().data_dir) / "automation_uploads").resolve()
+                    if file_path.is_file() and upload_root in file_path.resolve().parents:
+                        file_path.unlink(missing_ok=True)
+                except (OSError, ValueError, TypeError):
+                    pass
         processed += 1
     return processed
 
