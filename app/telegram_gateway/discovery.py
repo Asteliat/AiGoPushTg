@@ -151,27 +151,48 @@ class _SearchAnchors(HTMLParser):
             self.href, self.parts = None, []
 
 
-def _engine_search(engine: str, template: str, query: str, page: int = 0) -> list[dict]:
-    """Fetch and parse one result page. Page is zero-based."""
+def _engine_search(engine: str, template: str, query: str, page: int = 0) -> tuple[list[dict], str]:
+    """Fetch one public search-result page and report CAPTCHA/rate-limit status."""
     offset = page * 50
+    user_agents = (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6) AppleWebKit/605.1.15 Version/17.0 Safari/605.1.15",
+    )
     request = Request(
         template.format(q=quote_plus(query), page=page, offset=offset, first=offset + 1),
         headers={
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36",
+            "User-Agent": user_agents[(page + len(engine)) % len(user_agents)],
             "Accept-Language": "ru,en;q=0.8",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         },
     )
     try:
         with urlopen(request, timeout=12) as response:
+            status_code = getattr(response, "status", 200)
             body = response.read(2_000_000).decode("utf-8", "replace")
-    except Exception:
-        return []
+    except Exception as exc:
+        status_code = getattr(exc, "code", None)
+        if status_code in {403, 429, 503}:
+            return [], "rate_limited" if status_code == 429 else "blocked"
+        return [], "error"
+
+    lowered = body.casefold()
+    captcha_markers = (
+        "captcha", "unusual traffic", "verify you are human",
+        "подтвердите, что вы не робот", "робот", "challenge-form",
+        "g-recaptcha", "h-captcha", "cf-challenge",
+    )
+    if any(marker in lowered for marker in captcha_markers):
+        return [], "captcha"
+    if status_code in {403, 429, 503}:
+        return [], "rate_limited" if status_code == 429 else "blocked"
 
     parser = _SearchAnchors()
     try:
         parser.feed(body)
     except Exception:
-        return []
+        return [], "error"
 
     results = []
     for href, title in parser.links:
@@ -201,22 +222,20 @@ def _engine_search(engine: str, template: str, query: str, page: int = 0) -> lis
             "kind": "invite" if kind == "invite" else "unknown",
             "search_page": page + 1,
         })
-    return results
+    return results, "ok"
 
 
 async def search_web_groups(query: str, limit: int = 600, pages_per_query: int = 5) -> list[dict]:
-    """Search deeply across engines and pages; results remain untrusted until Telegram verifies them.
+    """Search multiple public engines; stop querying an engine when it presents a CAPTCHA.
 
-    Five pages are requested per query from each engine. Engines may cap, block or
-    silently ignore pagination, so each page is fetched independently and failures
-    on one page never cancel the remaining search.
+    A CAPTCHA or rate limit disables only that engine for the current search. Other
+    engines continue independently, so one blocked provider cannot cancel discovery.
+    No CAPTCHA solving, stealth browser automation or anti-bot circumvention is used.
     """
     clean_query = " ".join((query or "").split())[:100]
     if len(clean_query) < 2:
         return []
 
-    # Pagination parameters are engine-specific. These offsets deliberately request
-    # deeper result pages instead of repeatedly downloading page one.
     engines = (
         ("Google", "https://www.google.com/search?q={q}&num=50&start={offset}"),
         ("Yandex", "https://yandex.com/search/?text={q}&p={page}"),
@@ -231,27 +250,36 @@ async def search_web_groups(query: str, limit: int = 600, pages_per_query: int =
         f'site:t.me/+ "{clean_query}" OR site:t.me/joinchat "{clean_query}"',
     )
     page_count = max(1, min(int(pages_per_query), 8))
-    semaphore = asyncio.Semaphore(8)
+    semaphore = asyncio.Semaphore(5)
 
-    async def run_one(name, template, term, page):
+    async def run_engine(name: str, template: str) -> list[dict]:
+        collected: list[dict] = []
         async with semaphore:
-            return await asyncio.to_thread(_engine_search, name, template, term, page)
+            for term in terms:
+                for page in range(page_count):
+                    batch, status = await asyncio.to_thread(
+                        _engine_search, name, template, term, page
+                    )
+                    if status in {"captcha", "blocked", "rate_limited"}:
+                        # Do not hammer a provider after it explicitly blocks the request.
+                        return collected
+                    collected.extend(batch)
+                    if status == "error":
+                        continue
+                    # A short pause keeps deep pagination from becoming a burst of requests.
+                    if page + 1 < page_count:
+                        await asyncio.sleep(0.25)
+        return collected
 
-    jobs = (
-        run_one(name, template, term, page)
-        for name, template in engines
-        for term in terms
-        for page in range(page_count)
+    batches = await asyncio.gather(
+        *(run_engine(name, template) for name, template in engines),
+        return_exceptions=True,
     )
-    batches = await asyncio.gather(*jobs, return_exceptions=True)
 
     found: dict[str, dict] = {}
-    successful_pages = 0
     for batch in batches:
         if isinstance(batch, Exception):
             continue
-        if batch:
-            successful_pages += 1
         for item in batch:
             key = item["link"].casefold()
             if key in found:
