@@ -2578,9 +2578,9 @@ async def isolated_account_client(aid: int):
             raise RuntimeError("Сессия аккаунта не авторизована.")
         yield account, client
 
-async def _verify_group_candidates_isolated(account, candidates: list[dict], concurrency: int = 4):
+async def _verify_group_candidates_isolated(aid: int, candidates: list[dict], concurrency: int = 4):
     """Verify search results on a snapshot, never opening the worker's live session."""
-    async with isolated_account_client(account.id) as (_account, client):
+    async with isolated_account_client(aid) as (_account, client):
         return await verify_group_candidates(client, candidates, concurrency=concurrency)
 
 
@@ -2676,10 +2676,6 @@ async def chat_search_query(m: Message, state: FSMContext):
         )
         native_results = native_result if isinstance(native_result, list) else []
         web_results = web_result if isinstance(web_result, list) else []
-        async with SessionFactory() as db:
-            account = await db.get(Account, aid)
-        if not account or not account.enabled:
-            raise RuntimeError("Аккаунт не найден или отключён.")
         combined = {}
         for item in native_results + web_results:
             link = str(item.get("link") or "").strip()
@@ -2709,7 +2705,7 @@ async def chat_search_query(m: Message, state: FSMContext):
             kb([[("⬅️ Инструменты", "tool:menu")]]),
         )
         candidates = await _verify_group_candidates_isolated(
-            account, raw_candidates, concurrency=4
+            aid, raw_candidates, concurrency=4
         )
     except Exception as exc:
         await edit_anchor(
