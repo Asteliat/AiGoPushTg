@@ -632,6 +632,7 @@ async def resolve_group_for_consent(account_id: int, group_ref: str) -> dict:
                 "peer_id": int(utils.get_peer_id(entity)),
                 "peer_ref": f"@{username}" if username else "",
                 "peer_label": str(getattr(entity, "title", None) or username or entity.id),
+                "is_megagroup": bool(getattr(entity, "megagroup", False)),
             }
 
 

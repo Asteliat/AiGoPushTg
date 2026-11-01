@@ -29,7 +29,7 @@ from app.storage.models import (
     utcnow,
 )
 
-ALLOWED_KINDS = {"broadcast", "invite", "group_broadcast"}
+ALLOWED_KINDS = {"broadcast", "invite", "direct_invite", "group_broadcast"}
 MAX_RECIPIENTS = 500
 MAX_TEXT = 4096
 
@@ -40,12 +40,22 @@ def _aware(value: datetime) -> datetime:
 
 def _validate_payload(kind: str, payload: dict) -> dict:
     if kind not in ALLOWED_KINDS:
-        raise ValueError("Поддерживаются только рассылка и отправка приглашения.")
+        raise ValueError("Неизвестный тип кампании.")
     normalized = {
         "text": str(payload.get("text") or "").strip(),
         "file_path": str(payload.get("file_path") or "").strip(),
         "caption": str(payload.get("caption") or "").strip(),
     }
+    if kind == "direct_invite":
+        target_group_id = int(payload.get("target_group_id") or 0)
+        if not target_group_id:
+            raise ValueError("Для прямого приглашения выберите целевую супергруппу.")
+        normalized.update({
+            "target_group_id": target_group_id,
+            "target_group_ref": str(payload.get("target_group_ref") or "").strip(),
+            "target_group_label": str(payload.get("target_group_label") or "").strip(),
+        })
+        return normalized
     if len(normalized["text"]) > MAX_TEXT or len(normalized["caption"]) > MAX_TEXT:
         raise ValueError("Текст сообщения не должен превышать 4096 символов.")
     if not normalized["text"] and not normalized["file_path"]:
@@ -136,7 +146,7 @@ async def create_campaign(
     due = _aware(scheduled_at or utcnow())
     if due < utcnow() - timedelta(minutes=1):
         raise ValueError("Время запуска уже прошло.")
-    scope = "invite" if kind == "invite" else ("group_publish" if kind == "group_broadcast" else "broadcast")
+    scope = "invite" if kind in {"invite", "direct_invite"} else ("group_publish" if kind == "group_broadcast" else "broadcast")
     async with SessionFactory() as db:
         account = await db.get(Account, account_id)
         if not account or not account.enabled:
@@ -515,7 +525,7 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
         heartbeat_task = asyncio.create_task(_maintain_campaign_lease(task_id))
         try:
             payload = json.loads(payload_raw)
-            interval, daily_limit, quiet_start, quiet_end = await _account_limits(account_id, "invite" if kind == "invite" else "broadcast")
+            interval, daily_limit, quiet_start, quiet_end = await _account_limits(account_id, "invite" if kind in {"invite", "direct_invite"} else "broadcast")
             async with isolated_account_client(account_id) as (_account, client):
                 while True:
                     async with SessionFactory() as db:
@@ -558,7 +568,7 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                             await db.commit()
                             break
                         # Consent is checked again immediately before each send.
-                        scope = "invite" if kind == "invite" else ("group_publish" if kind == "group_broadcast" else "broadcast")
+                        scope = "invite" if kind in {"invite", "direct_invite"} else ("group_publish" if kind == "group_broadcast" else "broadcast")
                         consent = await db.scalar(select(AutomationConsent).where(
                             AutomationConsent.account_id == account_id,
                             AutomationConsent.peer_id == recipient.peer_id,
@@ -577,8 +587,8 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                             AutomationTaskRecipient.status == "sent",
                             AutomationTaskRecipient.delivered_at >= now - timedelta(hours=24),
                         )
-                        if kind == "invite":
-                            sent_query = sent_query.where(AutomationTask.kind == "invite")
+                        if kind in {"invite", "direct_invite"}:
+                            sent_query = sent_query.where(AutomationTask.kind.in_(["invite", "direct_invite"]))
                         else:
                             sent_query = sent_query.where(AutomationTask.kind.in_(["broadcast", "group_broadcast"]))
                         sent_today = await db.scalar(sent_query)
@@ -598,18 +608,36 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                         await db.commit()
 
                     try:
-                        entity = await client.get_entity(peer_ref or peer_id)
-                        if kind == "group_broadcast":
-                            permissions = await client.get_permissions(entity, "me")
-                            if not (getattr(permissions, "is_admin", False) or getattr(permissions, "is_creator", False)):
-                                raise PermissionError("Аккаунт больше не является администратором этой группы.")
-                        if payload.get("file_path"):
-                            await client.send_file(
-                                entity, payload["file_path"],
-                                caption=payload.get("caption") or payload.get("text") or None,
+                        if kind == "direct_invite":
+                            from telethon.errors import UserAlreadyParticipantError
+                            from telethon.tl.functions.channels import InviteToChannelRequest
+
+                            target_group = await client.get_entity(
+                                payload.get("target_group_ref") or int(payload["target_group_id"])
                             )
+                            if not getattr(target_group, "megagroup", False):
+                                raise ValueError("Прямое приглашение поддерживается только в супергруппы.")
+                            permissions = await client.get_permissions(target_group, "me")
+                            if not (getattr(permissions, "is_admin", False) or getattr(permissions, "is_creator", False)):
+                                raise PermissionError("Аккаунт больше не является администратором целевой группы.")
+                            user = await client.get_entity(peer_ref or peer_id)
+                            try:
+                                await client(InviteToChannelRequest(channel=target_group, users=[user]))
+                            except UserAlreadyParticipantError:
+                                pass
                         else:
-                            await client.send_message(entity, payload["text"])
+                            entity = await client.get_entity(peer_ref or peer_id)
+                            if kind == "group_broadcast":
+                                permissions = await client.get_permissions(entity, "me")
+                                if not (getattr(permissions, "is_admin", False) or getattr(permissions, "is_creator", False)):
+                                    raise PermissionError("Аккаунт больше не является администратором этой группы.")
+                            if payload.get("file_path"):
+                                await client.send_file(
+                                    entity, payload["file_path"],
+                                    caption=payload.get("caption") or payload.get("text") or None,
+                                )
+                            else:
+                                await client.send_message(entity, payload["text"])
                     except FloodWaitError as exc:
                         seconds = max(1, int(exc.seconds))
                         async with SessionFactory() as db:
@@ -833,7 +861,7 @@ async def dispatch_due_schedules(*, max_schedules: int = 10) -> int:
                 break
             try:
                 ids = list(dict.fromkeys(int(x) for x in json.loads(row.recipients_json)))
-                scope = "invite" if row.kind == "invite" else ("group_publish" if row.kind == "group_broadcast" else "broadcast")
+                scope = "invite" if row.kind in {"invite", "direct_invite"} else ("group_publish" if row.kind == "group_broadcast" else "broadcast")
                 consents = list((await db.scalars(select(AutomationConsent).where(
                     AutomationConsent.account_id == row.account_id,
                     AutomationConsent.peer_id.in_(ids),

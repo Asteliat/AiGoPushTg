@@ -613,7 +613,8 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         await edit(c, title + "\n\nПолучатели должны иметь активное согласие. Публикации в группах доступны только если аккаунт — администратор.",
             kb([
                 [("📨 Личное сообщение", f"tool:campaign:start:{aid}:broadcast:{mode}")],
-                [("🔗 Отправить приглашение", f"tool:campaign:start:{aid}:invite:{mode}")],
+                [("🔗 Отправить ссылку-приглашение", f"tool:campaign:start:{aid}:invite:{mode}")],
+                [("👥 Добавить в группу по согласию", f"tool:campaign:start:{aid}:direct_invite:{mode}")],
                 [("📣 Опубликовать в своей группе", f"tool:campaign:start:{aid}:group_broadcast:{mode}")],
                 [("↩️ Назад", f"tool:management:account:{aid}")],
             ]))
@@ -693,7 +694,7 @@ async def management_campaign_wizard_start(c: CallbackQuery, state: FSMContext):
         await c.answer("Некорректный сценарий.", show_alert=True)
         return
     aid, kind, mode = int(parts[3]), parts[4], parts[5]
-    if kind not in {"broadcast", "invite", "group_broadcast"} or mode not in {"once", "recurring"}:
+    if kind not in {"broadcast", "invite", "direct_invite", "group_broadcast"} or mode not in {"once", "recurring"}:
         await c.answer("Неизвестный тип задачи.", show_alert=True)
         return
     async with SessionFactory() as db:
@@ -1003,8 +1004,12 @@ async def management_input_received(m: Message, state: FSMContext):
                 await state.update_data(management_action="campaign_interval")
                 await prompt_message(m, state, "Шаг 2 из 5 · Интервал\n\nЧерез сколько часов повторять отправку? Минимум 24 часа. Пример: 24.")
             else:
-                await state.update_data(management_action="campaign_recipients")
-                await prompt_message(m, state, "Шаг 2 из 3 · Получатели\n\nОтправьте @username или ссылку каждого получателя через запятую или с новой строки. Для публикации в группе укажите группы, где аккаунт администратор (можно peer ID из списка групп).")
+                if data.get("campaign_kind") == "direct_invite":
+                    await state.update_data(management_action="campaign_target_group")
+                    await prompt_message(m, state, "Шаг 2 из 4 · Целевая группа\n\nУкажите peer ID или @username супергруппы, где аккаунт является администратором.")
+                else:
+                    await state.update_data(management_action="campaign_recipients")
+                    await prompt_message(m, state, "Шаг 2 из 3 · Получатели\n\nОтправьте @username или ссылку каждого получателя через запятую или с новой строки. Для публикации в группе укажите группы, где аккаунт администратор (можно peer ID из списка групп).")
             return
         elif action == "campaign_interval":
             if not raw.isdigit() or not 24 <= int(raw) <= 8760:
@@ -1024,6 +1029,19 @@ async def management_input_received(m: Message, state: FSMContext):
             )
             await prompt_message(m, state, "Шаг 4 из 5 · Получатели\n\nОтправьте @username или ссылку каждого получателя через запятую или с новой строки. Для публикации в группе укажите группы, где аккаунт администратор.")
             return
+        elif action == "campaign_target_group":
+            group = await telegram_management.resolve_group_for_consent(aid, raw)
+            if not group.get("is_megagroup"):
+                raise ValueError("Прямые приглашения доступны только в супергруппы.")
+            await state.update_data(
+                campaign_target_group_id=group["peer_id"],
+                campaign_target_group_ref=group["peer_ref"],
+                campaign_target_group_label=group["peer_label"],
+                management_action="campaign_recipients",
+            )
+            step = "5 из 6" if data.get("campaign_mode") == "recurring" else "3 из 4"
+            await prompt_message(m, state, f"Шаг {step} · Получатели\n\nОтправьте @username каждого человека, который явно попросил добавить его в эту группу. Можно через запятую или с новой строки.")
+            return
         elif action == "campaign_recipients":
             refs = [item.strip() for item in raw.replace(",", "\\n").splitlines() if item.strip()]
             if not refs:
@@ -1034,6 +1052,36 @@ async def management_input_received(m: Message, state: FSMContext):
                 if kind == "group_broadcast"
                 else await telegram_management.resolve_peers_for_consent(aid, refs)
             )
+            if kind == "direct_invite":
+                payload = {
+                    "target_group_id": int(data["campaign_target_group_id"]),
+                    "target_group_ref": str(data.get("campaign_target_group_ref") or ""),
+                    "target_group_label": str(data.get("campaign_target_group_label") or ""),
+                }
+                await state.update_data(
+                    campaign_recipients=[peer["peer_id"] for peer in peers],
+                    campaign_recipient_labels=[peer["peer_label"] for peer in peers],
+                    campaign_payload=payload,
+                    management_action="campaign_content",
+                )
+                await state.set_state(Flow.management_campaign_confirm)
+                preview = (
+                    f"👥 Предпросмотр прямого приглашения\n\n"
+                    f"Группа: {payload['target_group_label']}\n"
+                    f"Получателей: {len(peers)}\n"
+                    f"Пользователи: {', '.join(peer['peer_label'] for peer in peers[:12])}"
+                    + (" и другие" if len(peers) > 12 else "")
+                    + "\n\nПодтвердите только если каждый человек сам попросил добавить его в эту группу. "
+                    "Telegram может отклонить приглашение из-за приватности или собственных ограничений."
+                )
+                keyboard = kb([
+                    [("✅ Подтвердить приглашения", "tool:campaign:confirm")],
+                    [("❌ Отменить", "tool:campaign:cancel")],
+                ])
+                anchor = await state.get_data()
+                if not await edit_anchor(m.bot, anchor, preview, keyboard):
+                    await m.answer(preview, reply_markup=keyboard)
+                return
             await state.update_data(
                 campaign_recipients=[peer["peer_id"] for peer in peers],
                 campaign_recipient_labels=[peer["peer_label"] for peer in peers],
@@ -1049,8 +1097,8 @@ async def management_input_received(m: Message, state: FSMContext):
             if len(parts) != expected:
                 raise ValueError("Формат рассылки: тип | время UTC или now | @получатели. Для расписания: тип | старт | интервал часов | число запусков | @получатели.")
             kind = parts[0].lower()
-            if kind not in {"broadcast", "invite", "group_broadcast"}:
-                raise ValueError("Тип задачи: broadcast, invite или group_broadcast.")
+            if kind not in {"broadcast", "invite", "direct_invite", "group_broadcast"}:
+                raise ValueError("Тип задачи: broadcast, invite, direct_invite или group_broadcast.")
             scheduled = datetime.now(timezone.utc)
             if parts[1].lower() != "now":
                 try:
