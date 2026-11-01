@@ -44,6 +44,9 @@ async def test_parse_chat_participants_returns_only_public_fields(monkeypatch):
         async def get_entity(self, _target):
             return SimpleNamespace(id=42, title="Test group", username="testgroup", megagroup=True)
 
+        async def get_permissions(self, _entity, _user):
+            return SimpleNamespace(is_admin=True, is_creator=False)
+
         async def iter_participants(self, _entity, limit):
             assert limit == 2
             for item in [

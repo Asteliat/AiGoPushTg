@@ -247,6 +247,7 @@ async def campaign_status(task_id: int) -> dict:
             "scheduled_at": _aware(task.scheduled_at).isoformat(),
             "last_error": task.last_error, "recipients": counts,
             "delivery_log": [{
+                "peer_id": int(row.peer_id),
                 "peer_label": row.peer_label or row.peer_ref or str(row.peer_id),
                 "peer_ref": row.peer_ref, "status": row.status,
                 "attempts": row.attempts, "last_error": row.last_error,

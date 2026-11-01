@@ -395,7 +395,9 @@ async def management_accounts(c: CallbackQuery):
             select(Account).where(Account.enabled.is_(True)).order_by(Account.id)
         )).all())
     rows = [[(f"👤 {a.display_name[:30]} · #{a.id}", f"tool:management:account:{a.id}")] for a in accounts]
-    rows.append([("🌐 Глобальные лимиты рассылок", "tool:mg:global-limits:0")])
+    rows.append([("🌐 Общие лимиты", "tool:mg:global-limits:0")])
+    rows.append([("📨 Глобальный лимит рассылок", "tool:mg:global-broadcast:0")])
+    rows.append([("🔗 Глобальный лимит приглашений", "tool:mg:global-invite:0")])
     rows.append([("⬅️ Инструменты", "tool:menu")])
     await edit(c, "🛠 Управление Telegram-аккаунтами\n\nВыберите аккаунт. Все операции выполняются через изолированную копию сессии.", kb(rows))
 
@@ -422,9 +424,10 @@ async def management_account_menu(c: CallbackQuery):
         [("🤝 Добавить согласие", f"tool:mg:consent:{aid}"), ("🚫 Отозвать согласие", f"tool:mg:revokeconsent:{aid}")],
         [("👥 Список согласий", f"tool:mg:consents:{aid}")],
         [("📨 Разовая рассылка / приглашение", f"tool:mg:campaign:{aid}")],
-        [("🗓 Повторяющееся расписание", f"tool:mg:schedule:{aid}")],
+        [("🗓 Создать расписание", f"tool:mg:schedule:{aid}"), ("📅 Мои расписания", f"tool:mg:schedules:{aid}")],
         [("📋 Очередь и история задач", f"tool:mg:campaigns:{aid}")],
-        [("⏱ Лимиты рассылки и приглашений", f"tool:mg:limits:{aid}")],
+        [("📨 Лимит рассылок", f"tool:mg:broadcastlimits:{aid}"), ("🔗 Лимит приглашений", f"tool:mg:invitelimits:{aid}")],
+        [("⏱ Общие лимиты", f"tool:mg:limits:{aid}")],
         [("♻️ Сбросить лимиты к глобальным", f"tool:mg:resetlimits:{aid}")],
         [("🎯 Автоответчики и триггеры", f"trigger:account:{aid}")],
         [("⬅️ К аккаунтам", "tool:management")],
@@ -462,6 +465,10 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         "revokeconsent": "Отправьте @username получателя. Его согласия на рассылки и приглашения будут отозваны.",
         "consents": "Показать сохранённые согласия.",
         "campaign": "Формат: broadcast или invite | now либо YYYY-MM-DD HH:MM UTC | @user1,@user2. Только получатели с активным согласием; максимум 500 за задачу.",
+        "broadcastlimits": "Отправьте интервал в секундах | максимум отправок за 24 часа. Пример: 60 | 40.",
+        "invitelimits": "Отправьте интервал в секундах | максимум приглашений за 24 часа. Пример: 120 | 15.",
+        "global-broadcast": "Глобальные значения по умолчанию для рассылок: интервал в секундах | максимум отправок за 24 часа. Пример: 60 | 40.",
+        "global-invite": "Глобальные значения по умолчанию для приглашений: интервал в секундах | максимум приглашений за 24 часа. Пример: 120 | 15.",
         "schedule": "Создание повторяющейся кампании. Формат: broadcast или invite | старт now либо YYYY-MM-DD HH:MM UTC | интервал в часах (не менее 24) | число запусков (1–365) | @user1,@user2. Каждое повторение заново проверяет согласия.",
         "limits": "Формат: интервал_секунд | максимум_сообщений_за_24ч | тихо_с | тихо_до (UTC). Пример: 30 | 50 | 23:00 | 08:00. Без тихих часов: 30 | 50 | - | -.",
         "global-limits": "Глобальные значения по умолчанию для аккаунтов без индивидуального переопределения. Формат: интервал_секунд | максимум_сообщений_за_24ч | тихо_с | тихо_до (UTC). Пример: 30 | 50 | 23:00 | 08:00. Без тихих часов: 30 | 50 | - | -.",
@@ -494,6 +501,12 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         lines = [f"👥 Согласия аккаунта #{aid} · {len(items)}"]
         lines.extend(f"{item['peer_label']} · @{item['peer_ref'].lstrip('@')} · {item['scope']}" for item in items)
         await edit(c, "\n".join(lines)[:3900] or "Согласий пока нет.", kb([[("↩️ К инструментам аккаунта", f"tool:management:account:{aid}")]]))
+        return
+    if action == "schedules":
+        items = await telegram_automation.list_schedules(aid, limit=20)
+        rows = [[(f"#{item['id']} · {item['kind']} · {item['status']}", f"tool:schedule:status:{item['id']}")] for item in items]
+        rows.append([("↩️ К инструментам аккаунта", f"tool:management:account:{aid}")])
+        await edit(c, "🗓 Повторяющиеся расписания\n\nВыберите расписание." if items else "Расписаний пока нет.", kb(rows))
         return
     if action == "campaigns":
         items = await telegram_automation.list_campaigns(aid, limit=12)
@@ -531,6 +544,16 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
             await edit(c, "\n".join(lines)[:3900], kb([[("⬅️ К инструментам аккаунта", f"tool:management:account:{aid}")]]))
         except Exception as exc:
             await edit(c, f"Не удалось получить контакты: {type(exc).__name__}: {str(exc)[:250]}", back_home())
+        return
+    if action in {"broadcastlimits", "invitelimits", "global-broadcast", "global-invite"}:
+        await state.clear()
+        await state.update_data(
+            management_action=action, management_account_id=aid,
+            ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id,
+            return_callback="tool:management" if action.startswith("global-") else f"tool:management:account:{aid}",
+        )
+        await state.set_state(Flow.management_input)
+        await edit(c, prompts[action], CANCEL)
         return
     if action == "global-limits":
         await state.clear()
@@ -786,6 +809,17 @@ async def management_input_received(m: Message, state: FSMContext):
             peer = await telegram_management.resolve_peer_for_consent(aid, raw)
             count = await telegram_automation.revoke_consent(aid, peer["peer_id"])
             message = f"Согласие отозвано. Обновлено записей: {count}."
+        elif action in {"broadcastlimits", "invitelimits", "global-broadcast", "global-invite"}:
+            parts = [x.strip() for x in raw.split("|")]
+            if len(parts) != 2:
+                raise ValueError("Формат: интервал в секундах | максимум операций за 24 часа.")
+            operation = "invite" if "invite" in action else "broadcast"
+            scoped_account = None if action.startswith("global-") else aid
+            await telegram_automation.set_operation_limits(
+                operation, interval_seconds=int(parts[0]), daily_limit=int(parts[1]),
+                account_id=scoped_account,
+            )
+            message = f"Отдельные лимиты {'глобально' if scoped_account is None else f'аккаунта #{aid}'} для {'приглашений' if operation == 'invite' else 'рассылок'} сохранены."
         elif action == "global-limits":
             parts = [x.strip() for x in raw.split("|")]
             if len(parts) != 4:
@@ -942,8 +976,8 @@ async def management_input_received(m: Message, state: FSMContext):
             message = "Профиль обновлён."
         else:
             raise ValueError("Неизвестное действие.")
-        back_callback = "tool:management" if action == "global-limits" else f"tool:management:account:{aid}"
-        back_label = "↩️ К управлению аккаунтами" if action == "global-limits" else "↩️ К инструментам аккаунта"
+        back_callback = "tool:management" if action == "global-limits" or action.startswith("global-") else f"tool:management:account:{aid}"
+        back_label = "↩️ К управлению аккаунтами" if action == "global-limits" or action.startswith("global-") else "↩️ К инструментам аккаунта"
         await finish_prompt(m, state, message, kb([
             [(back_label, back_callback)],
             [("🏠 Главное меню", "nav:home")],

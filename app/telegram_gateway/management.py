@@ -383,6 +383,11 @@ async def parse_chat_participants(
             is_channel = bool(getattr(entity, "broadcast", False))
             if not (is_group or is_channel):
                 raise ValueError("Укажите группу или канал.")
+            if not is_group:
+                raise ValueError("Список участников можно выгружать только из группы, не из канала.")
+            permissions = await client.get_permissions(entity, "me")
+            if not (getattr(permissions, "is_admin", False) or getattr(permissions, "is_creator", False)):
+                raise PermissionError("Экспорт участников доступен только администраторам собственной группы.")
             participants = []
             async for user in client.iter_participants(entity, limit=limit):
                 if not getattr(user, "id", None):
