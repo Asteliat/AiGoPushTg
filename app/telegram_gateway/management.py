@@ -153,6 +153,17 @@ async def update_profile(
             }
 
 
+async def set_profile_photo(account_id: int, photo_path: str) -> None:
+    """Upload one operator-selected profile photo through an isolated session."""
+    if not os.path.isfile(photo_path):
+        raise ValueError("Файл фотографии не найден.")
+    if os.path.getsize(photo_path) > 10 * 1024 * 1024:
+        raise ValueError("Размер фотографии не должен превышать 10 МБ.")
+    async with _account_lock(account_id):
+        async with isolated_account_client(account_id) as (_account, client):
+            await client.upload_profile_photo(photo_path)
+
+
 async def list_contacts(account_id: int, *, limit: int = 100) -> list[dict]:
     limit = max(1, min(int(limit), 500))
     async with _account_lock(account_id):
@@ -343,6 +354,6 @@ async def simulate_post_activity(
 __all__ = [
     "ChatOverview", "FloodWaitError", "add_contact", "delete_contact",
     "get_chat_overview", "get_profile", "join_chat", "leave_chat",
-    "list_contacts", "react_to_message", "resolve_peer_for_consent", "resolve_peers_for_consent", "simulate_post_activity",
+    "list_contacts", "react_to_message", "resolve_peer_for_consent", "resolve_peers_for_consent", "set_profile_photo", "simulate_post_activity",
     "update_profile",
 ]
