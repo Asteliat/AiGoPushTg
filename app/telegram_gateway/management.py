@@ -464,8 +464,6 @@ async def resolve_peer_for_consent(
                     "peer_label": str(getattr(entity, "title", None) or f"@{username}"),
                     "peer_type": "group",
                 }
-            if is_channel:
-                raise ValueError("Канал не является группой для рассылки сообщений.")
             username = getattr(entity, "username", None)
             if not username:
                 raise ValueError("У пользователя нет публичного username; добавьте его через контакты.")
@@ -520,8 +518,6 @@ async def resolve_peers_for_consent(
                     peer_id = int(utils.get_peer_id(entity))
                     label = str(getattr(entity, "title", None) or f"@{username}")
                 else:
-                    if is_channel:
-                        raise ValueError(f"@{value} — канал, а не группа.")
                     username = getattr(entity, "username", None)
                     if not username:
                         raise ValueError(f"У @{value} нет публичного username.")
