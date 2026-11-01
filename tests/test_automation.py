@@ -117,3 +117,15 @@ async def test_direct_invite_schedule_must_be_one_shot():
             starts_at=datetime.now(timezone.utc), interval_seconds=86400,
             max_runs=3,
         )
+
+
+
+def test_recurring_schedule_interval_boundaries():
+    from app.services.automation import _validate_schedule_interval
+
+    assert _validate_schedule_interval(3600) == 3600
+    assert _validate_schedule_interval(31536000) == 31536000
+    with pytest.raises(ValueError, match="1 часа"):
+        _validate_schedule_interval(3599)
+    with pytest.raises(ValueError, match="365 дней"):
+        _validate_schedule_interval(31536001)

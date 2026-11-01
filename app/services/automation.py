@@ -891,17 +891,23 @@ async def operation_limits(account_id: int, operation: str) -> dict:
     }
 
 
+def _validate_schedule_interval(interval_seconds: int) -> int:
+    seconds = int(interval_seconds)
+    if not 3600 <= seconds <= 31536000:
+        raise ValueError("Интервал повторения должен быть от 1 часа до 365 дней.")
+    return seconds
+
+
 async def create_schedule(
     account_id: int, *, kind: str, recipients: list[int], payload: dict,
     interval_seconds: int, starts_at: datetime | None = None,
     ends_at: datetime | None = None, max_runs: int = 30,
 ) -> int:
-    """Create a recurring campaign; repeated sends require explicit opt-in and >=24h spacing."""
+    """Create a recurring campaign with an explicit interval and recipient opt-in."""
     if kind == "direct_invite":
         raise ValueError("Прямое добавление можно запланировать однократно, но не повторять автоматически.")
     normalized = _validate_payload(kind, payload)
-    if not 3600 <= int(interval_seconds) <= 31536000:
-        raise ValueError("Интервал повторения должен быть от 1 часа до 365 дней.")
+    interval_seconds = _validate_schedule_interval(interval_seconds)
     if not 1 <= int(max_runs) <= 365:
         raise ValueError("Количество повторов должно быть от 1 до 365.")
     unique_ids = list(dict.fromkeys(int(peer_id) for peer_id in recipients))
