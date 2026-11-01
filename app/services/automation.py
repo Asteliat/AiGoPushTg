@@ -720,6 +720,7 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                             await db.commit()
                             break
                         peer_id = int(recipient.peer_id)
+                        peer_ref = str(recipient.peer_ref or "")
                         recipient.status = "sending"
                         recipient.attempts += 1
                         current.started_at = utcnow()
@@ -740,7 +741,7 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                             permissions = await client.get_permissions(target_group, "me")
                             if not (getattr(permissions, "is_admin", False) or getattr(permissions, "is_creator", False)):
                                 raise PermissionError("Аккаунт больше не является администратором целевой группы.")
-                            user = await _resolve_campaign_peer(client, peer_id, recipient.peer_ref)
+                            user = await _resolve_campaign_peer(client, peer_id, peer_ref)
                             try:
                                 await client(InviteToChannelRequest(channel=target_group, users=[user]))
                             except UserAlreadyParticipantError:
