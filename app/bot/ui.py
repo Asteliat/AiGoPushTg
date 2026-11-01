@@ -2870,7 +2870,7 @@ async def chat_candidate_preview(c):
         await c.answer("У этой группы нет публичной ссылки.", show_alert=True); return
     try:
         kind, target = _parse_chat_link(link)
-        async with isolated_account_client(aid) as (account, client):
+        async with isolated_account_client(aid) as (_account, client):
             already = False
             if kind == "public":
                 entity = await client.get_entity(target)
@@ -2945,7 +2945,7 @@ async def chat_join_link_input(m: Message, state: FSMContext):
     # Reuse the same guarded preview flow as search results.
     CHAT_PENDING_JOIN.pop((m.from_user.id, aid), None)
     try:
-        async with isolated_account_client(aid) as (account, client):
+        async with isolated_account_client(aid) as (_account, client):
             already = False
             if kind == "public":
                 entity = await client.get_entity(target)
@@ -2986,7 +2986,7 @@ async def chat_join_confirm(c):
     if not pending:
         await c.answer("Предпросмотр устарел. Проверьте ссылку ещё раз.", show_alert=True); return
     try:
-        async with isolated_account_client(aid) as (account, client):
+        async with isolated_account_client(aid) as (_account, client):
             entity = None
             if pending.get("already") and pending.get("entity_id"):
                 entity = await client.get_entity(pending["entity_id"])
@@ -3011,7 +3011,7 @@ async def chat_join_confirm(c):
             return
         if "UserAlreadyParticipantError" in type(exc).__name__:
             try:
-                async with isolated_account_client(aid) as (account, client):
+                async with isolated_account_client(aid) as (_account, client):
                     kind, target = pending["kind"], pending["target"]
                     if kind == "public":
                         entity = await client.get_entity(target)
