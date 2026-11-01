@@ -712,7 +712,7 @@ async def management_campaign_wizard_start(c: CallbackQuery, state: FSMContext):
     )
     await state.set_state(Flow.management_input)
     await edit(c,
-        "Шаг 1 из 3 · Время запуска\n\n"
+        f"Шаг 1 из {'5' if mode == 'recurring' else '3'} · Время запуска\n\n"
         "Отправьте now для немедленного запуска или дату и время в UTC: YYYY-MM-DD HH:MM.\n"
         "Пример: 2026-11-05 18:30.",
         CANCEL,
@@ -1006,7 +1006,7 @@ async def management_input_received(m: Message, state: FSMContext):
             else:
                 if data.get("campaign_kind") == "direct_invite":
                     await state.update_data(management_action="campaign_target_group")
-                    await prompt_message(m, state, "Шаг 2 из 4 · Целевая группа\n\nУкажите peer ID или @username супергруппы, где аккаунт является администратором.")
+                    await prompt_message(m, state, "Шаг 2 из 3 · Целевая группа\n\nУкажите peer ID или @username супергруппы, где аккаунт является администратором.")
                 else:
                     await state.update_data(management_action="campaign_recipients")
                     await prompt_message(m, state, "Шаг 2 из 3 · Получатели\n\nОтправьте @username или ссылку каждого получателя через запятую или с новой строки. Для публикации в группе укажите группы, где аккаунт администратор (можно peer ID из списка групп).")
@@ -1023,11 +1023,15 @@ async def management_input_received(m: Message, state: FSMContext):
         elif action == "campaign_runs":
             if not raw.isdigit() or not 1 <= int(raw) <= 365:
                 raise ValueError("Количество запусков должно быть от 1 до 365.")
+            next_action = "campaign_target_group" if data.get("campaign_kind") == "direct_invite" else "campaign_recipients"
             await state.update_data(
                 campaign_schedule_max_runs=int(raw),
-                management_action="campaign_recipients",
+                management_action=next_action,
             )
-            await prompt_message(m, state, "Шаг 4 из 5 · Получатели\n\nОтправьте @username или ссылку каждого получателя через запятую или с новой строки. Для публикации в группе укажите группы, где аккаунт администратор.")
+            if next_action == "campaign_target_group":
+                await prompt_message(m, state, "Шаг 4 из 5 · Целевая группа\n\nУкажите peer ID или @username супергруппы, где аккаунт является администратором.")
+            else:
+                await prompt_message(m, state, "Шаг 4 из 5 · Получатели\n\nОтправьте @username или ссылку каждого получателя через запятую или с новой строки. Для публикации в группе укажите группы, где аккаунт администратор.")
             return
         elif action == "campaign_target_group":
             group = await telegram_management.resolve_group_for_consent(aid, raw)
@@ -1039,7 +1043,7 @@ async def management_input_received(m: Message, state: FSMContext):
                 campaign_target_group_label=group["peer_label"],
                 management_action="campaign_recipients",
             )
-            step = "5 из 6" if data.get("campaign_mode") == "recurring" else "3 из 4"
+            step = "5 из 5" if data.get("campaign_mode") == "recurring" else "3 из 3"
             await prompt_message(m, state, f"Шаг {step} · Получатели\n\nОтправьте @username каждого человека, который явно попросил добавить его в эту группу. Можно через запятую или с новой строки.")
             return
         elif action == "campaign_recipients":
