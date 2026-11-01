@@ -7,6 +7,7 @@ scrape participants, add strangers to groups, or bypass Telegram limits.
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -44,8 +45,8 @@ def _validate_payload(kind: str, payload: dict) -> dict:
         raise ValueError("Текст сообщения не должен превышать 4096 символов.")
     if not normalized["text"] and not normalized["file_path"]:
         raise ValueError("Добавьте текст или файл.")
-    if kind == "invite" and not normalized["text"]:
-        raise ValueError("Для приглашения укажите текст и ссылку-приглашение.")
+    if kind == "invite" and not re.search(r"(?:https?://)?t\\.me/", normalized["text"], re.I):
+        raise ValueError("Для приглашения укажите текст и ссылку-приглашение t.me.")
     if normalized["file_path"]:
         root = (Path(get_settings().data_dir) / "automation_uploads").resolve()
         candidate = Path(normalized["file_path"]).resolve()
