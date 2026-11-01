@@ -21,6 +21,7 @@ from app.storage.models import (
     Account,
     AppSetting,
     AutomationConsent,
+    AutomationInviteConsent,
     AutomationSchedule,
     ScheduledReaction,
     AutomationOperationEvent,
@@ -71,11 +72,64 @@ def _validate_payload(kind: str, payload: dict) -> dict:
     return normalized
 
 
+async def grant_direct_invite_consent(
+    account_id: int, *, peer: dict, group: dict, consent_source: str,
+) -> None:
+    """Record a separate, group-specific request to be directly added."""
+    if not group.get("is_megagroup") or not int(group.get("peer_id") or 0):
+        raise ValueError("Прямое приглашение доступно только в выбранную супергруппу.")
+    if not int(peer.get("peer_id") or 0) or not str(consent_source).strip():
+        raise ValueError("Не хватает получателя или источника согласия.")
+    async with SessionFactory() as db:
+        if not await db.get(Account, account_id):
+            raise ValueError("Аккаунт не найден.")
+        row = await db.scalar(select(AutomationInviteConsent).where(
+            AutomationInviteConsent.account_id == account_id,
+            AutomationInviteConsent.peer_id == int(peer["peer_id"]),
+            AutomationInviteConsent.target_group_id == int(group["peer_id"]),
+        ))
+        values = {
+            "peer_ref": str(peer.get("peer_ref") or ""),
+            "peer_label": str(peer.get("peer_label") or ""),
+            "target_group_ref": str(group.get("peer_ref") or ""),
+            "target_group_label": str(group.get("peer_label") or ""),
+            "consent_source": str(consent_source).strip()[:255],
+            "granted_at": utcnow(),
+            "revoked_at": None,
+        }
+        if row:
+            for key, value in values.items():
+                setattr(row, key, value)
+        else:
+            db.add(AutomationInviteConsent(
+                account_id=account_id, peer_id=int(peer["peer_id"]),
+                target_group_id=int(group["peer_id"]), **values,
+            ))
+        await db.commit()
+
+
+async def revoke_direct_invite_consent(
+    account_id: int, *, peer_id: int, target_group_id: int,
+) -> int:
+    async with SessionFactory() as db:
+        rows = list((await db.scalars(select(AutomationInviteConsent).where(
+            AutomationInviteConsent.account_id == account_id,
+            AutomationInviteConsent.peer_id == int(peer_id),
+            AutomationInviteConsent.target_group_id == int(target_group_id),
+            AutomationInviteConsent.revoked_at.is_(None),
+        ))).all())
+        for row in rows:
+            row.revoked_at = utcnow()
+        await db.commit()
+        return len(rows)
+
+
+
 async def grant_consent(
     account_id: int, peer_id: int, *, peer_ref: str = "", peer_label: str = "",
     scope: str = "broadcast", consent_source: str = "operator-confirmed",
 ) -> None:
-    if scope not in {"broadcast", "invite", "direct_invite", "group_publish"}:
+    if scope not in {"broadcast", "invite", "group_publish"}:
         raise ValueError("Неизвестный тип согласия.")
     if int(peer_id) == 0:
         raise ValueError("Некорректный Telegram ID.")
@@ -129,10 +183,23 @@ async def list_consents(account_id: int, *, scope: str | None = None) -> list[di
         if scope:
             query = query.where(AutomationConsent.scope == scope)
         rows = list((await db.scalars(query.limit(MAX_RECIPIENTS))).all())
-        return [{
+        result = [{
             "peer_id": int(row.peer_id), "peer_ref": row.peer_ref, "peer_label": row.peer_label,
-            "scope": row.scope, "granted_at": row.granted_at.isoformat(),
+            "scope": row.scope, "target_group_label": "",
+            "granted_at": row.granted_at.isoformat(),
         } for row in rows]
+        if not scope or scope == "direct_invite":
+            direct_rows = list((await db.scalars(select(AutomationInviteConsent).where(
+                AutomationInviteConsent.account_id == account_id,
+                AutomationInviteConsent.revoked_at.is_(None),
+            ).order_by(AutomationInviteConsent.granted_at.desc()).limit(MAX_RECIPIENTS))).all())
+            result.extend({
+                "peer_id": int(row.peer_id), "peer_ref": row.peer_ref,
+                "peer_label": row.peer_label, "scope": "direct_invite",
+                "target_group_label": row.target_group_label,
+                "granted_at": row.granted_at.isoformat(),
+            } for row in direct_rows)
+        return result[:MAX_RECIPIENTS]
 
 
 async def create_campaign(
@@ -146,17 +213,25 @@ async def create_campaign(
     due = _aware(scheduled_at or utcnow())
     if due < utcnow() - timedelta(minutes=1):
         raise ValueError("Время запуска уже прошло.")
-    scope = "direct_invite" if kind == "direct_invite" else ("invite" if kind == "invite" else ("group_publish" if kind == "group_broadcast" else "broadcast"))
+    scope = "invite" if kind == "invite" else ("group_publish" if kind == "group_broadcast" else "broadcast")
     async with SessionFactory() as db:
         account = await db.get(Account, account_id)
         if not account or not account.enabled:
             raise ValueError("Аккаунт не найден или отключён.")
-        consents = list((await db.scalars(select(AutomationConsent).where(
-            AutomationConsent.account_id == account_id,
-            AutomationConsent.peer_id.in_(unique_ids),
-            AutomationConsent.scope == scope,
-            AutomationConsent.revoked_at.is_(None),
-        ))).all())
+        if kind == "direct_invite":
+            consents = list((await db.scalars(select(AutomationInviteConsent).where(
+                AutomationInviteConsent.account_id == account_id,
+                AutomationInviteConsent.peer_id.in_(unique_ids),
+                AutomationInviteConsent.target_group_id == int(normalized["target_group_id"]),
+                AutomationInviteConsent.revoked_at.is_(None),
+            ))).all())
+        else:
+            consents = list((await db.scalars(select(AutomationConsent).where(
+                AutomationConsent.account_id == account_id,
+                AutomationConsent.peer_id.in_(unique_ids),
+                AutomationConsent.scope == scope,
+                AutomationConsent.revoked_at.is_(None),
+            ))).all())
         by_id = {int(item.peer_id): item for item in consents}
         missing = [peer_id for peer_id in unique_ids if peer_id not in by_id]
         if missing:
@@ -745,7 +820,8 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
 
 
 __all__ = [
-    "campaign_status", "create_campaign", "grant_consent", "list_campaigns", "list_consents",
+    "campaign_status", "create_campaign", "grant_consent", "grant_direct_invite_consent",
+    "revoke_direct_invite_consent", "list_campaigns", "list_consents",
     "process_due_campaigns", "reset_account_limits", "retry_failed_campaign", "revoke_consent", "set_account_limits",
     "set_global_automation_limits", "set_operation_limits", "operation_limits",
     "create_schedule", "list_schedules", "set_schedule_status", "dispatch_due_schedules",
@@ -892,13 +968,22 @@ async def dispatch_due_schedules(*, max_schedules: int = 10) -> int:
                 break
             try:
                 ids = list(dict.fromkeys(int(x) for x in json.loads(row.recipients_json)))
-                scope = "direct_invite" if row.kind == "direct_invite" else ("invite" if row.kind == "invite" else ("group_publish" if row.kind == "group_broadcast" else "broadcast"))
-                consents = list((await db.scalars(select(AutomationConsent).where(
-                    AutomationConsent.account_id == row.account_id,
-                    AutomationConsent.peer_id.in_(ids),
-                    AutomationConsent.scope == scope,
-                    AutomationConsent.revoked_at.is_(None),
-                ))).all()) if ids else []
+                scope = "invite" if row.kind == "invite" else ("group_publish" if row.kind == "group_broadcast" else "broadcast")
+                if row.kind == "direct_invite":
+                    target_group_id = int(json.loads(row.payload).get("target_group_id") or 0)
+                    consents = list((await db.scalars(select(AutomationInviteConsent).where(
+                        AutomationInviteConsent.account_id == row.account_id,
+                        AutomationInviteConsent.peer_id.in_(ids),
+                        AutomationInviteConsent.target_group_id == target_group_id,
+                        AutomationInviteConsent.revoked_at.is_(None),
+                    ))).all()) if ids else []
+                else:
+                    consents = list((await db.scalars(select(AutomationConsent).where(
+                        AutomationConsent.account_id == row.account_id,
+                        AutomationConsent.peer_id.in_(ids),
+                        AutomationConsent.scope == scope,
+                        AutomationConsent.revoked_at.is_(None),
+                    ))).all()) if ids else []
                 by_id = {int(item.peer_id): item for item in consents}
                 if len(by_id) != len(ids):
                     row.status = "paused"

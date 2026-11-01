@@ -367,3 +367,24 @@ class AutomationOperationEvent(Base):
     account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), index=True)
     operation: Mapped[str] = mapped_column(String(24), nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False, index=True)
+
+
+
+class AutomationInviteConsent(Base):
+    """Explicit consent to be directly added to one specific supergroup."""
+    __tablename__ = "automation_invite_consents"
+    __table_args__ = (
+        UniqueConstraint("account_id", "peer_id", "target_group_id", name="uq_automation_invite_consent_target"),
+        Index("ix_automation_invite_consents_lookup", "account_id", "target_group_id", "peer_id"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), index=True)
+    peer_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    peer_ref: Mapped[str] = mapped_column(String(255), default="", server_default="", nullable=False)
+    peer_label: Mapped[str] = mapped_column(String(255), default="", server_default="", nullable=False)
+    target_group_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    target_group_ref: Mapped[str] = mapped_column(String(255), default="", server_default="", nullable=False)
+    target_group_label: Mapped[str] = mapped_column(String(255), default="", server_default="", nullable=False)
+    consent_source: Mapped[str] = mapped_column(String(255), default="", server_default="", nullable=False)
+    granted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -94,6 +94,8 @@ async def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS ix_scheduled_reactions_due ON scheduled_reactions (status, run_at)",
             "CREATE TABLE IF NOT EXISTS automation_operation_events (id SERIAL PRIMARY KEY, account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE, operation VARCHAR(24) NOT NULL, occurred_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
             "CREATE INDEX IF NOT EXISTS ix_automation_operation_events_account_kind_time ON automation_operation_events (account_id, operation, occurred_at)",
+            "CREATE TABLE IF NOT EXISTS automation_invite_consents (id SERIAL PRIMARY KEY, account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE, peer_id BIGINT NOT NULL, peer_ref VARCHAR(255) NOT NULL DEFAULT '', peer_label VARCHAR(255) NOT NULL DEFAULT '', target_group_id BIGINT NOT NULL, target_group_ref VARCHAR(255) NOT NULL DEFAULT '', target_group_label VARCHAR(255) NOT NULL DEFAULT '', consent_source VARCHAR(255) NOT NULL DEFAULT '', granted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), revoked_at TIMESTAMPTZ NULL, CONSTRAINT uq_automation_invite_consent_target UNIQUE (account_id, peer_id, target_group_id))",
+            "CREATE INDEX IF NOT EXISTS ix_automation_invite_consents_lookup ON automation_invite_consents (account_id, target_group_id, peer_id)",
             "ALTER TABLE automation_consents ADD COLUMN IF NOT EXISTS peer_ref VARCHAR(255) NOT NULL DEFAULT ''",
             "ALTER TABLE automation_task_recipients ADD COLUMN IF NOT EXISTS peer_ref VARCHAR(255) NOT NULL DEFAULT ''",
             "ALTER TABLE ai_agents ADD COLUMN IF NOT EXISTS channel_reply_probability_override INTEGER NULL",
