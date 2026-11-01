@@ -2638,7 +2638,6 @@ async def chat_search_query(m: Message, state: FSMContext):
         kb([[("⬅️ Инструменты", "tool:menu")]]),
     )
 
-    account = None
     try:
         async def search_one_account(search_aid: int):
             try:
