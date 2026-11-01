@@ -315,9 +315,43 @@ async def tool_groups_accounts(c: CallbackQuery):
             [("⬅️ Инструменты", "tool:menu")],
         ]))
         return
-    rows = [[(f"👤 {a.display_name[:32]} · #{a.id}", f"tool:groups:account:{a.id}")] for a in accounts]
+    rows = [[(f"🌐 Все аккаунты · {len(accounts)}", "tool:groups:all")]]
+    rows += [[(f"👤 {a.display_name[:32]} · #{a.id}", f"tool:groups:account:{a.id}")] for a in accounts]
     rows += [[("⬅️ Инструменты", "tool:menu")]]
-    await edit(c, "🔎 Поиск Telegram-групп\n\nВыберите аккаунт, через который Telegram будет искать и проверять группы. В результатах останутся только группы и супергруппы — каналы будут отсеяны.", kb(rows))
+    await edit(c, "🔎 Поиск Telegram-групп\n\nМожно искать сразу всеми включёнными аккаунтами — так Telegram-native поиск соберёт больше вариантов. Либо выберите один аккаунт. В результатах останутся только группы и супергруппы; каналы будут отсеяны.", kb(rows))
+
+
+@router.callback_query(F.data == "tool:groups:all")
+async def tool_groups_all_accounts(c: CallbackQuery, state: FSMContext):
+    if not await check_cb(c): return
+    async with SessionFactory() as db:
+        accounts = list((await db.scalars(
+            select(Account).where(Account.enabled.is_(True)).order_by(Account.id)
+        )).all())
+    if not accounts:
+        await c.answer("Нет включённых аккаунтов.", show_alert=True)
+        return
+    ids = [int(account.id) for account in accounts]
+    await state.clear()
+    await state.update_data(
+        ui_chat_id=c.message.chat.id,
+        ui_message_id=c.message.message_id,
+        return_callback="tool:menu",
+        chat_search_account_id=ids[0],
+        chat_search_account_ids=ids,
+    )
+    await state.set_state(Flow.chat_search_query)
+    await edit(
+        c,
+        f"🌐 Поиск всеми аккаунтами · {len(ids)} аккаунтов\n\n"
+        "Введите тему или несколько ключевых слов. Например: «Python разработка», "
+        "«настольные игры», «дизайн».\n\n"
+        "Каждый включённый аккаунт выполнит собственный поиск в Telegram. "
+        "Результаты объединятся без дублей, затем ссылки будут проверены через Telegram API. "
+        "Поисковики работают параллельно; если источник показывает CAPTCHA или ограничивает запросы, "
+        "он временно отключается, а остальные продолжают поиск.",
+        CANCEL,
+    )
 
 
 @router.callback_query(F.data.startswith("tool:groups:account:"))
@@ -335,6 +369,7 @@ async def tool_groups_account(c: CallbackQuery, state: FSMContext):
         ui_message_id=c.message.message_id,
         return_callback="tool:menu",
         chat_search_account_id=aid,
+        chat_search_account_ids=[aid],
     )
     await state.set_state(Flow.chat_search_query)
     await edit(
@@ -2579,29 +2614,65 @@ async def chat_search_query(m: Message, state: FSMContext):
         return
     query = query[:100]
     aid = int(data.get("chat_search_account_id", 0))
+    account_ids = list(dict.fromkeys(
+        int(value) for value in (data.get("chat_search_account_ids") or [aid])
+        if str(value).isdigit()
+    ))
+    if aid not in account_ids:
+        account_ids.insert(0, aid)
     anchor = {"ui_chat_id": data.get("ui_chat_id"), "ui_message_id": data.get("ui_message_id")}
     await state.clear()
     await edit_anchor(
         m.bot,
         anchor,
         f"🔎 Ищу группы по запросу «{query}»\n\n"
-        "1/3 · Ищу по нескольким поисковикам и страницам выдачи…\n"
-        "2/3 · Собираю кандидатов и проверяю ссылки через Telegram API.\n"
-        "Каналы в выдачу не попадут.",
+        f"Telegram-поиск: {len(account_ids)} аккаунт(ов)\n"
+        "1/3 · Ищу через подключённые аккаунты и несколько поисковиков…\n"
+        "2/3 · Объединяю результаты и проверяю ссылки через Telegram API.\n"
+        "Если поисковик ограничивает запросы, остальные продолжают работу.",
         kb([[("⬅️ Инструменты", "tool:menu")]]),
     )
 
     account = None
     client = None
     try:
-        account, client = await _load_account_client(aid)
-        native_task = asyncio.create_task(search_public_groups(client, query, limit=100))
+        async def search_one_account(search_aid: int):
+            try:
+                async with SessionFactory() as db:
+                    search_account = await db.get(Account, search_aid)
+                if not search_account or not search_account.enabled:
+                    return []
+                async with isolated_telegram_client(search_account) as search_client:
+                    if not await search_client.is_user_authorized():
+                        return []
+                    return await search_public_groups(search_client, query, limit=100)
+            except Exception as exc:
+                logging.warning("Group discovery failed for account %s: %s", search_aid, exc)
+                return []
+
+        async def search_accounts():
+            semaphore = asyncio.Semaphore(3)
+            async def limited(search_aid):
+                async with semaphore:
+                    return await search_one_account(search_aid)
+            results = await asyncio.gather(
+                *(limited(search_aid) for search_aid in account_ids),
+                return_exceptions=True,
+            )
+            return [
+                item
+                for batch in results if isinstance(batch, list)
+                for item in batch
+            ]
+
+        native_task = asyncio.create_task(search_accounts())
         web_task = asyncio.create_task(search_web_groups(query, limit=600, pages_per_query=5))
         native_result, web_result = await asyncio.gather(
             native_task, web_task, return_exceptions=True
         )
         native_results = native_result if isinstance(native_result, list) else []
         web_results = web_result if isinstance(web_result, list) else []
+        account, client = await _load_account_client(aid)
         combined = {}
         for item in native_results + web_results:
             link = str(item.get("link") or "").strip()
@@ -2619,11 +2690,12 @@ async def chat_search_query(m: Message, state: FSMContext):
             else:
                 combined[key] = item
 
-        raw_candidates = list(combined.values())[:500]
+        raw_candidates = list(combined.values())[:600]
         await edit_anchor(
             m.bot,
             anchor,
             f"🔎 Проверяю найденные ссылки · «{query}»\n\n"
+            f"Аккаунтов в поиске: {len(account_ids)}\n"
             f"Кандидатов собрано: {len(raw_candidates)}\n"
             "Проверяю тип каждого чата непосредственно в Telegram. "
             "Каналы и нерабочие ссылки отбрасываются.",
@@ -2665,6 +2737,7 @@ async def chat_search_query(m: Message, state: FSMContext):
 
     lines = [
         f"🔎 Найдено групп: {len(candidates)} · запрос «{query}»",
+        f"Поиск выполнен через {len(account_ids)} аккаунт(ов) Telegram",
         "✓ Каждая ссылка проверена через Telegram API",
         "Каналы, боты и профили исключены.",
         "",
