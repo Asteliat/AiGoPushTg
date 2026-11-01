@@ -19,10 +19,10 @@ from telethon import TelegramClient
 from telethon.errors import FloodWaitError
 from telethon.tl.functions.channels import JoinChannelRequest, LeaveChannelRequest
 from telethon.tl.functions.contacts import DeleteContactsRequest, ImportContactsRequest
-from telethon.tl.functions.messages import SendReactionRequest
+from telethon.tl.functions.messages import CheckChatInviteRequest, ImportChatInviteRequest, SendReactionRequest
 from telethon.tl.functions.users import GetFullUserRequest
 from telethon.tl.functions.account import UpdateProfileRequest, UpdateUsernameRequest
-from telethon.tl.types import InputPhoneContact, ReactionEmoji
+from telethon.tl.types import ChatInviteAlready, InputPhoneContact, ReactionEmoji
 
 from app.settings import get_settings
 from app.storage.db import SessionFactory
@@ -210,13 +210,26 @@ async def delete_contact(account_id: int, user_id: int) -> None:
 
 
 async def join_chat(account_id: int, link: str) -> None:
-    """Join a public group/channel; FloodWait is deliberately returned to caller."""
+    """Join a public chat or a private invite; FloodWait is returned to the caller."""
     value = link.strip()
     if not value:
         raise ValueError("Укажите ссылку или @username.")
     async with _account_lock(account_id):
         async with isolated_account_client(account_id) as (_account, client):
-            entity = await client.get_entity(value)
+            lowered = value.lower().rstrip("/")
+            if "t.me/+" in lowered or "t.me/joinchat/" in lowered:
+                invite_hash = value.rstrip("/").rsplit("/", 1)[-1].lstrip("+")
+                if not invite_hash:
+                    raise ValueError("Некорректная приватная ссылка-приглашение.")
+                invite = await client(CheckChatInviteRequest(hash=invite_hash))
+                if isinstance(invite, ChatInviteAlready):
+                    return
+                await client(ImportChatInviteRequest(hash=invite_hash))
+                return
+            target = value
+            if "t.me/" in lowered:
+                target = value.rstrip("/").rsplit("/", 1)[-1]
+            entity = await client.get_entity(target)
             await client(JoinChannelRequest(entity))
 
 
@@ -226,8 +239,12 @@ async def leave_chat(account_id: int, link: str) -> None:
         raise ValueError("Укажите ссылку или @username.")
     async with _account_lock(account_id):
         async with isolated_account_client(account_id) as (_account, client):
-            entity = await client.get_entity(value)
-            await client(LeaveChannelRequest(entity))
+            target = value.rstrip("/").rsplit("/", 1)[-1] if "t.me/" in value.lower() else value
+            entity = await client.get_entity(target)
+            if entity.__class__.__name__ == "Chat":
+                await client.delete_dialog(entity)
+            else:
+                await client(LeaveChannelRequest(entity))
 
 
 async def get_chat_overview(account_id: int, link: str) -> ChatOverview:
