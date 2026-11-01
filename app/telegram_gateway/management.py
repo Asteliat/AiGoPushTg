@@ -202,6 +202,30 @@ async def add_contact(
             return len(result.imported)
 
 
+async def import_contacts(account_id: int, contacts: list[dict]) -> dict:
+    """Import up to 100 operator-supplied contacts in one Telegram request."""
+    if not contacts or len(contacts) > 100:
+        raise ValueError("За один импорт можно передать от 1 до 100 контактов.")
+    normalized = []
+    for index, item in enumerate(contacts):
+        phone = "".join(ch for ch in str(item.get("phone", "")) if ch.isdigit() or ch == "+")
+        first_name = str(item.get("first_name", "")).strip()
+        last_name = str(item.get("last_name", "")).strip()
+        if len(phone) < 7 or len(phone) > 16 or not first_name or len(first_name) > 64 or len(last_name) > 64:
+            raise ValueError(f"Проверьте телефон и имя в строке {index + 1}.")
+        normalized.append(InputPhoneContact(
+            client_id=index, phone=phone, first_name=first_name, last_name=last_name,
+        ))
+    async with _account_lock(account_id):
+        async with isolated_account_client(account_id) as (_account, client):
+            result = await client(ImportContactsRequest(normalized))
+            return {
+                "imported": len(result.imported),
+                "retry_contacts": len(result.retry_contacts),
+                "users": len(result.users),
+            }
+
+
 async def delete_contact(account_id: int, user_id: int) -> None:
     async with _account_lock(account_id):
         async with isolated_account_client(account_id) as (_account, client):
@@ -411,6 +435,6 @@ async def simulate_post_activity(
 __all__ = [
     "ChatOverview", "FloodWaitError", "add_contact", "delete_contact",
     "get_chat_overview", "get_profile", "join_chat", "leave_chat",
-    "list_contacts", "parse_public_channel_posts", "react_to_message", "resolve_peer_for_consent", "resolve_peers_for_consent", "set_profile_photo", "simulate_post_activity",
+    "import_contacts", "list_contacts", "parse_public_channel_posts", "react_to_message", "resolve_peer_for_consent", "resolve_peers_for_consent", "set_profile_photo", "simulate_post_activity",
     "update_profile",
 ]
