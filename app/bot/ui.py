@@ -321,7 +321,7 @@ async def tool_groups_accounts(c: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("tool:groups:account:"))
-async def tool_groups_account(c: CallbackQuery):
+async def tool_groups_account(c: CallbackQuery, state: FSMContext):
     if not await check_cb(c): return
     aid = int(c.data.rsplit(":", 1)[1])
     async with SessionFactory() as db:
@@ -329,10 +329,16 @@ async def tool_groups_account(c: CallbackQuery):
     if not account or not account.enabled:
         await c.answer("Аккаунт не найден или выключен.", show_alert=True)
         return
-    # Reuse the existing search state machine; search is now launched from Tools.
-    await c.data.__class__ if False else asyncio.sleep(0)
-    await c.answer()
-    await c.message.edit_text(
+    await state.clear()
+    await state.update_data(
+        ui_chat_id=c.message.chat.id,
+        ui_message_id=c.message.message_id,
+        return_callback="tool:menu",
+        chat_search_account_id=aid,
+    )
+    await state.set_state(Flow.chat_search_query)
+    await edit(
+        c,
         f"🔎 Поиск Telegram-групп · {account.display_name} · аккаунт #{aid}\n\n"
         "Введите тему или несколько ключевых слов. Например: «Python разработка», "
         "«настольные игры», «дизайн».\n\n"
@@ -340,11 +346,8 @@ async def tool_groups_account(c: CallbackQuery):
         "проверяется через Telegram API: каналы, профили, боты и нерабочие ссылки исключаются. "
         "Приватные группы попадут в результаты только если приглашение доступно и Telegram "
         "позволяет проверить его тип.",
-        reply_markup=CANCEL,
+        CANCEL,
     )
-    # The message handler below reads this state from the FSM context.
-    state = c.bot
-    # State is supplied by a separate callback wrapper to keep the router signature explicit.
 
 
 def trigger_back_callback(scope: str, account_id: int | None = None) -> str:
