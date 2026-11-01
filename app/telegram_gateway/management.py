@@ -584,8 +584,8 @@ async def react_to_message(
             ))
 
 
-async def resolve_peer_for_consent(account_id: int, peer_ref: str) -> dict:
-    """Resolve an explicitly opted-in Telegram peer and retain a reusable reference."""
+async def resolve_peer(account_id: int, peer_ref: str) -> dict:
+    """Resolve an explicitly selected Telegram peer and retain a reusable reference."""
     value = peer_ref.strip()
     if not value:
         raise ValueError("Укажите @username или ссылку на пользователя.")
@@ -593,7 +593,7 @@ async def resolve_peer_for_consent(account_id: int, peer_ref: str) -> dict:
         value = value.removeprefix("https://t.me/").split("/", 1)[0]
     value = value.lstrip("@")
     if not value or value.startswith("+") or value.startswith("joinchat"):
-        raise ValueError("Для личного согласия нужен публичный username пользователя.")
+        raise ValueError("Для личной рассылки укажите публичный username пользователя.")
     async with _account_lock(account_id):
         async with isolated_account_client(account_id) as (_account, client):
             entity = await client.get_entity(value)
@@ -612,8 +612,8 @@ async def resolve_peer_for_consent(account_id: int, peer_ref: str) -> dict:
             }
 
 
-async def resolve_group_for_consent(account_id: int, group_ref: str) -> dict:
-    """Resolve a group where the account is an admin before allowing scheduled publishing."""
+async def resolve_group(account_id: int, group_ref: str) -> dict:
+    """Resolve a selected group and verify the account is an administrator."""
     value = group_ref.strip()
     if not value:
         raise ValueError("Укажите @username или ссылку на собственную группу.")
@@ -645,7 +645,7 @@ async def resolve_group_for_consent(account_id: int, group_ref: str) -> dict:
 
 async def resolve_group_for_direct_invite(account_id: int, group_ref: str) -> dict:
     """Resolve a supergroup and verify Telegram's invite_users permission."""
-    group = await resolve_group_for_consent(account_id, group_ref)
+    group = await resolve_group(account_id, group_ref)
     if not group.get("is_megagroup"):
         raise ValueError("Прямое добавление доступно только в супергруппы.")
     from app.services.automation import _has_invite_permission
@@ -660,7 +660,7 @@ async def resolve_group_for_direct_invite(account_id: int, group_ref: str) -> di
     return group
 
 
-async def resolve_groups_for_consent(account_id: int, group_refs: list[str]) -> list[dict]:
+async def resolve_groups(account_id: int, group_refs: list[str]) -> list[dict]:
     """Resolve up to 100 operator-selected groups and verify admin rights in one session."""
     values = []
     for raw in group_refs:
@@ -724,7 +724,7 @@ async def resolve_group_reference(account_id: int, group_ref: str) -> dict:
                     "peer_label": str(getattr(entity, "title", None) or username or entity.id)}
 
 
-async def resolve_peers_for_consent(account_id: int, peer_refs: list[str]) -> list[dict]:
+async def resolve_peers(account_id: int, peer_refs: list[str]) -> list[dict]:
     """Resolve several explicitly selected personal accounts in one isolated session."""
     values = []
     for raw in peer_refs:
@@ -781,8 +781,8 @@ __all__ = [
     "get_chat_overview", "get_profile", "join_chat", "leave_chat",
     "import_contacts", "list_contacts", "list_account_dialogs", "manage_subscriptions_batch",
     "parse_chat_history", "parse_chat_participants", "react_to_message",
-    "resolve_peer_for_consent", "resolve_peers_for_consent", "resolve_group_for_consent",
-    "resolve_groups_for_consent", "resolve_group_reference", "set_profile_photo",
+    "resolve_peer", "resolve_peers", "resolve_group",
+    "resolve_groups", "resolve_group_reference", "set_profile_photo",
     "simulate_post_activity",
     "update_profile",
 ]
