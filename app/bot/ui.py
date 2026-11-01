@@ -452,6 +452,7 @@ async def management_account_menu(c: CallbackQuery):
         [("📨 Создать рассылку / приглашение", f"tool:mg:campaign:{aid}")],
         [("📋 Очередь и история задач", f"tool:mg:campaigns:{aid}")],
         [("⏱ Лимиты отправки", f"tool:mg:limits:{aid}")],
+        [("🎯 Автоответчики и триггеры", f"trigger:account:{aid}")],
         [("⬅️ К аккаунтам", "tool:management")],
     ]))
 
@@ -566,6 +567,8 @@ async def management_campaign_status(c: CallbackQuery):
         if item["last_error"]:
             text_value += f"\nПоследняя информация: {item['last_error'][:500]}"
         rows = []
+        if int(item["recipients"].get("failed", 0) or 0) > 0 and item["status"] in {"completed", "failed"}:
+            rows.append([("🔁 Повторить неудачные доставки", f"tool:campaign:retry:{task_id}")])
         if item["status"] in {"queued", "running"}:
             rows.append([("⏸ Приостановить", f"tool:campaign:pause:{task_id}")])
             rows.append([("⛔ Отменить", f"tool:campaign:cancel-task:{task_id}")])
@@ -591,6 +594,19 @@ async def management_campaign_change(c: CallbackQuery):
         await management_campaign_status(c)
     except Exception as exc:
         await c.answer(f"Не удалось изменить задачу: {str(exc)[:180]}", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("tool:campaign:retry:"))
+async def management_campaign_retry(c: CallbackQuery):
+    if not await check_cb(c):
+        return
+    task_id = int(c.data.rsplit(":", 1)[1])
+    try:
+        count = await telegram_automation.retry_failed_campaign(task_id)
+        await c.answer(f"В очередь возвращено: {count}")
+        await management_campaign_status(c)
+    except Exception as exc:
+        await c.answer(f"Не удалось повторить: {str(exc)[:180]}", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("tool:campaign:list:"))
