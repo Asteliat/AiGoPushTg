@@ -250,6 +250,46 @@ async def get_chat_overview(account_id: int, link: str) -> ChatOverview:
             )
 
 
+async def parse_public_channel_posts(
+    account_id: int, channel: str, *, limit: int = 20
+) -> dict:
+    """Parse public broadcast-channel posts and their visible counters, never participants."""
+    limit = max(1, min(int(limit), 100))
+    async with _account_lock(account_id):
+        async with isolated_account_client(account_id) as (_account, client):
+            entity = await client.get_entity(channel.strip())
+            if not getattr(entity, "broadcast", False):
+                raise ValueError("Парсер публикаций работает только с каналами вещания, не с группами.")
+            posts = []
+            async for message in client.iter_messages(entity, limit=limit):
+                if not message or getattr(message, "action", None):
+                    continue
+                reaction_items = []
+                reactions = getattr(message, "reactions", None)
+                for item in getattr(reactions, "results", []) or []:
+                    reaction = getattr(item, "reaction", None)
+                    reaction_items.append({
+                        "emoji": getattr(reaction, "emoticon", None) or getattr(reaction, "document_id", None),
+                        "count": int(getattr(item, "count", 0) or 0),
+                    })
+                posts.append({
+                    "id": int(message.id),
+                    "date": message.date.isoformat() if message.date else "",
+                    "text": (message.message or "")[:3000],
+                    "views": int(message.views or 0),
+                    "forwards": int(message.forwards or 0),
+                    "replies": int(getattr(getattr(message, "replies", None), "replies", 0) or 0),
+                    "reactions": reaction_items,
+                    "has_media": bool(message.media),
+                })
+            return {
+                "channel_id": int(entity.id),
+                "title": str(getattr(entity, "title", "") or getattr(entity, "username", "") or channel),
+                "username": getattr(entity, "username", None),
+                "posts": posts,
+            }
+
+
 async def react_to_message(
     account_id: int, *, chat: str, message_id: int, emoji: str
 ) -> None:
@@ -354,6 +394,6 @@ async def simulate_post_activity(
 __all__ = [
     "ChatOverview", "FloodWaitError", "add_contact", "delete_contact",
     "get_chat_overview", "get_profile", "join_chat", "leave_chat",
-    "list_contacts", "react_to_message", "resolve_peer_for_consent", "resolve_peers_for_consent", "set_profile_photo", "simulate_post_activity",
+    "list_contacts", "parse_public_channel_posts", "react_to_message", "resolve_peer_for_consent", "resolve_peers_for_consent", "set_profile_photo", "simulate_post_activity",
     "update_profile",
 ]
