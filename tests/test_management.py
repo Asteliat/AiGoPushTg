@@ -83,3 +83,70 @@ async def test_parse_chat_participants_rejects_non_group(monkeypatch):
     monkeypatch.setattr(management, "isolated_account_client", fake_client)
     with pytest.raises(ValueError, match="группу или канал"):
         await management.parse_chat_participants(1, "@user")
+
+
+
+@pytest.mark.asyncio
+async def test_group_campaign_resolver_accepts_public_supergroup(monkeypatch):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from telethon import utils
+    from app.telegram_gateway import management
+
+    class Channel:
+        id = 42
+        username = "publicgroup"
+        title = "Public group"
+        megagroup = True
+        gigagroup = False
+
+    class FakeClient:
+        async def get_entity(self, _target):
+            return Channel()
+
+    @asynccontextmanager
+    async def fake_client(_account_id):
+        yield SimpleNamespace(id=1), FakeClient()
+
+    monkeypatch.setattr(management, "isolated_account_client", fake_client)
+    monkeypatch.setattr(utils, "get_peer_id", lambda _entity: -10042)
+    result = await management.resolve_peers_for_consent(
+        1, ["@publicgroup"], allow_groups=True
+    )
+
+    assert result == [{
+        "peer_id": -10042,
+        "peer_ref": "@publicgroup",
+        "peer_label": "Public group",
+        "peer_type": "group",
+    }]
+
+
+@pytest.mark.asyncio
+async def test_group_campaign_resolver_rejects_broadcast_channel(monkeypatch):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from app.telegram_gateway import management
+
+    class Channel:
+        id = 42
+        username = "newschannel"
+        title = "News channel"
+        megagroup = False
+        gigagroup = False
+
+    class FakeClient:
+        async def get_entity(self, _target):
+            return Channel()
+
+    @asynccontextmanager
+    async def fake_client(_account_id):
+        yield SimpleNamespace(id=1), FakeClient()
+
+    monkeypatch.setattr(management, "isolated_account_client", fake_client)
+    with pytest.raises(ValueError, match="канал вещания"):
+        await management.resolve_peers_for_consent(
+            1, ["@newschannel"], allow_groups=True
+        )
