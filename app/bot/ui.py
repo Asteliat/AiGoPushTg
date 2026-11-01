@@ -448,6 +448,7 @@ async def management_account_menu(c: CallbackQuery):
         [("✏️ Изменить профиль", f"tool:mg:editprofile:{aid}")],
         [("📷 Изменить фото профиля", f"tool:mg:photo:{aid}")],
         [("🤝 Добавить согласие", f"tool:mg:consent:{aid}"), ("🚫 Отозвать согласие", f"tool:mg:revokeconsent:{aid}")],
+        [("👥 Список согласий", f"tool:mg:consents:{aid}")],
         [("📨 Создать рассылку / приглашение", f"tool:mg:campaign:{aid}")],
         [("📋 Очередь и история задач", f"tool:mg:campaigns:{aid}")],
         [("⏱ Лимиты отправки", f"tool:mg:limits:{aid}")],
@@ -482,9 +483,16 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         "editprofile": "Отправьте новые поля через |\nФормат: имя | фамилия | BIO | username\nЧтобы оставить поле без изменений, укажите -",
         "consent": "Добавить только пользователя, который явно согласился получать сообщения. Формат: @username | broadcast или invite | источник согласия.",
         "revokeconsent": "Отправьте @username получателя. Его согласия на рассылки и приглашения будут отозваны.",
+        "consents": "Показать сохранённые согласия.",
         "campaign": "Формат: broadcast или invite | now либо YYYY-MM-DD HH:MM UTC | @user1,@user2. Только получатели с активным согласием; максимум 100 за задачу.",
         "limits": "Формат: интервал_секунд | максимум_сообщений_за_24ч. По умолчанию 30 | 50; диапазоны 1–3600 и 1–500.",
     }
+    if action == "consents":
+        items = await telegram_automation.list_consents(aid)
+        lines = [f"👥 Согласия аккаунта #{aid} · {len(items)}"]
+        lines.extend(f"{item['peer_label']} · @{item['peer_ref'].lstrip('@')} · {item['scope']}" for item in items)
+        await edit(c, "\\n".join(lines)[:3900] or "Согласий пока нет.", kb([[("↩️ К инструментам аккаунта", f"tool:management:account:{aid}")]]))
+        return
     if action == "campaigns":
         items = await telegram_automation.list_campaigns(aid, limit=12)
         if not items:
@@ -657,6 +665,10 @@ async def management_input_received(m: Message, state: FSMContext):
                 peer_label=peer["peer_label"], scope=scope, consent_source=parts[2],
             )
             message = f"Согласие сохранено: {peer['peer_label']} · {scope}."
+        elif action == "revokeconsent":
+            peer = await telegram_management.resolve_peer_for_consent(aid, raw)
+            count = await telegram_automation.revoke_consent(aid, peer["peer_id"])
+            message = f"Согласие отозвано. Обновлено записей: {count}."
         elif action == "limits":
             parts = [x.strip() for x in raw.split("|")]
             if len(parts) != 2:
