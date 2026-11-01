@@ -14,6 +14,7 @@ from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.functions.messages import CheckChatInviteRequest, ImportChatInviteRequest
 from telethon.tl.types import ChatInviteAlready
 from app.telegram_gateway.discovery import search_public_groups, search_web_groups, verify_group_candidates, find_invite_links_in_dialogs
+from app.telegram_gateway.session import configure_telethon_sqlite_session
 from app.services.ai_responses import global_ai_enabled
 from app.services.chat_bindings import discovered_binding_values
 from app.services.channels import (
@@ -65,8 +66,10 @@ async def isolated_telegram_client(account):
         source_path = str(account.session_path)
         if not source_path.endswith(".session"):
             source_path += ".session"
-        source_db = sqlite3.connect(source_path, timeout=20)
-        snapshot_db = sqlite3.connect(snapshot_path, timeout=20)
+        source_db = sqlite3.connect(source_path, timeout=30)
+        source_db.execute("PRAGMA busy_timeout = 30000")
+        snapshot_db = sqlite3.connect(snapshot_path, timeout=30)
+        snapshot_db.execute("PRAGMA busy_timeout = 30000")
         try:
             # SQLite backup includes committed WAL content without opening the
             # worker's live session through another Telethon client.
@@ -81,6 +84,7 @@ async def isolated_telegram_client(account):
             cfg.telegram_api_hash,
             proxy=telethon_proxy(account.proxy_config_encrypted),
         )
+        configure_telethon_sqlite_session(client)
         try:
             await client.connect()
             yield client
