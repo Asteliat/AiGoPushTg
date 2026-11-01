@@ -170,9 +170,42 @@ async def create_campaign(
         return int(task.id)
 
 
+async def _cleanup_campaign_upload(account_id: int, payload: dict) -> None:
+    """Delete an uploaded campaign file only after no queued task/schedule can reuse it."""
+    raw_path = str(payload.get("file_path") or "").strip()
+    if not raw_path:
+        return
+    try:
+        candidate = Path(raw_path).resolve()
+        upload_root = (Path(get_settings().data_dir) / "automation_uploads").resolve()
+        if upload_root not in candidate.parents or not candidate.is_file():
+            return
+        async with SessionFactory() as db:
+            active_schedules = await db.scalar(select(func.count()).select_from(
+                AutomationSchedule
+            ).where(
+                AutomationSchedule.account_id == account_id,
+                AutomationSchedule.status.in_(["active", "paused"]),
+                AutomationSchedule.payload.contains(str(candidate)),
+            ))
+            active_tasks = await db.scalar(select(func.count()).select_from(
+                AutomationTask
+            ).where(
+                AutomationTask.account_id == account_id,
+                AutomationTask.status.in_(["queued", "running", "paused", "needs_review"]),
+                AutomationTask.payload.contains(str(candidate)),
+            ))
+        if not int(active_schedules or 0) and not int(active_tasks or 0):
+            candidate.unlink(missing_ok=True)
+    except (OSError, ValueError, TypeError):
+        logging.exception("Could not safely clean automation upload %s", raw_path)
+
+
 async def set_campaign_status(task_id: int, status: str) -> None:
     if status not in {"paused", "cancelled", "queued"}:
         raise ValueError("Недопустимый статус задачи.")
+    payload = None
+    account_id = None
     async with SessionFactory() as db:
         task = await db.get(AutomationTask, task_id)
         if not task:
@@ -181,7 +214,12 @@ async def set_campaign_status(task_id: int, status: str) -> None:
             raise ValueError("Задача уже завершена.")
         task.status = status
         task.updated_at = utcnow()
+        if status == "cancelled":
+            payload = json.loads(task.payload)
+            account_id = task.account_id
         await db.commit()
+    if payload is not None and account_id is not None:
+        await _cleanup_campaign_upload(account_id, payload)
 
 
 async def reset_account_limits(account_id: int) -> None:
@@ -207,7 +245,7 @@ async def retry_failed_campaign(task_id: int) -> int:
             raise ValueError("Задачу нельзя повторить в текущем статусе.")
         retryable = list((await db.scalars(select(AutomationTaskRecipient).where(
             AutomationTaskRecipient.task_id == task_id,
-            AutomationTaskRecipient.status.in_(["failed", "sending"]),
+            AutomationTaskRecipient.status == "failed",
         ))).all())
         pending_count = await db.scalar(select(func.count()).select_from(
             AutomationTaskRecipient
@@ -637,18 +675,16 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                 AutomationTaskRecipient.task_id == task_id,
                 AutomationTaskRecipient.status.in_(["pending", "sending", "failed"]),
             ))
+            cleanup_payload = None
+            cleanup_account_id = None
             if final_task and (
                 final_task.status == "cancelled"
                 or (final_task.status in {"completed", "failed"} and int(unfinished_count or 0) == 0)
             ):
-                try:
-                    final_payload = json.loads(final_task.payload)
-                    file_path = Path(final_payload.get("file_path") or "")
-                    upload_root = (Path(get_settings().data_dir) / "automation_uploads").resolve()
-                    if file_path.is_file() and upload_root in file_path.resolve().parents:
-                        file_path.unlink(missing_ok=True)
-                except (OSError, ValueError, TypeError):
-                    pass
+                cleanup_payload = json.loads(final_task.payload)
+                cleanup_account_id = final_task.account_id
+        if cleanup_payload is not None and cleanup_account_id is not None:
+            await _cleanup_campaign_upload(cleanup_account_id, cleanup_payload)
         processed += 1
     return processed
 
@@ -768,6 +804,8 @@ async def list_schedules(account_id: int, *, limit: int = 20) -> list[dict]:
 async def set_schedule_status(schedule_id: int, status: str) -> None:
     if status not in {"active", "paused", "cancelled"}:
         raise ValueError("Недопустимый статус расписания.")
+    payload = None
+    account_id = None
     async with SessionFactory() as db:
         row = await db.get(AutomationSchedule, schedule_id)
         if not row:
@@ -776,7 +814,12 @@ async def set_schedule_status(schedule_id: int, status: str) -> None:
             raise ValueError("Расписание уже завершено.")
         row.status = status
         row.updated_at = utcnow()
+        if status == "cancelled":
+            payload = json.loads(row.payload)
+            account_id = row.account_id
         await db.commit()
+    if payload is not None and account_id is not None:
+        await _cleanup_campaign_upload(account_id, payload)
 
 
 async def dispatch_due_schedules(*, max_schedules: int = 10) -> int:
