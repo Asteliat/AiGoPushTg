@@ -476,7 +476,16 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
 
         async with SessionFactory() as db:
             final_task = await db.get(AutomationTask, task_id)
-            if final_task and final_task.status in {"completed", "cancelled", "failed"}:
+            failed_count = await db.scalar(select(func.count()).select_from(
+                AutomationTaskRecipient
+            ).where(
+                AutomationTaskRecipient.task_id == task_id,
+                AutomationTaskRecipient.status == "failed",
+            ))
+            if final_task and (
+                final_task.status == "cancelled"
+                or (final_task.status in {"completed", "failed"} and int(failed_count or 0) == 0)
+            ):
                 try:
                     final_payload = json.loads(final_task.payload)
                     file_path = Path(final_payload.get("file_path") or "")
