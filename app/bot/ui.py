@@ -462,7 +462,7 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         "consent": "Добавьте получателя только после явного согласия. Формат: @username | broadcast, invite или group_broadcast | источник согласия. Для группы требуется разрешение администратора на публикации.",
         "revokeconsent": "Отправьте @username получателя. Его согласия на рассылки и приглашения будут отозваны.",
         "consents": "Показать сохранённые согласия.",
-        "campaign": "Формат: broadcast, invite или group_broadcast | now либо YYYY-MM-DD HH:MM UTC | @user1,@user2. Только пользователи с активным согласием либо публичные группы с разрешением администратора; максимум 100 целей.",
+        "campaign": "Формат: broadcast, invite или group_broadcast | now либо YYYY-MM-DD HH:MM UTC | @user1,@user2. Для прямого приглашения: group_invite | время | @user1,@user2 | @group. Нужны согласия пользователей и права администратора группы.",
         "limits": "Формат: интервал_секунд | максимум_сообщений_за_24ч | тихо_с | тихо_до (UTC). Пример: 30 | 50 | 23:00 | 08:00. Без тихих часов: 30 | 50 | - | -.",
         "global-limits": "Глобальные значения по умолчанию для аккаунтов без индивидуального переопределения. Формат: интервал_секунд | максимум_сообщений_за_24ч | тихо_с | тихо_до (UTC). Пример: 30 | 50 | 23:00 | 08:00. Без тихих часов: 30 | 50 | - | -.",
     }
@@ -728,18 +728,53 @@ async def management_input_received(m: Message, state: FSMContext):
             )
             message = "Лимиты и тихие часы аккаунта сохранены."
         elif action == "campaign_header":
-            parts = [x.strip() for x in raw.split("|", 2)]
-            if len(parts) != 3:
-                raise ValueError("Формат: broadcast/invite | время UTC или now | @user1,@user2.")
+            parts = [x.strip() for x in raw.split("|")]
+            if len(parts) < 3:
+                raise ValueError("Формат: тип | время UTC или now | получатели.")
             kind = parts[0].lower()
-            if kind not in {"broadcast", "invite", "group_broadcast"}:
-                raise ValueError("Тип задачи: broadcast или invite.")
+            if kind not in {"broadcast", "invite", "group_broadcast", "group_invite"}:
+                raise ValueError("Тип задачи: broadcast, invite, group_broadcast или group_invite.")
             scheduled = datetime.now(timezone.utc)
             if parts[1].lower() != "now":
                 try:
                     scheduled = datetime.strptime(parts[1], "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
                 except ValueError as exc:
                     raise ValueError("Время должно быть YYYY-MM-DD HH:MM UTC.") from exc
+            if kind == "group_invite":
+                if len(parts) != 4:
+                    raise ValueError("Формат приглашения: group_invite | время UTC или now | @user1,@user2 | @target_group.")
+                group = await telegram_management.resolve_peer_for_consent(aid, parts[3], allow_group=True)
+                if group.get("peer_type") != "group":
+                    raise ValueError("Последнее поле должно быть публичной супергруппой.")
+                refs = [item.strip() for item in parts[2].split(",") if item.strip()]
+                peers = await telegram_management.resolve_peers_for_consent(aid, refs)
+                await state.update_data(
+                    management_action="campaign_content", management_account_id=aid,
+                    campaign_kind=kind, campaign_scheduled_at=scheduled.isoformat(),
+                    campaign_recipients=[peer["peer_id"] for peer in peers],
+                    campaign_recipient_labels=[peer["peer_label"] for peer in peers],
+                    campaign_target_group=group["peer_ref"],
+                    campaign_payload={"target_group": group["peer_ref"]},
+                )
+                await state.set_state(Flow.management_campaign_confirm)
+                preview = (
+                    f"👥 Предпросмотр приглашения в группу\\n\\nЦель: {group['peer_label']}\\n"
+                    f"Получателей с согласием: {len(peers)}\\nЗапуск (UTC): {scheduled.isoformat()}\\n"
+                    f"Пользователи: {', '.join(peer['peer_label'] for peer in peers[:12])}"
+                    + (" и другие" if len(peers) > 12 else "")
+                    + "\\n\\nTelegram выполнит приглашение каждого пользователя отдельно. "
+                    "Нужны права администратора и действующее согласие каждого получателя."
+                )
+                await prompt_message(m, state, preview)
+                anchor = await state.get_data()
+                keyboard = kb([
+                    [("✅ Подтвердить приглашения", "tool:campaign:confirm")],
+                    [("❌ Отменить", "tool:campaign:cancel")],
+                ])
+                await edit_anchor(m.bot, anchor, preview, keyboard)
+                return
+            if len(parts) != 3:
+                raise ValueError("Формат: broadcast/invite/group_broadcast | время UTC или now | @user1,@user2.")
             refs = [item.strip() for item in parts[2].split(",") if item.strip()]
             peers = await telegram_management.resolve_peers_for_consent(
                 aid, refs, allow_groups=(kind == "group_broadcast")
@@ -751,7 +786,7 @@ async def management_input_received(m: Message, state: FSMContext):
                 campaign_recipient_labels=[peer["peer_label"] for peer in peers],
             )
             await state.set_state(Flow.management_campaign_content)
-            await prompt_message(m, state, f"Получателей найдено: {len(peers)}. Следующим сообщением отправьте текст или прикрепите документ.\nПеред запуском будет предпросмотр. Для invite добавьте ссылку t.me.")
+            await prompt_message(m, state, f"Получателей найдено: {len(peers)}. Следующим сообщением отправьте текст или прикрепите документ.\\nПеред запуском будет предпросмотр. Для invite добавьте ссылку t.me.")
             return
         if action == "importcontacts":
             contacts = []
