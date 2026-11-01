@@ -11,7 +11,7 @@ def test_campaign_payload_accepts_text():
 
 def test_invitation_requires_message_with_link():
     with pytest.raises(ValueError, match="ссылку-приглашение"):
-        _validate_payload("invite", {"text": ""})
+        _validate_payload("invite", {"text": "Привет"})
 
 
 def test_campaign_rejects_empty_payload():
