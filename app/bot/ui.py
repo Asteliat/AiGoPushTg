@@ -31,6 +31,7 @@ from app.storage.models import Account, AIAgent, AppSetting, ChatBinding, Channe
 from app.services.triggers import format_trigger_duration, parse_trigger_terms
 from app.telegram_gateway.proxy import ProxyConfigurationError, encrypt_proxy, telethon_proxy
 from app.telegram_gateway import management as telegram_management
+from app.services import automation as telegram_automation
 
 router = Router()
 
@@ -127,7 +128,7 @@ class Flow(StatesGroup):
     runtime_value=State(); channel_setting_value=State(); log_chat_id=State()
     phone_number=State(); phone_code=State(); phone_password=State(); qr_password=State()
     chat_search_query=State(); chat_join_link=State(); channel_search_query=State()
-    trigger_terms=State(); trigger_response=State(); trigger_cooldown=State(); trigger_message_cooldown=State(); trigger_edit_value=State(); management_input=State()
+    trigger_terms=State(); trigger_response=State(); trigger_cooldown=State(); trigger_message_cooldown=State(); trigger_edit_value=State(); management_input=State(); management_campaign_content=State(); management_campaign_confirm=State()
 
 def admin(uid): return uid is not None and uid in cfg.admin_id_set
 def kb(rows):
@@ -444,6 +445,9 @@ async def management_account_menu(c: CallbackQuery):
         [("➕ Вступить в чат", f"tool:mg:join:{aid}"), ("➖ Выйти из чата", f"tool:mg:leave:{aid}")],
         [("❤️ Реакция на публикацию", f"tool:mg:reaction:{aid}")],
         [("✏️ Изменить профиль", f"tool:mg:editprofile:{aid}")],
+        [("🤝 Согласия получателей", f"tool:mg:consent:{aid}")],
+        [("📨 Создать рассылку / приглашение", f"tool:mg:campaign:{aid}")],
+        [("⏱ Лимиты отправки", f"tool:mg:limits:{aid}")],
         [("⬅️ К аккаунтам", "tool:management")],
     ]))
 
@@ -472,6 +476,9 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         "leave": "Отправьте @username или публичную ссылку t.me/… для выхода.",
         "reaction": "Отправьте данные через |\nФормат: @username | ID_публикации | 👍",
         "editprofile": "Отправьте новые поля через |\nФормат: имя | фамилия | BIO | username\nЧтобы оставить поле без изменений, укажите -",
+        "consent": "Добавить только пользователя, который явно согласился получать сообщения. Формат: @username | broadcast или invite | источник согласия.",
+        "campaign": "Формат: broadcast или invite | now либо YYYY-MM-DD HH:MM UTC | @user1,@user2. Только получатели с активным согласием; максимум 100 за задачу.",
+        "limits": "Формат: интервал_секунд | максимум_сообщений_за_24ч. По умолчанию 30 | 50; диапазоны 1–3600 и 1–500.",
     }
     if action == "profile":
         try:
@@ -498,6 +505,12 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
             await edit(c, "\n".join(lines)[:3900], kb([[("⬅️ К инструментам аккаунта", f"tool:management:account:{aid}")]]))
         except Exception as exc:
             await edit(c, f"Не удалось получить контакты: {type(exc).__name__}: {str(exc)[:250]}", back_home())
+        return
+    if action == "campaign":
+        await state.clear()
+        await state.update_data(management_action="campaign_header", management_account_id=aid)
+        await state.set_state(Flow.management_input)
+        await edit(c, prompts[action], CANCEL)
         return
     if action not in prompts:
         await c.answer("Неизвестное действие.", show_alert=True); return
@@ -547,6 +560,51 @@ async def management_input_received(m: Message, state: FSMContext):
                 f"ℹ️ {result['notice']}"
             )
             await finish_prompt(m, state, message, kb([[("⬅️ Инструменты", "tool:menu")]]))
+            return
+        if action == "consent":
+            parts = [x.strip() for x in raw.split("|", 2)]
+            if len(parts) != 3 or not parts[2]:
+                raise ValueError("Формат: @username | broadcast/invite | источник согласия.")
+            scope = parts[1].lower()
+            if scope not in {"broadcast", "invite"}:
+                raise ValueError("Тип согласия: broadcast или invite.")
+            peer = await telegram_management.resolve_peer_for_consent(aid, parts[0])
+            await telegram_automation.grant_consent(
+                aid, peer["peer_id"], peer_ref=peer["peer_ref"],
+                peer_label=peer["peer_label"], scope=scope, consent_source=parts[2],
+            )
+            message = f"Согласие сохранено: {peer['peer_label']} · {scope}."
+        elif action == "limits":
+            parts = [x.strip() for x in raw.split("|")]
+            if len(parts) != 2:
+                raise ValueError("Формат: интервал | лимит за 24 часа.")
+            await telegram_automation.set_account_limits(
+                aid, interval_seconds=int(parts[0]), daily_limit=int(parts[1])
+            )
+            message = "Лимиты сохранены."
+        elif action == "campaign_header":
+            parts = [x.strip() for x in raw.split("|", 2)]
+            if len(parts) != 3:
+                raise ValueError("Формат: broadcast/invite | время UTC или now | @user1,@user2.")
+            kind = parts[0].lower()
+            if kind not in {"broadcast", "invite"}:
+                raise ValueError("Тип задачи: broadcast или invite.")
+            scheduled = datetime.now(timezone.utc)
+            if parts[1].lower() != "now":
+                try:
+                    scheduled = datetime.strptime(parts[1], "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+                except ValueError as exc:
+                    raise ValueError("Время должно быть YYYY-MM-DD HH:MM UTC.") from exc
+            refs = [item.strip() for item in parts[2].split(",") if item.strip()]
+            peers = await telegram_management.resolve_peers_for_consent(aid, refs)
+            await state.update_data(
+                management_action="campaign_content", management_account_id=aid,
+                campaign_kind=kind, campaign_scheduled_at=scheduled.isoformat(),
+                campaign_recipients=[peer["peer_id"] for peer in peers],
+                campaign_recipient_labels=[peer["peer_label"] for peer in peers],
+            )
+            await state.set_state(Flow.management_campaign_content)
+            await prompt_message(m, state, f"Получателей найдено: {len(peers)}. Следующим сообщением отправьте текст или прикрепите документ.\nПеред запуском будет предпросмотр. Для invite добавьте ссылку t.me.")
             return
         if action == "addcontact":
             parts = [x.strip() for x in raw.split("|")]
@@ -600,6 +658,80 @@ async def management_input_received(m: Message, state: FSMContext):
         )
     except Exception as exc:
         await prompt_message(m, state, f"❌ {type(exc).__name__}: {str(exc)[:500]}\n\nПроверьте ввод и попробуйте ещё раз.")
+
+@router.message(Flow.management_campaign_content)
+async def management_campaign_content_received(m: Message, state: FSMContext):
+    if not await check_msg(m) or not await private(m):
+        return
+    data = await state.get_data()
+    kind = data.get("campaign_kind")
+    payload = {"text": "", "file_path": "", "caption": ""}
+    if m.document:
+        if int(m.document.file_size or 0) > 20 * 1024 * 1024:
+            await prompt_message(m, state, "Файл больше 20 МБ. Отправьте файл меньшего размера.")
+            return
+        upload_dir = os.path.join(str(cfg.data_dir), "automation_uploads")
+        os.makedirs(upload_dir, mode=0o700, exist_ok=True)
+        filename = secrets.token_hex(16) + "_" + re.sub(r"[^a-zA-Z0-9._-]", "_", m.document.file_name or "file.bin")[:80]
+        path = os.path.join(upload_dir, filename)
+        await m.bot.download(m.document, destination=path)
+        payload["file_path"] = path
+        payload["caption"] = (m.caption or "")[:4096]
+    else:
+        payload["text"] = (m.text or "").strip()
+        if not payload["text"]:
+            await prompt_message(m, state, "Отправьте текст или прикрепите документ.")
+            return
+    if kind == "invite" and not re.search(r"https?://t\\.me/|t\\.me/", payload["text"] or payload["caption"], re.I):
+        await prompt_message(m, state, "В тексте приглашения должна быть ссылка t.me.")
+        return
+    await state.update_data(campaign_payload=payload)
+    await state.set_state(Flow.management_campaign_confirm)
+    recipients = data.get("campaign_recipient_labels", [])
+    preview = (
+        f"📨 Предпросмотр задачи\n\nТип: {kind}\nПолучателей: {len(recipients)}\n"
+        f"Запуск (UTC): {data.get('campaign_scheduled_at')}\nПолучатели: {', '.join(recipients[:12])}"
+        + (" и другие" if len(recipients) > 12 else "")
+        + f"\n\nТекст: {(payload['text'] or payload['caption'] or 'Файл без подписи')[:700]}\n\n"
+        "Подтвердите запуск только если каждый адресат действительно дал согласие."
+    )
+    await delete_msg(m)
+    await finish_prompt(m, state, preview, kb([
+        [("✅ Подтвердить и поставить в очередь", "tool:campaign:confirm")],
+        [("❌ Отменить", "tool:campaign:cancel")],
+    ]))
+
+
+@router.callback_query(F.data == "tool:campaign:confirm")
+async def management_campaign_confirm(c: CallbackQuery, state: FSMContext):
+    if not await check_cb(c):
+        return
+    data = await state.get_data()
+    if data.get("management_action") != "campaign_content":
+        await c.answer("Предпросмотр устарел. Создайте задачу заново.", show_alert=True)
+        return
+    try:
+        task_id = await telegram_automation.create_campaign(
+            int(data["management_account_id"]), kind=data["campaign_kind"],
+            recipients=data["campaign_recipients"], payload=data["campaign_payload"],
+            scheduled_at=datetime.fromisoformat(data["campaign_scheduled_at"]),
+        )
+        await state.clear()
+        await edit(c, f"✅ Задача #{task_id} поставлена в очередь. Она выполняется последовательно с учётом согласий, лимита аккаунта и FloodWait Telegram.", kb([
+            [("↩️ К инструментам аккаунта", f"tool:management:account:{data['management_account_id']}")],
+            [("🏠 Главное меню", "nav:home")],
+        ]))
+    except Exception as exc:
+        await c.answer(f"Не удалось создать задачу: {str(exc)[:180]}", show_alert=True)
+
+
+@router.callback_query(F.data == "tool:campaign:cancel")
+async def management_campaign_cancel(c: CallbackQuery, state: FSMContext):
+    if not await check_cb(c):
+        return
+    await state.clear()
+    await edit(c, "Создание задачи отменено.", kb([ [("↩️ К инструментам", "tool:management")] ]))
+
 
 def trigger_back_callback(scope: str, account_id: int | None = None) -> str:
     return f"acc:view:{account_id}" if scope == "account" else "tool:menu"
