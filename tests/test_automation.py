@@ -74,3 +74,17 @@ def test_operation_limit_quiet_hours_are_validated():
     from app.services.automation import _normalize_quiet_hours
 
     assert _normalize_quiet_hours("23:00", "07:00") == ("23:00", "07:00")
+
+
+
+def test_direct_invite_requires_a_target_group():
+    from app.services.automation import _validate_payload
+
+    payload = _validate_payload("direct_invite", {
+        "target_group_id": -100123456,
+        "target_group_ref": "@mygroup",
+        "target_group_label": "My Group",
+    })
+    assert payload["target_group_id"] == -100123456
+    with pytest.raises(ValueError, match="целевую супергруппу"):
+        _validate_payload("direct_invite", {})
