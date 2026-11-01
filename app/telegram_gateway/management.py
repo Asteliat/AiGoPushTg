@@ -547,6 +547,35 @@ async def resolve_peer_for_consent(account_id: int, peer_ref: str) -> dict:
             }
 
 
+async def resolve_group_for_consent(account_id: int, group_ref: str) -> dict:
+    """Resolve a group where the account is an admin before allowing scheduled publishing."""
+    value = group_ref.strip()
+    if not value:
+        raise ValueError("Укажите @username или ссылку на собственную группу.")
+    if "t.me/" in value.lower():
+        value = value.split("t.me/", 1)[1].split("/", 1)[0].split("?", 1)[0]
+    value = value.lstrip("@")
+    async with _account_lock(account_id):
+        async with isolated_account_client(account_id) as (_account, client):
+            entity = await client.get_entity(value)
+            is_group = bool(
+                getattr(entity, "megagroup", False)
+                or getattr(entity, "gigagroup", False)
+                or entity.__class__.__name__ == "Chat"
+            )
+            if not is_group:
+                raise ValueError("Публикация разрешена только в группу, не в личный чат или канал.")
+            permissions = await client.get_permissions(entity, "me")
+            if not (getattr(permissions, "is_admin", False) or getattr(permissions, "is_creator", False)):
+                raise PermissionError("Аккаунт должен быть администратором группы.")
+            username = getattr(entity, "username", None)
+            return {
+                "peer_id": int(utils.get_peer_id(entity)),
+                "peer_ref": f"@{username}" if username else str(int(utils.get_peer_id(entity))),
+                "peer_label": str(getattr(entity, "title", None) or username or entity.id),
+            }
+
+
 async def resolve_peers_for_consent(account_id: int, peer_refs: list[str]) -> list[dict]:
     """Resolve several explicitly selected personal accounts in one isolated session."""
     values = []
@@ -602,6 +631,6 @@ async def simulate_post_activity(
 __all__ = [
     "ChatOverview", "FloodWaitError", "add_contact", "delete_contact",
     "get_chat_overview", "get_profile", "join_chat", "leave_chat",
-    "import_contacts", "list_contacts", "parse_chat_history", "react_to_message", "resolve_peer_for_consent", "resolve_peers_for_consent", "set_profile_photo", "simulate_post_activity",
+    "import_contacts", "list_contacts", "parse_chat_history", "react_to_message", "resolve_peer_for_consent", "resolve_peers_for_consent", "resolve_group_for_consent", "set_profile_photo", "simulate_post_activity",
     "update_profile",
 ]

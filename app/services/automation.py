@@ -26,7 +26,7 @@ from app.storage.models import (
     utcnow,
 )
 
-ALLOWED_KINDS = {"broadcast", "invite"}
+ALLOWED_KINDS = {"broadcast", "invite", "group_broadcast"}
 MAX_RECIPIENTS = 500
 MAX_TEXT = 4096
 
@@ -62,7 +62,7 @@ async def grant_consent(
     account_id: int, peer_id: int, *, peer_ref: str = "", peer_label: str = "",
     scope: str = "broadcast", consent_source: str = "operator-confirmed",
 ) -> None:
-    if scope not in {"broadcast", "invite"}:
+    if scope not in {"broadcast", "invite", "group_publish"}:
         raise ValueError("Неизвестный тип согласия.")
     if int(peer_id) == 0:
         raise ValueError("Некорректный Telegram ID.")
@@ -133,7 +133,7 @@ async def create_campaign(
     due = _aware(scheduled_at or utcnow())
     if due < utcnow() - timedelta(minutes=1):
         raise ValueError("Время запуска уже прошло.")
-    scope = "invite" if kind == "invite" else "broadcast"
+    scope = "invite" if kind == "invite" else ("group_publish" if kind == "group_broadcast" else "broadcast")
     async with SessionFactory() as db:
         account = await db.get(Account, account_id)
         if not account or not account.enabled:
@@ -445,7 +445,7 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
 
         try:
             payload = json.loads(payload_raw)
-            interval, daily_limit, quiet_start, quiet_end = await _account_limits(account_id, kind)
+            interval, daily_limit, quiet_start, quiet_end = await _account_limits(account_id, "invite" if kind == "invite" else "broadcast")
             async with isolated_account_client(account_id) as (_account, client):
                 while True:
                     async with SessionFactory() as db:
@@ -481,7 +481,7 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                             await db.commit()
                             break
                         # Consent is checked again immediately before each send.
-                        scope = "invite" if kind == "invite" else "broadcast"
+                        scope = "invite" if kind == "invite" else ("group_publish" if kind == "group_broadcast" else "broadcast")
                         consent = await db.scalar(select(AutomationConsent).where(
                             AutomationConsent.account_id == account_id,
                             AutomationConsent.peer_id == recipient.peer_id,
@@ -517,6 +517,10 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
 
                     try:
                         entity = await client.get_entity(peer_ref or peer_id)
+                        if kind == "group_broadcast":
+                            permissions = await client.get_permissions(entity, "me")
+                            if not (getattr(permissions, "is_admin", False) or getattr(permissions, "is_creator", False)):
+                                raise PermissionError("Аккаунт больше не является администратором этой группы.")
                         if payload.get("file_path"):
                             await client.send_file(
                                 entity, payload["file_path"],
@@ -731,7 +735,7 @@ async def dispatch_due_schedules(*, max_schedules: int = 10) -> int:
                 break
             try:
                 ids = list(dict.fromkeys(int(x) for x in json.loads(row.recipients_json)))
-                scope = "invite" if row.kind == "invite" else "broadcast"
+                scope = "invite" if row.kind == "invite" else ("group_publish" if row.kind == "group_broadcast" else "broadcast")
                 consents = list((await db.scalars(select(AutomationConsent).where(
                     AutomationConsent.account_id == row.account_id,
                     AutomationConsent.peer_id.in_(ids),

@@ -423,7 +423,8 @@ async def management_account_menu(c: CallbackQuery):
         [("❤️ Реакция на публикацию", f"tool:mg:reaction:{aid}")],
         [("✏️ Изменить профиль", f"tool:mg:editprofile:{aid}")],
         [("📷 Изменить фото профиля", f"tool:mg:photo:{aid}")],
-        [("🤝 Добавить согласие", f"tool:mg:consent:{aid}"), ("🚫 Отозвать согласие", f"tool:mg:revokeconsent:{aid}")],
+        [("🤝 Согласие пользователя", f"tool:mg:consent:{aid}"), ("🚫 Отозвать согласие", f"tool:mg:revokeconsent:{aid}")],
+        [("🛡 Разрешить публикации в своей группе", f"tool:mg:consentgroup:{aid}")],
         [("👥 Список согласий", f"tool:mg:consents:{aid}")],
         [("📨 Разовая рассылка / приглашение", f"tool:mg:campaign:{aid}")],
         [("🗓 Создать расписание", f"tool:mg:schedule:{aid}"), ("📅 Мои расписания", f"tool:mg:schedules:{aid}")],
@@ -467,14 +468,16 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         "reaction": "Отправьте данные через |\nФормат: @username | ID_публикации | 👍",
         "editprofile": "Отправьте новые поля через |\nФормат: имя | фамилия | BIO | username\nЧтобы оставить поле без изменений, укажите -",
         "consent": "Добавить только пользователя, который явно согласился получать сообщения. Формат: @username | broadcast или invite | источник согласия.",
+        "consentgroup": "Укажите @username или ссылку на группу, где аккаунт является администратором, затем через | источник разрешения. Пример: @mygroup | собственная группа, публикации разрешены администратором.",
+
         "revokeconsent": "Отправьте @username получателя. Его согласия на рассылки и приглашения будут отозваны.",
         "consents": "Показать сохранённые согласия.",
-        "campaign": "Формат: broadcast или invite | now либо YYYY-MM-DD HH:MM UTC | @user1,@user2. Только получатели с активным согласием; максимум 500 за задачу.",
+        "campaign": "Формат: broadcast, invite или group_broadcast | now либо YYYY-MM-DD HH:MM UTC | @получатель1,@получатель2. Только получатели с активным согласием; максимум 500 за задачу.",
         "broadcastlimits": "Отправьте интервал в секундах | максимум отправок за 24 часа. Пример: 60 | 40.",
         "invitelimits": "Отправьте интервал в секундах | максимум приглашений за 24 часа. Пример: 120 | 15.",
         "global-broadcast": "Глобальные значения по умолчанию для рассылок: интервал в секундах | максимум отправок за 24 часа. Пример: 60 | 40.",
         "global-invite": "Глобальные значения по умолчанию для приглашений: интервал в секундах | максимум приглашений за 24 часа. Пример: 120 | 15.",
-        "schedule": "Создание повторяющейся кампании. Формат: broadcast или invite | старт now либо YYYY-MM-DD HH:MM UTC | интервал в часах (не менее 24) | число запусков (1–365) | @user1,@user2. Каждое повторение заново проверяет согласия.",
+        "schedule": "Создание повторяющейся кампании. Формат: broadcast, invite или group_broadcast | старт now либо YYYY-MM-DD HH:MM UTC | интервал в часах (не менее 24) | число запусков (1–365) | @user1,@user2. Каждое повторение заново проверяет согласия.",
         "limits": "Формат: интервал_секунд | максимум_сообщений_за_24ч | тихо_с | тихо_до (UTC). Пример: 30 | 50 | 23:00 | 08:00. Без тихих часов: 30 | 50 | - | -.",
         "global-limits": "Глобальные значения по умолчанию для аккаунтов без индивидуального переопределения. Формат: интервал_секунд | максимум_сообщений_за_24ч | тихо_с | тихо_до (UTC). Пример: 30 | 50 | 23:00 | 08:00. Без тихих часов: 30 | 50 | - | -.",
     }
@@ -848,8 +851,8 @@ async def management_input_received(m: Message, state: FSMContext):
             if len(parts) != expected:
                 raise ValueError("Формат рассылки: тип | время UTC или now | @получатели. Для расписания: тип | старт | интервал часов | число запусков | @получатели.")
             kind = parts[0].lower()
-            if kind not in {"broadcast", "invite"}:
-                raise ValueError("Тип задачи: broadcast или invite.")
+            if kind not in {"broadcast", "invite", "group_broadcast"}:
+                raise ValueError("Тип задачи: broadcast, invite или group_broadcast.")
             scheduled = datetime.now(timezone.utc)
             if parts[1].lower() != "now":
                 try:
@@ -1092,7 +1095,7 @@ async def management_campaign_content_received(m: Message, state: FSMContext):
         f"Запуск (UTC): {data.get('campaign_scheduled_at')}\nПолучатели: {', '.join(recipients[:12])}"
         + (" и другие" if len(recipients) > 12 else "")
         + f"\n\nТекст: {(payload['text'] or payload['caption'] or 'Файл без подписи')[:700]}\n\n"
-        "Подтвердите запуск только если каждый адресат действительно дал согласие."
+        "Подтвердите запуск только если каждый адресат действительно дал согласие. Для group_broadcast аккаунт должен быть администратором каждой группы."
     )
     await delete_msg(m)
     keyboard = kb([
