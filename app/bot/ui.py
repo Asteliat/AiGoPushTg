@@ -931,6 +931,14 @@ async def management_campaign_confirm(c: CallbackQuery, state: FSMContext):
 async def management_campaign_cancel(c: CallbackQuery, state: FSMContext):
     if not await check_cb(c):
         return
+    data = await state.get_data()
+    file_path = str((data.get("campaign_payload") or {}).get("file_path") or "")
+    upload_root = os.path.realpath(os.path.join(str(cfg.data_dir), "automation_uploads"))
+    if file_path and os.path.commonpath([upload_root, os.path.realpath(file_path)]) == upload_root:
+        try:
+            os.remove(file_path)
+        except OSError:
+            logging.exception("Could not remove cancelled campaign upload %s", file_path)
     await state.clear()
     await edit(c, "Создание задачи отменено.", kb([ [("↩️ К инструментам", "tool:management")] ]))
 
