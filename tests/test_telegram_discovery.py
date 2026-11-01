@@ -1,4 +1,4 @@
-from app.telegram_gateway.discovery import _is_group, _normalize_telegram_link, _quality
+from app.telegram_gateway.discovery import _engine_search, _is_group, _normalize_telegram_link, _quality
 
 
 class Chat:
@@ -72,3 +72,23 @@ def test_group_quality_uses_members_and_rejects_hard_spam():
     spam = Supergroup()
     spam.title = "Casino Python"
     assert _quality(spam) is None
+
+
+
+def test_search_engine_captcha_is_reported_and_not_parsed(monkeypatch):
+    from io import BytesIO
+    import app.telegram_gateway.discovery as discovery
+
+    def fake_urlopen(request, timeout):
+        return BytesIO(b"<html><title>CAPTCHA</title>verify you are human</html>")
+
+    monkeypatch.setattr(discovery, "urlopen", fake_urlopen)
+    results, status = _engine_search(
+        "Google",
+        "https://example.com/search?q={q}&start={offset}",
+        "python groups",
+        0,
+    )
+
+    assert results == []
+    assert status == "captcha"
