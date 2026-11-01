@@ -180,6 +180,22 @@ async def set_campaign_status(task_id: int, status: str) -> None:
         await db.commit()
 
 
+async def reset_account_limits(account_id: int) -> None:
+    async with SessionFactory() as db:
+        if not await db.get(Account, account_id):
+            raise ValueError("Аккаунт не найден.")
+        keys = [
+            f"automation.{account_id}.interval_seconds",
+            f"automation.{account_id}.daily_limit",
+            f"automation.{account_id}.quiet_start_utc",
+            f"automation.{account_id}.quiet_end_utc",
+        ]
+        rows = list((await db.scalars(select(AppSetting).where(AppSetting.key.in_(keys)))).all())
+        for row in rows:
+            await db.delete(row)
+        await db.commit()
+
+
 async def retry_failed_campaign(task_id: int) -> int:
     async with SessionFactory() as db:
         task = await db.get(AutomationTask, task_id)
@@ -568,7 +584,7 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
 
 __all__ = [
     "campaign_status", "create_campaign", "grant_consent", "list_campaigns", "list_consents",
-    "process_due_campaigns", "retry_failed_campaign", "revoke_consent", "set_account_limits",
+    "process_due_campaigns", "reset_account_limits", "retry_failed_campaign", "revoke_consent", "set_account_limits",
     "set_global_automation_limits",
     "set_campaign_status",
 ]
