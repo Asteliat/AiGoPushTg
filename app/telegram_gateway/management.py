@@ -260,6 +260,34 @@ async def react_to_message(
             ))
 
 
+async def resolve_peer_for_consent(account_id: int, peer_ref: str) -> dict:
+    """Resolve an explicitly opted-in Telegram peer and retain a reusable reference."""
+    value = peer_ref.strip()
+    if not value:
+        raise ValueError("Укажите @username или ссылку на пользователя.")
+    if value.startswith("https://t.me/"):
+        value = value.removeprefix("https://t.me/").split("/", 1)[0]
+    value = value.lstrip("@")
+    if not value or value.startswith("+") or value.startswith("joinchat"):
+        raise ValueError("Для личного согласия нужен публичный username пользователя.")
+    async with _account_lock(account_id):
+        async with isolated_account_client(account_id) as (_account, client):
+            entity = await client.get_entity(value)
+            if not getattr(entity, "id", None) or entity.__class__.__name__ in {"Channel", "Chat"}:
+                raise ValueError("Для рассылки можно добавить только личный Telegram-аккаунт.")
+            username = getattr(entity, "username", None)
+            if not username:
+                raise ValueError("У пользователя нет публичного username; добавьте его через контакты.")
+            return {
+                "peer_id": int(entity.id),
+                "peer_ref": f"@{username}",
+                "peer_label": " ".join(filter(None, [
+                    getattr(entity, "first_name", None),
+                    getattr(entity, "last_name", None),
+                ])) or f"@{username}",
+            }
+
+
 async def simulate_post_activity(
     *, post_key: str, requested_views: int, requested_reactions: int
 ) -> dict:
@@ -281,6 +309,6 @@ async def simulate_post_activity(
 __all__ = [
     "ChatOverview", "FloodWaitError", "add_contact", "delete_contact",
     "get_chat_overview", "get_profile", "join_chat", "leave_chat",
-    "list_contacts", "react_to_message", "simulate_post_activity",
+    "list_contacts", "react_to_message", "resolve_peer_for_consent", "simulate_post_activity",
     "update_profile",
 ]
