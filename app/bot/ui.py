@@ -445,6 +445,7 @@ async def management_account_menu(c: CallbackQuery):
         [("📥 Импорт контактов", f"tool:mg:importcontacts:{aid}"), ("📤 Экспорт контактов", f"tool:mg:exportcontacts:{aid}")],
         [("🔎 Информация о чате", f"tool:mg:chatinfo:{aid}")],
         [("🔍 Парсер чата / канала", f"tool:mg:parsechannel:{aid}")],
+        [("👥 Сбор участников (CSV)", f"tool:mg:parseparticipants:{aid}")],
         [("➕ Вступить в чат", f"tool:mg:join:{aid}"), ("➖ Выйти из чата", f"tool:mg:leave:{aid}")],
         [("❤️ Реакция на публикацию", f"tool:mg:reaction:{aid}")],
         [("✏️ Изменить профиль", f"tool:mg:editprofile:{aid}")],
@@ -482,6 +483,7 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         "delcontact": "Отправьте Telegram user ID контакта, которого нужно удалить.",
         "chatinfo": "Отправьте @username или публичную ссылку t.me/…",
         "parsechannel": "Отправьте @username канала и количество публикаций через |. Например: @telegram | 20. Максимум 100 последних сообщений; списки участников не собираются.",
+        "parseparticipants": "Отправьте @username или ссылку на группу и лимит через |. Например: @mygroup | 200. Telegram возвращает только видимых участников; максимум 500. Будут выгружены только публичные поля профиля.",
         "join": "Отправьте @username или публичную ссылку t.me/… для вступления.",
         "leave": "Отправьте @username или публичную ссылку t.me/… для выхода.",
         "reaction": "Отправьте данные через |\nФормат: @username | ID_публикации | 👍",
@@ -826,7 +828,35 @@ async def management_input_received(m: Message, state: FSMContext):
                     f"Просмотры: {post['views']} · Пересылки: {post['forwards']} · Ответы: {post['replies']}\n"
                     f"Реакции: {reactions}\n{post['text'][:450] or '[медиа без текста]'}"
                 )
-            message = "\n\n".join(lines)[:3900]
+            message = "\\n\\n".join(lines)[:3900]
+        elif action == "parseparticipants":
+            parts = [x.strip() for x in raw.split("|")]
+            if len(parts) not in {1, 2}:
+                raise ValueError("Формат: @username группы | лимит.")
+            limit = int(parts[1]) if len(parts) == 2 else 200
+            result = await telegram_management.parse_chat_participants(aid, parts[0], limit=limit)
+            output = io.StringIO()
+            writer = csv.writer(output)
+            writer.writerow(["telegram_id", "username", "first_name", "last_name", "is_bot", "is_deleted"])
+            for person in result["participants"]:
+                writer.writerow([
+                    person["id"], person["username"], person["first_name"],
+                    person["last_name"], person["is_bot"], person["is_deleted"],
+                ])
+            document = BufferedInputFile(
+                output.getvalue().encode("utf-8-sig"),
+                filename=f"participants-account-{aid}-{result['chat_id']}.csv",
+            )
+            await m.answer_document(
+                document,
+                caption=(
+                    f"Участники: {result['title']}\\n"
+                    f"Получено от Telegram: {result['visible_count']} "
+                    f"(запрошено максимум {result['requested_limit']}).\\n"
+                    "Выгружены только публичные поля, доступные этому аккаунту."
+                ),
+            )
+            message = f"CSV-файл сформирован. Доступно участников: {result['visible_count']}."
         elif action == "join":
             await telegram_management.join_chat(aid, raw); message = "Аккаунт вступил в чат."
         elif action == "leave":
