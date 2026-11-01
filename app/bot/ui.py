@@ -711,7 +711,7 @@ async def management_campaign_wizard_start(c: CallbackQuery, state: FSMContext):
     )
     await state.set_state(Flow.management_input)
     await edit(c,
-        "Шаг 1 из 4 · Время запуска\n\n"
+        "Шаг 1 из 3 · Время запуска\n\n"
         "Отправьте now для немедленного запуска или дату и время в UTC: YYYY-MM-DD HH:MM.\n"
         "Пример: 2026-11-05 18:30.",
         CANCEL,
@@ -951,7 +951,8 @@ async def management_input_received(m: Message, state: FSMContext):
                 operation, interval_seconds=int(parts[0]), daily_limit=int(parts[1]),
                 account_id=scoped_account, quiet_start_utc=parts[2], quiet_end_utc=parts[3],
             )
-            message = f"Отдельные лимиты {'глобально' if scoped_account is None else f'аккаунта #{aid}'} для {'приглашений' if operation == 'invite' else 'рассылок'} сохранены."
+            operation_label = {"invite": "приглашений", "broadcast": "рассылок", "subscription": "подписок", "reaction": "реакций"}[operation]
+            message = f"Отдельные лимиты {'глобально' if scoped_account is None else f'аккаунта #{aid}'} для {operation_label} сохранены."
         elif action == "global-limits":
             parts = [x.strip() for x in raw.split("|")]
             if len(parts) != 4:
@@ -970,6 +971,58 @@ async def management_input_received(m: Message, state: FSMContext):
                 quiet_start_utc=parts[2], quiet_end_utc=parts[3],
             )
             message = "Лимиты и тихие часы аккаунта сохранены."
+        elif action == "campaign_time":
+            scheduled = datetime.now(timezone.utc)
+            if raw.lower() != "now":
+                try:
+                    scheduled = datetime.strptime(raw, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+                except ValueError as exc:
+                    raise ValueError("Отправьте now или дату в формате YYYY-MM-DD HH:MM UTC.") from exc
+            await state.update_data(campaign_scheduled_at=scheduled.isoformat())
+            if data.get("campaign_mode") == "recurring":
+                await state.update_data(management_action="campaign_interval")
+                await prompt_message(m, state, "Шаг 2 из 5 · Интервал\n\nЧерез сколько часов повторять отправку? Минимум 24 часа. Пример: 24.")
+            else:
+                await state.update_data(management_action="campaign_recipients")
+                await prompt_message(m, state, "Шаг 2 из 3 · Получатели\n\nОтправьте @username или ссылку каждого получателя через запятую или с новой строки. Для публикации в группе укажите группы, где аккаунт администратор.")
+            return
+        elif action == "campaign_interval":
+            if not raw.isdigit() or not 24 <= int(raw) <= 8760:
+                raise ValueError("Интервал должен быть от 24 до 8760 часов.")
+            await state.update_data(
+                campaign_schedule_interval_seconds=int(raw) * 3600,
+                management_action="campaign_runs",
+            )
+            await prompt_message(m, state, "Шаг 3 из 5 · Количество запусков\n\nУкажите число повторений от 1 до 365.")
+            return
+        elif action == "campaign_runs":
+            if not raw.isdigit() or not 1 <= int(raw) <= 365:
+                raise ValueError("Количество запусков должно быть от 1 до 365.")
+            await state.update_data(
+                campaign_schedule_max_runs=int(raw),
+                management_action="campaign_recipients",
+            )
+            await prompt_message(m, state, "Шаг 4 из 5 · Получатели\n\nОтправьте @username или ссылку каждого получателя через запятую или с новой строки. Для публикации в группе укажите группы, где аккаунт администратор.")
+            return
+        elif action == "campaign_recipients":
+            refs = [item.strip() for item in raw.replace(",", "\\n").splitlines() if item.strip()]
+            if not refs:
+                raise ValueError("Добавьте хотя бы одного получателя.")
+            kind = str(data.get("campaign_kind") or "")
+            peers = (
+                await telegram_management.resolve_groups_for_consent(aid, refs)
+                if kind == "group_broadcast"
+                else await telegram_management.resolve_peers_for_consent(aid, refs)
+            )
+            await state.update_data(
+                campaign_recipients=[peer["peer_id"] for peer in peers],
+                campaign_recipient_labels=[peer["peer_label"] for peer in peers],
+                management_action="campaign_content",
+            )
+            await state.set_state(Flow.management_campaign_content)
+            step = "5 из 5" if data.get("campaign_mode") == "recurring" else "3 из 3"
+            await prompt_message(m, state, f"Шаг {step} · Сообщение или файл\n\nПолучателей проверено: {len(peers)}. Отправьте текст или прикрепите файл. Перед постановкой в очередь появится предпросмотр.")
+            return
         elif action in {"campaign_header", "schedule_header"}:
             parts = [x.strip() for x in raw.split("|", 4 if action == "schedule_header" else 2)]
             expected = 5 if action == "schedule_header" else 3
