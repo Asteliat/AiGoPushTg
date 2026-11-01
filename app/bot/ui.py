@@ -491,7 +491,7 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         items = await telegram_automation.list_consents(aid)
         lines = [f"👥 Согласия аккаунта #{aid} · {len(items)}"]
         lines.extend(f"{item['peer_label']} · @{item['peer_ref'].lstrip('@')} · {item['scope']}" for item in items)
-        await edit(c, "\\n".join(lines)[:3900] or "Согласий пока нет.", kb([[("↩️ К инструментам аккаунта", f"tool:management:account:{aid}")]]))
+        await edit(c, "\n".join(lines)[:3900] or "Согласий пока нет.", kb([[("↩️ К инструментам аккаунта", f"tool:management:account:{aid}")]]))
         return
     if action == "campaigns":
         items = await telegram_automation.list_campaigns(aid, limit=12)
@@ -2587,7 +2587,7 @@ async def acc_learning_menu(c, account_id: int | None = None):
     if learning: rows.append([("⏹ Остановить обучение", f"learn:stop:{aid}")])
     elif not requirements: rows.append([("▶️ Запустить автообучение", f"learn:confirm:{aid}")])
     rows.append([("⬅️ К аккаунту", f"acc:view:{aid}")])
-    await edit(c, "\\n".join(lines), kb(rows))
+    await edit(c, "\n".join(lines), kb(rows))
 
 
 @router.callback_query(F.data.startswith("learn:confirm:"))
@@ -3636,7 +3636,7 @@ async def chat_account_screen(c, aid, page=0):
         [("⬅️ К аккаунту", f"acc:view:{aid}")],
     ]
     hint = "Сначала нажмите «Загрузить чаты»." if not bindings else f"Всего чатов: {len(bindings)}. Нажатие на строку сразу включает или выключает чат."
-    await edit(c, f"💬 Чаты · {account.display_name} · страница {page+1}/{max_page+1}\\n\\n{hint}\\n🟢 — включён · ⚪ — выключен", kb(rows))
+    await edit(c, f"💬 Чаты · {account.display_name} · страница {page+1}/{max_page+1}\n\n{hint}\n🟢 — включён · ⚪ — выключен", kb(rows))
 
 
 @router.callback_query(F.data.startswith("chat:account:"))
