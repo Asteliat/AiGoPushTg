@@ -12,6 +12,7 @@ import logging
 import os
 import sqlite3
 import tempfile
+import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import AsyncIterator
@@ -46,6 +47,37 @@ class ChatOverview:
     participants_count: int | None
     is_channel: bool
     is_group: bool
+
+
+def _copy_sqlite_session(source_path: str, snapshot_path: str) -> None:
+    """Create and integrity-check a private SQLite session snapshot with bounded busy retries."""
+    last_error: Exception | None = None
+    for attempt in range(5):
+        source_db = None
+        snapshot_db = None
+        try:
+            source_db = sqlite3.connect(source_path, timeout=30)
+            snapshot_db = sqlite3.connect(snapshot_path, timeout=30)
+            source_db.execute("PRAGMA busy_timeout = 30000")
+            snapshot_db.execute("PRAGMA busy_timeout = 30000")
+            source_db.backup(snapshot_db, pages=128, sleep=0.05)
+            check = snapshot_db.execute("PRAGMA quick_check").fetchone()
+            if not check or check[0] != "ok":
+                raise sqlite3.DatabaseError("SQLite snapshot integrity check failed.")
+            return
+        except sqlite3.OperationalError as exc:
+            last_error = exc
+            message = str(exc).lower()
+            if attempt == 4 or not any(word in message for word in ("locked", "busy")):
+                raise RuntimeError(f"Не удалось безопасно скопировать SQLite-сессию: {exc}") from exc
+            time.sleep(min(0.25 * (2 ** attempt), 2.0))
+        finally:
+            if snapshot_db is not None:
+                snapshot_db.close()
+            if source_db is not None:
+                source_db.close()
+    if last_error is not None:
+        raise RuntimeError(f"Не удалось создать снимок сессии: {last_error}") from last_error
 
 
 @asynccontextmanager
@@ -88,36 +120,7 @@ async def isolated_account_client(account_id: int) -> AsyncIterator[tuple[Accoun
 
         with tempfile.TemporaryDirectory(prefix=f"atciv-tools-{account_id}-") as temp_dir:
             snapshot_path = os.path.join(temp_dir, "account.session")
-            last_error: Exception | None = None
-            for attempt in range(5):
-                source_db = None
-                snapshot_db = None
-                try:
-                    source_db = sqlite3.connect(source_path, timeout=30)
-                    snapshot_db = sqlite3.connect(snapshot_path, timeout=30)
-                    source_db.execute("PRAGMA busy_timeout = 30000")
-                    snapshot_db.execute("PRAGMA busy_timeout = 30000")
-                    source_db.backup(snapshot_db, pages=128, sleep=0.05)
-                    check = snapshot_db.execute("PRAGMA quick_check").fetchone()
-                    if not check or check[0] != "ok":
-                        raise sqlite3.DatabaseError("SQLite snapshot integrity check failed.")
-                    last_error = None
-                    break
-                except sqlite3.OperationalError as exc:
-                    last_error = exc
-                    message = str(exc).lower()
-                    if attempt == 4 or not any(word in message for word in ("locked", "busy")):
-                        raise RuntimeError(
-                            f"Не удалось безопасно скопировать SQLite-сессию: {exc}"
-                        ) from exc
-                    await asyncio.sleep(min(0.25 * (2 ** attempt), 2.0))
-                finally:
-                    if snapshot_db is not None:
-                        snapshot_db.close()
-                    if source_db is not None:
-                        source_db.close()
-            if last_error is not None:
-                raise RuntimeError(f"Не удалось создать снимок сессии: {last_error}") from last_error
+            await asyncio.to_thread(_copy_sqlite_session, source_path, snapshot_path)
 
             client = TelegramClient(
                 snapshot_path,
