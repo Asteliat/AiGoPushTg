@@ -576,6 +576,68 @@ async def resolve_group_for_consent(account_id: int, group_ref: str) -> dict:
             }
 
 
+async def resolve_groups_for_consent(account_id: int, group_refs: list[str]) -> list[dict]:
+    """Resolve up to 100 operator-selected groups and verify admin rights in one session."""
+    values = []
+    for raw in group_refs:
+        value = raw.strip()
+        if "t.me/" in value.lower():
+            value = value.split("t.me/", 1)[1].split("/", 1)[0].split("?", 1)[0]
+        value = value.lstrip("@")
+        if not value:
+            raise ValueError(f"Некорректная ссылка на группу: {raw}")
+        values.append(value)
+    if not values or len(values) > 100:
+        raise ValueError("Укажите от 1 до 100 групп.")
+    async with _account_lock(account_id):
+        async with isolated_account_client(account_id) as (_account, client):
+            result = []
+            for value in values:
+                entity = await client.get_entity(value)
+                is_group = bool(
+                    getattr(entity, "megagroup", False)
+                    or getattr(entity, "gigagroup", False)
+                    or entity.__class__.__name__ == "Chat"
+                )
+                if not is_group:
+                    raise ValueError(f"@{value} не является группой.")
+                permissions = await client.get_permissions(entity, "me")
+                if not (getattr(permissions, "is_admin", False) or getattr(permissions, "is_creator", False)):
+                    raise PermissionError(f"Аккаунт не является администратором группы @{value}.")
+                peer_id = int(utils.get_peer_id(entity))
+                username = getattr(entity, "username", None)
+                result.append({
+                    "peer_id": peer_id,
+                    "peer_ref": f"@{username}" if username else str(peer_id),
+                    "peer_label": str(getattr(entity, "title", None) or username or entity.id),
+                })
+            return result
+
+
+async def resolve_group_reference(account_id: int, group_ref: str) -> dict:
+    """Resolve a group reference for revoking a previously granted publish permission."""
+    value = group_ref.strip()
+    if "t.me/" in value.lower():
+        value = value.split("t.me/", 1)[1].split("/", 1)[0].split("?", 1)[0]
+    value = value.lstrip("@")
+    if not value:
+        raise ValueError("Укажите группу.")
+    async with _account_lock(account_id):
+        async with isolated_account_client(account_id) as (_account, client):
+            entity = await client.get_entity(value)
+            is_group = bool(
+                getattr(entity, "megagroup", False)
+                or getattr(entity, "gigagroup", False)
+                or entity.__class__.__name__ == "Chat"
+            )
+            if not is_group:
+                raise ValueError("Это не группа.")
+            peer_id = int(utils.get_peer_id(entity))
+            username = getattr(entity, "username", None)
+            return {"peer_id": peer_id, "peer_ref": f"@{username}" if username else str(peer_id),
+                    "peer_label": str(getattr(entity, "title", None) or username or entity.id)}
+
+
 async def resolve_peers_for_consent(account_id: int, peer_refs: list[str]) -> list[dict]:
     """Resolve several explicitly selected personal accounts in one isolated session."""
     values = []
@@ -631,6 +693,6 @@ async def simulate_post_activity(
 __all__ = [
     "ChatOverview", "FloodWaitError", "add_contact", "delete_contact",
     "get_chat_overview", "get_profile", "join_chat", "leave_chat",
-    "import_contacts", "list_contacts", "parse_chat_history", "react_to_message", "resolve_peer_for_consent", "resolve_peers_for_consent", "resolve_group_for_consent", "set_profile_photo", "simulate_post_activity",
+    "import_contacts", "list_contacts", "parse_chat_history", "react_to_message", "resolve_peer_for_consent", "resolve_peers_for_consent", "resolve_group_for_consent", "resolve_groups_for_consent", "resolve_group_reference", "set_profile_photo", "simulate_post_activity",
     "update_profile",
 ]

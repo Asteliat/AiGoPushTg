@@ -425,6 +425,7 @@ async def management_account_menu(c: CallbackQuery):
         [("📷 Изменить фото профиля", f"tool:mg:photo:{aid}")],
         [("🤝 Согласие пользователя", f"tool:mg:consent:{aid}"), ("🚫 Отозвать согласие", f"tool:mg:revokeconsent:{aid}")],
         [("🛡 Разрешить публикации в своей группе", f"tool:mg:consentgroup:{aid}")],
+        [("🚫 Отозвать разрешение группы", f"tool:mg:revokegroup:{aid}")],
         [("👥 Список согласий", f"tool:mg:consents:{aid}")],
         [("📨 Разовая рассылка / приглашение", f"tool:mg:campaign:{aid}")],
         [("🗓 Создать расписание", f"tool:mg:schedule:{aid}"), ("📅 Мои расписания", f"tool:mg:schedules:{aid}")],
@@ -469,6 +470,7 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         "editprofile": "Отправьте новые поля через |\nФормат: имя | фамилия | BIO | username\nЧтобы оставить поле без изменений, укажите -",
         "consent": "Добавить только пользователя, который явно согласился получать сообщения. Формат: @username | broadcast или invite | источник согласия.",
         "consentgroup": "Укажите @username или ссылку на группу, где аккаунт является администратором, затем через | источник разрешения. Пример: @mygroup | собственная группа, публикации разрешены администратором.",
+        "revokegroup": "Отправьте @username или ссылку на группу, для которой нужно отозвать разрешение на публикации.",
 
         "revokeconsent": "Отправьте @username получателя. Его согласия на рассылки и приглашения будут отозваны.",
         "consents": "Показать сохранённые согласия.",
@@ -799,7 +801,21 @@ async def management_input_received(m: Message, state: FSMContext):
             )
             await finish_prompt(m, state, message, kb([[("⬅️ Инструменты", "tool:menu")]]))
             return
-        if action == "consent":
+        if action == "consentgroup":
+            parts = [x.strip() for x in raw.split("|", 1)]
+            if len(parts) != 2 or not parts[1]:
+                raise ValueError("Формат: @группа | источник разрешения.")
+            peer = await telegram_management.resolve_group_for_consent(aid, parts[0])
+            await telegram_automation.grant_consent(
+                aid, peer["peer_id"], peer_ref=peer["peer_ref"],
+                peer_label=peer["peer_label"], scope="group_publish", consent_source=parts[1],
+            )
+            message = f"Разрешение на публикации сохранено: {peer['peer_label']}."
+        elif action == "revokegroup":
+            peer = await telegram_management.resolve_group_reference(aid, raw)
+            count = await telegram_automation.revoke_consent(aid, peer["peer_id"], scope="group_publish")
+            message = f"Разрешение на публикации отозвано для «{peer['peer_label']}». Записей: {count}."
+        elif action == "consent":
             parts = [x.strip() for x in raw.split("|", 2)]
             if len(parts) != 3 or not parts[2]:
                 raise ValueError("Формат: @username | broadcast/invite | источник согласия.")
@@ -871,7 +887,11 @@ async def management_input_received(m: Message, state: FSMContext):
                     raise ValueError("Интервал — минимум 24 часа; число запусков — от 1 до 365.")
                 refs_raw = parts[4]
             refs = [item.strip() for item in refs_raw.split(",") if item.strip()]
-            peers = await telegram_management.resolve_peers_for_consent(aid, refs)
+            peers = (
+                await telegram_management.resolve_groups_for_consent(aid, refs)
+                if kind == "group_broadcast"
+                else await telegram_management.resolve_peers_for_consent(aid, refs)
+            )
             await state.update_data(
                 management_action="campaign_content", management_account_id=aid,
                 campaign_kind=kind, campaign_scheduled_at=scheduled.isoformat(),
