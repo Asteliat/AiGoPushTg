@@ -1,5 +1,5 @@
 from __future__ import annotations
-import asyncio, io, os, re, secrets, sqlite3, tempfile, logging
+import asyncio, csv, io, os, re, secrets, sqlite3, tempfile, logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from aiogram import F, Router
@@ -441,6 +441,7 @@ async def management_account_menu(c: CallbackQuery):
     await edit(c, f"🛠 Инструменты · {account.display_name} · #{aid}\n\nВыберите действие:", kb([
         [("👤 Профиль", f"tool:mg:profile:{aid}"), ("📇 Контакты", f"tool:mg:contacts:{aid}")],
         [("➕ Добавить контакт", f"tool:mg:addcontact:{aid}"), ("🗑 Удалить контакт", f"tool:mg:delcontact:{aid}")],
+        [("📥 Импорт контактов", f"tool:mg:importcontacts:{aid}"), ("📤 Экспорт контактов", f"tool:mg:exportcontacts:{aid}")],
         [("🔎 Информация о чате", f"tool:mg:chatinfo:{aid}")],
         [("🔍 Парсер публикаций канала", f"tool:mg:parsechannel:{aid}")],
         [("➕ Вступить в чат", f"tool:mg:join:{aid}"), ("➖ Выйти из чата", f"tool:mg:leave:{aid}")],
@@ -475,6 +476,7 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
     aid = int(aid_raw)
     prompts = {
         "addcontact": "Отправьте номер телефона, имя и фамилию через |\nПример: +79990000000 | Иван | Иванов",
+        "importcontacts": "Отправьте до 100 контактов, каждый с новой строки. Формат: телефон | имя | фамилия.\nПример:\n+79990000000 | Иван | Иванов\n+79991112233 | Анна | Петрова",
         "delcontact": "Отправьте Telegram user ID контакта, которого нужно удалить.",
         "chatinfo": "Отправьте @username или публичную ссылку t.me/…",
         "parsechannel": "Отправьте @username канала и количество публикаций через |. Например: @telegram | 20. Максимум 100 последних публикаций; участники канала не собираются.",
@@ -488,6 +490,20 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         "campaign": "Формат: broadcast или invite | now либо YYYY-MM-DD HH:MM UTC | @user1,@user2. Только получатели с активным согласием; максимум 100 за задачу.",
         "limits": "Формат: интервал_секунд | максимум_сообщений_за_24ч. По умолчанию 30 | 50; диапазоны 1–3600 и 1–500.",
     }
+    if action == "exportcontacts":
+        try:
+            items = await telegram_management.list_contacts(aid, limit=500)
+            output = io.StringIO()
+            writer = csv.writer(output)
+            writer.writerow(["telegram_id", "username", "first_name", "last_name", "phone"])
+            for item in items:
+                writer.writerow([item["id"], item["username"] or "", item["first_name"], item["last_name"], item["phone"]])
+            document = BufferedInputFile(output.getvalue().encode("utf-8-sig"), filename=f"contacts-account-{aid}.csv")
+            await c.message.answer_document(document, caption=f"Экспорт контактов аккаунта #{aid}: {len(items)} записей")
+            await c.answer("Файл CSV отправлен.")
+        except Exception as exc:
+            await c.answer(f"Экспорт не удался: {str(exc)[:180]}", show_alert=True)
+        return
     if action == "consents":
         items = await telegram_automation.list_consents(aid)
         lines = [f"👥 Согласия аккаунта #{aid} · {len(items)}"]
@@ -717,7 +733,21 @@ async def management_input_received(m: Message, state: FSMContext):
             await state.set_state(Flow.management_campaign_content)
             await prompt_message(m, state, f"Получателей найдено: {len(peers)}. Следующим сообщением отправьте текст или прикрепите документ.\nПеред запуском будет предпросмотр. Для invite добавьте ссылку t.me.")
             return
-        if action == "addcontact":
+        if action == "importcontacts":
+            contacts = []
+            for index, line in enumerate(raw.splitlines(), 1):
+                if not line.strip():
+                    continue
+                parts = [item.strip() for item in line.split("|", 2)]
+                if len(parts) not in {2, 3}:
+                    raise ValueError(f"Строка {index}: формат телефон | имя | фамилия.")
+                contacts.append({
+                    "phone": parts[0], "first_name": parts[1],
+                    "last_name": parts[2] if len(parts) == 3 else "",
+                })
+            result = await telegram_management.import_contacts(aid, contacts)
+            message = f"Импорт завершён. Добавлено Telegram: {result['imported']} · пользователей найдено: {result['users']} · повторная проверка: {result['retry_contacts']}."
+        elif action == "addcontact":
             parts = [x.strip() for x in raw.split("|")]
             if len(parts) not in {2, 3}: raise ValueError("Формат: телефон | имя | фамилия.")
             count = await telegram_management.add_contact(
