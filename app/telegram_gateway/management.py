@@ -758,24 +758,6 @@ async def resolve_peers(account_id: int, peer_refs: list[str]) -> list[dict]:
             return result
 
 
-async def simulate_post_activity(
-    *, post_key: str, requested_views: int, requested_reactions: int
-) -> dict:
-    """Return local-only synthetic test metrics; never calls Telegram or changes a post."""
-    if not post_key.strip():
-        raise ValueError("Для теста укажите идентификатор тестовой публикации.")
-    views = max(0, min(int(requested_views), 1_000_000))
-    reactions = max(0, min(int(requested_reactions), 100_000))
-    return {
-        "mode": "simulation",
-        "post_key": post_key.strip()[:160],
-        "simulated_views": views,
-        "simulated_reactions": reactions,
-        "telegram_modified": False,
-        "notice": "Только локальная симуляция. Счётчики Telegram не изменялись.",
-    }
-
-
 __all__ = [
     "ChatOverview", "FloodWaitError", "add_contact", "delete_contact",
     "get_chat_overview", "get_profile", "join_chat", "leave_chat",
@@ -783,6 +765,5 @@ __all__ = [
     "parse_chat_history", "parse_chat_participants", "react_to_message",
     "resolve_peer", "resolve_peers", "resolve_group",
     "resolve_groups", "resolve_group_reference", "set_profile_photo",
-    "simulate_post_activity",
     "update_profile",
 ]
