@@ -8,6 +8,7 @@ sleep through, suppress, or bypass server-side limits.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import sqlite3
 import tempfile
@@ -49,64 +50,99 @@ class ChatOverview:
 
 @asynccontextmanager
 async def isolated_account_client(account_id: int) -> AsyncIterator[tuple[Account, TelegramClient]]:
-    """Open a temporary session snapshot while holding a cross-process account lock.
+    """Run an operation on a private SQLite snapshot under a cross-process account lock.
 
-    PostgreSQL advisory locks serialize bot, worker, and other tool processes that share
-    the same authorized SQLite session. The live session is only read through SQLite
-    backup; all Telethon operations happen on the isolated copy.
+    The source session is never opened by this client. A PostgreSQL advisory lock serializes
+    snapshots and account-management operations across bot/worker processes. SQLite backup
+    retries transient busy/locked states instead of exposing a half-copied session.
     """
     if not cfg.telegram_api_id or not cfg.telegram_api_hash:
         raise RuntimeError("Не заданы TELEGRAM_API_ID и TELEGRAM_API_HASH.")
 
     lock_namespace = 741928462
-    async with engine.connect() as lock_connection:
-        await lock_connection.execute(
-            text("SELECT pg_advisory_lock(:namespace, :account_id)"),
-            {"namespace": lock_namespace, "account_id": int(account_id)},
-        )
-        await lock_connection.commit()
-        try:
-            async with SessionFactory() as db:
-                account = await db.get(Account, account_id)
-                if not account or not account.enabled:
-                    raise RuntimeError("Аккаунт не найден или отключён.")
-                db.expunge(account)
+    lock_connection = await engine.connect()
+    lock_acquired = False
+    try:
+        for _attempt in range(120):
+            lock_acquired = bool(await lock_connection.scalar(
+                text("SELECT pg_try_advisory_lock(:namespace, :account_id)"),
+                {"namespace": lock_namespace, "account_id": int(account_id)},
+            ))
+            if lock_acquired:
+                break
+            await asyncio.sleep(0.5)
+        if not lock_acquired:
+            raise TimeoutError("Не удалось получить блокировку Telegram-аккаунта за 60 секунд.")
 
-            source_path = str(account.session_path)
-            if not source_path.endswith(".session"):
-                source_path += ".session"
-            if not os.path.isfile(source_path):
-                raise RuntimeError("Файл сессии аккаунта не найден.")
+        async with SessionFactory() as db:
+            account = await db.get(Account, account_id)
+            if not account or not account.enabled:
+                raise RuntimeError("Аккаунт не найден или отключён.")
+            db.expunge(account)
 
-            with tempfile.TemporaryDirectory(prefix=f"atciv-tools-{account_id}-") as temp_dir:
-                snapshot_path = os.path.join(temp_dir, "account.session")
-                source_db = sqlite3.connect(source_path, timeout=30)
-                snapshot_db = sqlite3.connect(snapshot_path, timeout=30)
+        source_path = str(account.session_path)
+        if not source_path.endswith(".session"):
+            source_path += ".session"
+        if not os.path.isfile(source_path):
+            raise RuntimeError("Файл сессии аккаунта не найден.")
+
+        with tempfile.TemporaryDirectory(prefix=f"atciv-tools-{account_id}-") as temp_dir:
+            snapshot_path = os.path.join(temp_dir, "account.session")
+            last_error: Exception | None = None
+            for attempt in range(5):
+                source_db = None
+                snapshot_db = None
                 try:
+                    source_db = sqlite3.connect(source_path, timeout=30)
+                    snapshot_db = sqlite3.connect(snapshot_path, timeout=30)
                     source_db.execute("PRAGMA busy_timeout = 30000")
                     snapshot_db.execute("PRAGMA busy_timeout = 30000")
                     source_db.backup(snapshot_db, pages=128, sleep=0.05)
+                    check = snapshot_db.execute("PRAGMA quick_check").fetchone()
+                    if not check or check[0] != "ok":
+                        raise sqlite3.DatabaseError("SQLite snapshot integrity check failed.")
+                    last_error = None
+                    break
+                except sqlite3.OperationalError as exc:
+                    last_error = exc
+                    message = str(exc).lower()
+                    if attempt == 4 or not any(word in message for word in ("locked", "busy")):
+                        raise RuntimeError(
+                            f"Не удалось безопасно скопировать SQLite-сессию: {exc}"
+                        ) from exc
+                    await asyncio.sleep(min(0.25 * (2 ** attempt), 2.0))
                 finally:
-                    snapshot_db.close()
-                    source_db.close()
+                    if snapshot_db is not None:
+                        snapshot_db.close()
+                    if source_db is not None:
+                        source_db.close()
+            if last_error is not None:
+                raise RuntimeError(f"Не удалось создать снимок сессии: {last_error}") from last_error
 
-                client = TelegramClient(
-                    snapshot_path,
-                    cfg.telegram_api_id,
-                    cfg.telegram_api_hash,
-                    proxy=telethon_proxy(account.proxy_config_encrypted),
-                )
-                configure_telethon_sqlite_session(client)
-                try:
-                    await client.connect()
-                    if not await client.is_user_authorized():
-                        raise RuntimeError("Сессия аккаунта не авторизована.")
-                    client.flood_sleep_threshold = 0
-                    yield account, client
-                finally:
-                    if client.is_connected():
+            client = TelegramClient(
+                snapshot_path,
+                cfg.telegram_api_id,
+                cfg.telegram_api_hash,
+                proxy=telethon_proxy(account.proxy_config_encrypted),
+                connection_retries=3,
+                retry_delay=1,
+                auto_reconnect=False,
+            )
+            configure_telethon_sqlite_session(client)
+            client.flood_sleep_threshold = 0
+            try:
+                await client.connect()
+                if not await client.is_user_authorized():
+                    raise RuntimeError("Сессия аккаунта не авторизована.")
+                yield account, client
+            finally:
+                if client.is_connected():
+                    try:
                         await client.disconnect()
-        finally:
+                    except Exception:
+                        logging.exception("Could not disconnect isolated Telegram client for account %s", account_id)
+    finally:
+        if lock_acquired:
             try:
                 await lock_connection.execute(
                     text("SELECT pg_advisory_unlock(:namespace, :account_id)"),
@@ -114,8 +150,9 @@ async def isolated_account_client(account_id: int) -> AsyncIterator[tuple[Accoun
                 )
                 await lock_connection.commit()
             except Exception:
-                # A broken connection will release its session-level lock when closed.
+                logging.exception("Could not release Telegram account lock for account %s", account_id)
                 await lock_connection.invalidate()
+        await lock_connection.close()
 
 
 
