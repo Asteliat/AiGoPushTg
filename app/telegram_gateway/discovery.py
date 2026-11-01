@@ -151,17 +151,19 @@ class _SearchAnchors(HTMLParser):
             self.href, self.parts = None, []
 
 
-def _engine_search(engine: str, template: str, query: str) -> list[dict]:
+def _engine_search(engine: str, template: str, query: str, page: int = 0) -> list[dict]:
+    """Fetch and parse one result page. Page is zero-based."""
+    offset = page * 50
     request = Request(
-        template.format(q=quote_plus(query)),
+        template.format(q=quote_plus(query), page=page, offset=offset, first=offset + 1),
         headers={
             "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36",
             "Accept-Language": "ru,en;q=0.8",
         },
     )
     try:
-        with urlopen(request, timeout=9) as response:
-            body = response.read(1_800_000).decode("utf-8", "replace")
+        with urlopen(request, timeout=12) as response:
+            body = response.read(2_000_000).decode("utf-8", "replace")
     except Exception:
         return []
 
@@ -197,25 +199,30 @@ def _engine_search(engine: str, template: str, query: str) -> list[dict]:
             "score": 20 if kind == "invite" else 24,
             "source": engine,
             "kind": "invite" if kind == "invite" else "unknown",
+            "search_page": page + 1,
         })
     return results
 
 
-async def search_web_groups(query: str, limit: int = 180) -> list[dict]:
-    """Collect possible Telegram group links from several independent search engines.
+async def search_web_groups(query: str, limit: int = 600, pages_per_query: int = 5) -> list[dict]:
+    """Search deeply across engines and pages; results remain untrusted until Telegram verifies them.
 
-    Search-engine HTML is inherently best-effort (CAPTCHA and markup changes happen).
-    These are untrusted candidates and MUST be passed to verify_group_candidates.
+    Five pages are requested per query from each engine. Engines may cap, block or
+    silently ignore pagination, so each page is fetched independently and failures
+    on one page never cancel the remaining search.
     """
     clean_query = " ".join((query or "").split())[:100]
     if len(clean_query) < 2:
         return []
+
+    # Pagination parameters are engine-specific. These offsets deliberately request
+    # deeper result pages instead of repeatedly downloading page one.
     engines = (
-        ("Google", "https://www.google.com/search?q={q}&num=30"),
-        ("Yandex", "https://yandex.com/search/?text={q}"),
-        ("Bing", "https://www.bing.com/search?q={q}&count=30"),
-        ("DuckDuckGo", "https://html.duckduckgo.com/html/?q={q}"),
-        ("Yahoo", "https://search.yahoo.com/search?p={q}&n=30"),
+        ("Google", "https://www.google.com/search?q={q}&num=50&start={offset}"),
+        ("Yandex", "https://yandex.com/search/?text={q}&p={page}"),
+        ("Bing", "https://www.bing.com/search?q={q}&count=50&first={first}"),
+        ("DuckDuckGo", "https://html.duckduckgo.com/html/?q={q}&s={offset}"),
+        ("Yahoo", "https://search.yahoo.com/search?p={q}&n=50&b={first}"),
     )
     terms = (
         f'site:t.me "{clean_query}" (группа OR чат OR group)',
@@ -223,32 +230,46 @@ async def search_web_groups(query: str, limit: int = 180) -> list[dict]:
         f'site:telegram.me "{clean_query}"',
         f'site:t.me/+ "{clean_query}" OR site:t.me/joinchat "{clean_query}"',
     )
-    semaphore = asyncio.Semaphore(5)
+    page_count = max(1, min(int(pages_per_query), 8))
+    semaphore = asyncio.Semaphore(8)
 
-    async def run_one(name, template, term):
+    async def run_one(name, template, term, page):
         async with semaphore:
-            return await asyncio.to_thread(_engine_search, name, template, term)
+            return await asyncio.to_thread(_engine_search, name, template, term, page)
 
-    batches = await asyncio.gather(
-        *(run_one(name, template, term) for name, template in engines for term in terms),
-        return_exceptions=True,
+    jobs = (
+        run_one(name, template, term, page)
+        for name, template in engines
+        for term in terms
+        for page in range(page_count)
     )
+    batches = await asyncio.gather(*jobs, return_exceptions=True)
+
     found: dict[str, dict] = {}
+    successful_pages = 0
     for batch in batches:
         if isinstance(batch, Exception):
             continue
+        if batch:
+            successful_pages += 1
         for item in batch:
             key = item["link"].casefold()
             if key in found:
                 sources = found[key]["source"].split(", ")
                 if item["source"] not in sources:
                     found[key]["source"] += ", " + item["source"]
-                found[key]["score"] = min(40, found[key]["score"] + 2)
+                found[key]["score"] = min(50, found[key]["score"] + 2)
+                found[key]["search_pages"] = sorted(set(
+                    found[key].get("search_pages", [found[key].get("search_page", 1)])
+                    + [item.get("search_page", 1)]
+                ))
                 if item.get("title") and len(item["title"]) > len(found[key]["title"]):
                     found[key]["title"] = item["title"]
             else:
+                item["search_pages"] = [item.pop("search_page", 1)]
                 found[key] = item
-    return sorted(found.values(), key=lambda x: x["score"], reverse=True)[:max(1, min(limit, 300))]
+    ordered = sorted(found.values(), key=lambda x: x["score"], reverse=True)
+    return ordered[:max(1, min(int(limit), 1000))]
 
 
 async def verify_group_candidates(client, candidates: list[dict], concurrency: int = 4) -> list[dict]:
