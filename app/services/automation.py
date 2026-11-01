@@ -25,7 +25,7 @@ from app.storage.models import (
     utcnow,
 )
 
-ALLOWED_KINDS = {"broadcast", "group_broadcast", "invite", "reaction"}
+ALLOWED_KINDS = {"broadcast", "group_broadcast", "invite", "group_invite", "reaction"}
 MAX_RECIPIENTS = 500
 MAX_TEXT = 4096
 
@@ -51,6 +51,11 @@ def _validate_payload(kind: str, payload: dict) -> dict:
         allowed = {"👍", "👎", "❤️", "🔥", "🥰", "👏", "😁", "🤔", "🤯", "😱", "🎉", "💩", "🙏"}
         if not normalized["chat"] or normalized["message_id"] <= 0 or normalized["emoji"] not in allowed:
             raise ValueError("Для реакции нужны чат, корректный ID публикации и поддерживаемый emoji.")
+        return normalized
+    if kind == "group_invite":
+        normalized["target_group"] = str(payload.get("target_group") or "").strip()
+        if not normalized["target_group"]:
+            raise ValueError("Укажите публичную супергруппу, в которую нужно пригласить участников.")
         return normalized
     if len(normalized["text"]) > MAX_TEXT or len(normalized["caption"]) > MAX_TEXT:
         raise ValueError("Текст сообщения не должен превышать 4096 символов.")
@@ -142,7 +147,7 @@ async def create_campaign(
     due = _aware(scheduled_at or utcnow())
     if due < utcnow() - timedelta(minutes=1):
         raise ValueError("Время запуска уже прошло.")
-    scope = kind if kind in {"invite", "group_broadcast"} else "broadcast"
+    scope = "invite" if kind in {"invite", "group_invite"} else "group_broadcast" if kind == "group_broadcast" else "broadcast"
     async with SessionFactory() as db:
         account = await db.get(Account, account_id)
         if not account or not account.enabled:
@@ -436,6 +441,7 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
     """Process due opt-in campaigns. Called repeatedly by the dedicated worker loop."""
     from telethon.errors import FloodWaitError
     from telethon.tl.functions.messages import SendReactionRequest
+    from telethon.tl.functions.channels import InviteToChannelRequest
     from telethon.tl.types import ReactionEmoji
     from app.telegram_gateway.management import isolated_account_client
 
@@ -509,7 +515,7 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                             break
                         # Consent is checked again immediately before each send.
                         if kind != "reaction":
-                            scope = kind if kind in {"invite", "group_broadcast"} else "broadcast"
+                            scope = "invite" if kind in {"invite", "group_invite"} else "group_broadcast" if kind == "group_broadcast" else "broadcast"
                             consent = await db.scalar(select(AutomationConsent).where(
                                 AutomationConsent.account_id == account_id,
                                 AutomationConsent.peer_id == recipient.peer_id,
@@ -551,6 +557,12 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                                 reaction=[ReactionEmoji(emoticon=payload["emoji"])],
                                 big=False, add_to_recent=False,
                             ))
+                        elif kind == "group_invite":
+                            group = await client.get_entity(payload["target_group"])
+                            if group.__class__.__name__ != "Channel" or not bool(getattr(group, "megagroup", False) or getattr(group, "gigagroup", False)):
+                                raise ValueError("Цель приглашения больше не является супергруппой.")
+                            user = await client.get_entity(peer_ref or peer_id)
+                            await client(InviteToChannelRequest(channel=group, users=[user]))
                         else:
                             entity = await client.get_entity(peer_ref or peer_id)
                             if payload.get("file_path"):
