@@ -454,6 +454,7 @@ async def management_account_menu(c: CallbackQuery):
         [("📨 Создать рассылку / приглашение", f"tool:mg:campaign:{aid}")],
         [("📋 Очередь и история задач", f"tool:mg:campaigns:{aid}")],
         [("⏱ Лимиты отправки", f"tool:mg:limits:{aid}")],
+        [("♻️ Сбросить лимиты к глобальным", f"tool:mg:resetlimits:{aid}")],
         [("🎯 Автоответчики и триггеры", f"trigger:account:{aid}")],
         [("⬅️ К аккаунтам", "tool:management")],
     ]))
@@ -505,6 +506,15 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
             await c.answer("Файл CSV отправлен.")
         except Exception as exc:
             await c.answer(f"Экспорт не удался: {str(exc)[:180]}", show_alert=True)
+        return
+    if action == "resetlimits":
+        try:
+            await telegram_automation.reset_account_limits(aid)
+            await edit(c, "Индивидуальные лимиты удалены. Теперь аккаунт использует глобальные значения по умолчанию.", kb([
+                [("↩️ К инструментам аккаунта", f"tool:management:account:{aid}")],
+            ]))
+        except Exception as exc:
+            await edit(c, f"Не удалось сбросить лимиты: {type(exc).__name__}: {str(exc)[:250]}", back_home())
         return
     if action == "consents":
         items = await telegram_automation.list_consents(aid)
