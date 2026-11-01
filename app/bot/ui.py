@@ -602,7 +602,11 @@ async def management_campaign_status(c: CallbackQuery):
         if log_lines:
             text_value += "\n\nЖурнал доставок:\n" + "\n".join(log_lines)
         rows = []
-        if int(item["recipients"].get("failed", 0) or 0) > 0 and item["status"] in {"completed", "failed"}:
+        failed_count = int(item["recipients"].get("failed", 0) or 0)
+        pending_count = int(item["recipients"].get("pending", 0) or 0)
+        if item["status"] in {"completed", "failed"} and (
+            failed_count > 0 or (item["status"] == "failed" and pending_count > 0)
+        ):
             rows.append([("🔁 Повторить неудачные доставки", f"tool:campaign:retry:{task_id}")])
         if item["status"] in {"queued", "running"}:
             rows.append([("⏸ Приостановить", f"tool:campaign:pause:{task_id}")])
