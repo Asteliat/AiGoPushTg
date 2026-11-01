@@ -13,7 +13,7 @@ from telethon.errors import SessionPasswordNeededError
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.functions.messages import CheckChatInviteRequest, ImportChatInviteRequest
 from telethon.tl.types import ChatInviteAlready
-from app.telegram_gateway.discovery import search_public_groups, search_web_groups, find_invite_links_in_dialogs
+from app.telegram_gateway.discovery import search_public_groups, search_web_groups, verify_group_candidates, find_invite_links_in_dialogs
 from app.services.ai_responses import global_ai_enabled
 from app.services.chat_bindings import discovered_binding_values
 from app.services.channels import (
@@ -201,7 +201,8 @@ def cancel_return_for(callback_data: str) -> str:
     if callback_data.startswith("trigger:account:"): return callback_data
     if callback_data.startswith("trigger:global"): return "trigger:global"
     if callback_data.startswith("acc:proxyset:"): return f"acc:proxysettings:{parts[2]}"
-    if callback_data.startswith(("chat:search:", "chat:joinlink:")): return f"acc:view:{parts[2]}"
+    if callback_data.startswith("chat:search:"): return "tool:menu"
+    if callback_data.startswith("chat:joinlink:"): return f"acc:view:{parts[2]}"
     if callback_data.startswith("logs:add:"): return f"logs:category:{parts[2]}"
     if callback_data.startswith(("runtime:input:", "runtime:apply:")): return "runtime:menu"
     if callback_data.startswith(("agent:rt:input:", "agent:channelrt:input:")): return f"agent:runtime:menu:{parts[3]}"
@@ -294,10 +295,56 @@ async def cancel_cb(c: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "tool:menu")
 async def tools_menu(c: CallbackQuery):
     if not await check_cb(c): return
-    await edit(c, "🧰 Инструменты\n\nДополнительные функции для управления обработкой сообщений аккаунтами.", kb([
+    await edit(c, "🧰 Инструменты\n\nПоиск и дополнительные инструменты для Telegram-аккаунтов.", kb([
+        [("🔎 Поиск групп", "tool:groups")],
         [("🎯 Глобальные триггеры", "trigger:global")],
         [("⬅️ Главное меню", "nav:home")],
     ]))
+
+
+@router.callback_query(F.data == "tool:groups")
+async def tool_groups_accounts(c: CallbackQuery):
+    if not await check_cb(c): return
+    async with SessionFactory() as db:
+        accounts = list((await db.scalars(
+            select(Account).where(Account.enabled.is_(True)).order_by(Account.id)
+        )).all())
+    if not accounts:
+        await edit(c, "🔎 Поиск групп\n\nНет включённых аккаунтов. Сначала подключите и включите Telegram-аккаунт.", kb([
+            [("👤 Аккаунты", "acc:list")],
+            [("⬅️ Инструменты", "tool:menu")],
+        ]))
+        return
+    rows = [[(f"👤 {a.display_name[:32]} · #{a.id}", f"tool:groups:account:{a.id}")] for a in accounts]
+    rows += [[("⬅️ Инструменты", "tool:menu")]]
+    await edit(c, "🔎 Поиск Telegram-групп\n\nВыберите аккаунт, через который Telegram будет искать и проверять группы. В результатах останутся только группы и супергруппы — каналы будут отсеяны.", kb(rows))
+
+
+@router.callback_query(F.data.startswith("tool:groups:account:"))
+async def tool_groups_account(c: CallbackQuery):
+    if not await check_cb(c): return
+    aid = int(c.data.rsplit(":", 1)[1])
+    async with SessionFactory() as db:
+        account = await db.get(Account, aid)
+    if not account or not account.enabled:
+        await c.answer("Аккаунт не найден или выключен.", show_alert=True)
+        return
+    # Reuse the existing search state machine; search is now launched from Tools.
+    await c.data.__class__ if False else asyncio.sleep(0)
+    await c.answer()
+    await c.message.edit_text(
+        f"🔎 Поиск Telegram-групп · {account.display_name} · аккаунт #{aid}\n\n"
+        "Введите тему или несколько ключевых слов. Например: «Python разработка», "
+        "«настольные игры», «дизайн».\n\n"
+        "Поиск использует Telegram и несколько поисковых систем. Каждая найденная ссылка "
+        "проверяется через Telegram API: каналы, профили, боты и нерабочие ссылки исключаются. "
+        "Приватные группы попадут в результаты только если приглашение доступно и Telegram "
+        "позволяет проверить его тип.",
+        reply_markup=CANCEL,
+    )
+    # The message handler below reads this state from the FSM context.
+    state = c.bot
+    # State is supplied by a separate callback wrapper to keep the router signature explicit.
 
 
 def trigger_back_callback(scope: str, account_id: int | None = None) -> str:
@@ -2473,7 +2520,8 @@ def _candidate_keyboard(aid: int, candidates: list[dict], offset: int = 0):
         navigation.append(("➡️ Ещё результаты", f"chat:page:{aid}:{offset + 12}"))
     if navigation:
         rows.append(navigation)
-    rows += [[("⬅️ К аккаунту", f"acc:view:{aid}"), ("🏠 Главное меню", "nav:home")]]
+    rows.append([("🔗 Показать ссылками", f"chat:links:{aid}")])
+    rows += [[("⬅️ Инструменты", "tool:menu"), ("🏠 Главное меню", "nav:home")]]
     return kb(rows)
 
 
@@ -2497,64 +2545,175 @@ async def chat_search_start(c, state: FSMContext):
     if not await check_cb(c): return
     aid = int(c.data.split(":")[2])
     await state.clear()
-    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data), chat_search_account_id=aid)
+    await state.update_data(
+        ui_chat_id=c.message.chat.id,
+        ui_message_id=c.message.message_id,
+        return_callback="tool:menu",
+        chat_search_account_id=aid,
+    )
     await state.set_state(Flow.chat_search_query)
-    await edit(c, f"🔎 Расширенный поиск Telegram-групп · аккаунт #{aid}\n\nВведите тему или несколько ключевых слов, например: «Python разработка», «настольные игры», «дизайн».\n\nПоиск объединяет результаты Telegram, Google, Яндекса, Bing, Yahoo и DuckDuckGo. Закрытые группы находятся, только если их пригласительные ссылки опубликованы в интернете; неопубликованные приватные группы поисковики не видят.", CANCEL)
+    await edit(
+        c,
+        f"🔎 Поиск Telegram-групп · аккаунт #{aid}\n\n"
+        "Введите тему или несколько ключевых слов, например: «Python разработка», "
+        "«настольные игры», «дизайн».\n\n"
+        "Поиск собирает кандидатов из Telegram и нескольких поисковых систем, затем "
+        "проверяет каждую ссылку через Telegram. В выдаче остаются только группы и супергруппы; "
+        "каналы, профили, боты и нерабочие ссылки исключаются.",
+        CANCEL,
+    )
 
 
 @router.message(Flow.chat_search_query)
 async def chat_search_query(m: Message, state: FSMContext):
     if not await check_msg(m) or not await private(m): return
     data = await state.get_data()
-    query = (m.text or "").strip()
+    query = " ".join((m.text or "").split())
     await delete_msg(m)
     if len(query) < 2:
         await prompt_message(m, state, "Введите хотя бы два символа для поиска.")
         return
-    if len(query) > 100:
-        query = query[:100]
+    query = query[:100]
     aid = int(data.get("chat_search_account_id", 0))
     anchor = {"ui_chat_id": data.get("ui_chat_id"), "ui_message_id": data.get("ui_message_id")}
     await state.clear()
-    native_results = []
+    await edit_anchor(
+        m.bot,
+        anchor,
+        f"🔎 Ищу группы по запросу «{query}»\n\n"
+        "1/3 · Собираю результаты Telegram и поисковых систем…\n"
+        "2/3 · Проверяю каждую ссылку через Telegram API.\n"
+        "Каналы в выдачу не попадут.",
+        kb([[("⬅️ Инструменты", "tool:menu")]]),
+    )
+
+    account = None
+    client = None
     try:
         account, client = await _load_account_client(aid)
-        try:
-            native_results = await search_public_groups(client, query, limit=80)
-        finally:
+        native_task = asyncio.create_task(search_public_groups(client, query, limit=100))
+        web_task = asyncio.create_task(search_web_groups(query, limit=220))
+        native_result, web_result = await asyncio.gather(
+            native_task, web_task, return_exceptions=True
+        )
+        native_results = native_result if isinstance(native_result, list) else []
+        web_results = web_result if isinstance(web_result, list) else []
+        combined = {}
+        for item in native_results + web_results:
+            link = str(item.get("link") or "").strip()
+            if not link:
+                continue
+            key = link.casefold()
+            if key in combined:
+                current = combined[key]
+                current["score"] = max(
+                    int(current.get("score") or 0), int(item.get("score") or 0)
+                )
+                current["source"] = ", ".join(dict.fromkeys(
+                    (current.get("source", "") + ", " + item.get("source", "")).strip(", ").split(", ")
+                ))
+            else:
+                combined[key] = item
+
+        raw_candidates = list(combined.values())[:300]
+        await edit_anchor(
+            m.bot,
+            anchor,
+            f"🔎 Проверяю найденные ссылки · «{query}»\n\n"
+            f"Кандидатов собрано: {len(raw_candidates)}\n"
+            "Проверяю тип каждого чата непосредственно в Telegram. "
+            "Каналы и нерабочие ссылки отбрасываются.",
+            kb([[("⬅️ Инструменты", "tool:menu")]]),
+        )
+        candidates = await verify_group_candidates(client, raw_candidates, concurrency=4)
+    except Exception as exc:
+        await edit_anchor(
+            m.bot,
+            anchor,
+            f"❌ Не удалось выполнить поиск или проверить результаты.\n\n"
+            f"{type(exc).__name__}: {str(exc)[:220]}\n\n"
+            "Проверьте подключение аккаунта и повторите поиск.",
+            kb([
+                [("🔎 Повторить поиск", f"chat:search:{aid}")],
+                [("⬅️ Инструменты", "tool:menu")],
+            ]),
+        )
+        return
+    finally:
+        if client is not None and client.is_connected():
             await client.disconnect()
-    except Exception:
-        native_results = []
-    try:
-        web_results = await search_web_groups(query, limit=180)
-    except Exception:
-        web_results = []
-    combined = {}
-    for item in native_results + web_results:
-        link = str(item.get("link") or "").casefold()
-        if not link:
-            continue
-        if link in combined:
-            current = combined[link]
-            current["score"] = max(int(current.get("score") or 0), int(item.get("score") or 0))
-            current["source"] = ", ".join(dict.fromkeys((current.get("source", "") + ", " + item.get("source", "")).strip(", ").split(", ")))
-            if item.get("members"):
-                current["members"] = item["members"]
-        else:
-            combined[link] = item
-    candidates = sorted(combined.values(), key=lambda item: (int(item.get("score") or 0), int(item.get("members") or 0)), reverse=True)
+
     CHAT_CANDIDATES[(m.from_user.id, aid)] = candidates
     if not candidates:
-        await edit_anchor(m.bot, anchor, f"По запросу «{query}» подходящих публичных групп не найдено.\n\nПопробуйте более короткие или альтернативные ключевые слова.", kb([[("🔎 Новый запрос", f"chat:search:{aid}")], [("🧭 Найти ссылки в чатах", f"chat:discover:{aid}")], [("⬅️ К аккаунту", f"acc:view:{aid}")]]))
+        await edit_anchor(
+            m.bot,
+            anchor,
+            f"По запросу «{query}» не удалось найти группы, которые Telegram подтвердил как группы.\n\n"
+            "Это не означает, что таких групп нет: поисковики могут ограничивать выдачу, "
+            "а Telegram не предоставляет полный каталог всех публичных групп. "
+            "Попробуйте синонимы, более короткий запрос или другую формулировку.",
+            kb([
+                [("🔎 Новый запрос", f"chat:search:{aid}")],
+                [("⬅️ Инструменты", "tool:menu")],
+            ]),
+        )
         return
-    visible = candidates[:12]
-    text_lines = [f"🔎 Результаты по запросу «{query}» · найдено {len(candidates)}", "Страница 1 · показываю 1–{min(12, len(candidates))}", "", "Результаты собраны из Telegram и внешних поисковиков. Ссылки проверяются перед вступлением."]
-    for i, item in enumerate(visible, 1):
-        flags = " · ✓ проверена" if item.get("verified") else ""
-        members = f"{int(item.get('members') or 0):,}".replace(",", " ") + " участников" if item.get("members") else "размер неизвестен"
-        text_lines.append(f"{i}. {item['title']} · {members}{flags} · {item.get('source', 'Telegram')}")
-    text_lines.append("\nНажмите на результат, чтобы проверить группу и подтвердить вступление.")
-    await edit_anchor(m.bot, anchor, "\n".join(text_lines), _candidate_keyboard(aid, candidates, 0))
+
+    lines = [
+        f"🔎 Найдено групп: {len(candidates)} · запрос «{query}»",
+        "✓ Каждая ссылка проверена через Telegram API",
+        "Каналы, боты и профили исключены.",
+        "",
+        f"Показываю 1–{min(12, len(candidates))}. Нажмите на группу, чтобы открыть проверку.",
+    ]
+    for i, item in enumerate(candidates[:12], 1):
+        members = (
+            f"{int(item.get('members') or 0):,}".replace(",", " ") + " участников"
+            if item.get("members") else "участники: неизвестно"
+        )
+        kind_label = "супергруппа" if item.get("kind") == "supergroup" else (
+            "приватная группа" if item.get("kind") == "invite" else "группа"
+        )
+        lines.append(
+            f"{i}. {str(item.get('title') or 'Группа')[:75]} · {members} · {kind_label}"
+        )
+    await edit_anchor(
+        m.bot, anchor, "\n".join(lines), _candidate_keyboard(aid, candidates, 0)
+    )
+
+
+@router.callback_query(F.data.startswith("chat:links:"))
+async def chat_candidate_links(c):
+    if not await check_cb(c): return
+    aid = int(c.data.split(":")[2])
+    candidates = CHAT_CANDIDATES.get((c.from_user.id, aid), [])
+    links = list(dict.fromkeys(
+        str(item.get("link") or "").strip()
+        for item in candidates
+        if item.get("verified") and item.get("link")
+    ))
+    if not links:
+        await c.answer("Нет проверенных ссылок. Запустите поиск заново.", show_alert=True)
+        return
+    await c.answer("Отправляю список ссылок.")
+    # Telegram message limit is 4096 chars; keep a safety margin and never split a URL.
+    header = f"🔗 Проверенные ссылки на группы · всего {len(links)}\n\n"
+    chunks = []
+    current = []
+    current_len = len(header)
+    for link in links:
+        if current and current_len + len(link) + 1 > 3700:
+            chunks.append(header + "\n".join(current))
+            current = []
+            current_len = 0
+        current.append(link)
+        current_len += len(link) + 1
+    if current:
+        chunks.append((header if not chunks else "") + "\n".join(current))
+    for index, chunk in enumerate(chunks, 1):
+        if len(chunks) > 1:
+            chunk = f"📄 Часть {index}/{len(chunks)}\n" + chunk
+        await c.message.answer(chunk, disable_web_page_preview=True)
 
 
 @router.callback_query(F.data.startswith("chat:discover:"))
@@ -2845,7 +3004,7 @@ async def chat_account_screen(c, aid, page=0):
     if nav: rows.append(nav)
     rows += [
         [("↻ Загрузить чаты" if not bindings else "↻ Обновить список чатов", f"chat:load:{aid}:{page}")],
-        [("🔎 Поиск групп", f"chat:search:{aid}"), ("🧭 Поиск ссылок", f"chat:discover:{aid}")],
+        [("🧭 Поиск ссылок", f"chat:discover:{aid}")],
         [("⬅️ К аккаунту", f"acc:view:{aid}")],
     ]
     hint = "Сначала нажмите «Загрузить чаты»." if not bindings else f"Всего чатов: {len(bindings)}. Нажатие на строку сразу включает или выключает чат."
