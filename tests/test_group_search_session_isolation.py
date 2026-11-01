@@ -20,7 +20,7 @@ async def test_group_candidate_verification_uses_isolated_session(monkeypatch):
     @asynccontextmanager
     async def fake_isolated_client(received_aid):
         calls["account_id"] = received_aid
-        yield client
+        yield SimpleNamespace(id=received_aid), client
 
     async def fake_verify(received_client, received_candidates, concurrency):
         calls["client"] = received_client
@@ -50,8 +50,8 @@ async def test_group_candidate_verification_rejects_unauthorized_snapshot(monkey
     client = SimpleNamespace(is_user_authorized=_unauthorized)
 
     @asynccontextmanager
-    async def fake_isolated_client(_aid):
-        yield client
+    async def fake_isolated_client(aid):
+        yield SimpleNamespace(id=aid), client
 
     async def unexpected_verify(*_args, **_kwargs):
         pytest.fail("Verification must not run for an unauthorized session")
