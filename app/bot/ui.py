@@ -9,7 +9,8 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, BufferedInputFile, ErrorEvent
 from sqlalchemy import select
 from telethon import TelegramClient, utils
-from telethon.errors import SessionPasswordNeededError
+from telethon.errors import FloodWaitError, SessionPasswordNeededError
+from app.telegram_gateway.joining import run_join_with_floodwait
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.functions.messages import CheckChatInviteRequest, ImportChatInviteRequest
 from telethon.tl.types import ChatInviteAlready
@@ -56,6 +57,25 @@ CHAT_CANDIDATES: dict[tuple[int, int], list[dict]] = {}
 CHANNEL_CANDIDATES: dict[tuple[int, int], list[dict]] = {}
 CHANNEL_PENDING_JOIN: dict[tuple[int, int], dict] = {}
 CHAT_PENDING_JOIN: dict[tuple[int, int], dict] = {}
+ACCOUNT_JOIN_LOCKS: dict[int, asyncio.Lock] = {}
+
+
+async def get_join_floodwait_mode() -> str:
+    async with SessionFactory() as db:
+        setting = await db.get(AppSetting, "join_floodwait_mode")
+    return setting.value if setting and setting.value in {"wait", "stop"} else "wait"
+
+
+async def perform_join_request(aid: int, client, request, on_wait):
+    """Serialize joins per account and apply the configured Telegram FloodWait policy."""
+    lock = ACCOUNT_JOIN_LOCKS.setdefault(aid, asyncio.Lock())
+    async with lock:
+        client.flood_sleep_threshold = 0
+        mode = await get_join_floodwait_mode()
+        return await run_join_with_floodwait(
+            lambda: client(request), mode=mode, on_wait=on_wait
+        )
+
 
 
 @asynccontextmanager
@@ -778,9 +798,50 @@ async def settings_cb(c: CallbackQuery):
     )
     await edit(c, text, kb([
         [("🎚 Вероятность ответов", "runtime:menu")],
+        [("⏳ Поведение при FloodWait", "joinpolicy:menu")],
         [("🧾 Логи", "logs:menu")],
         [("⬅️ Главное меню", "nav:home")],
     ]))
+
+
+@router.callback_query(F.data == "joinpolicy:menu")
+async def join_floodwait_settings(c: CallbackQuery):
+    if not await check_cb(c):
+        return
+    mode = await get_join_floodwait_mode()
+    current = "Ждать и продолжать" if mode == "wait" else "Остановить вступление"
+    await edit(c,
+        "⏳ Поведение при ограничении Telegram\n\n"
+        f"Сейчас: {current}\n\n"
+        "Если Telegram временно ограничит вступление (FloodWait):\n"
+        "• «Ждать и продолжать» — бот дождётся указанного Telegram времени и повторит текущее вступление. Если ограничение повторится, снова подождёт.\n"
+        "• «Остановить вступление» — бот сразу прекратит текущую попытку и покажет длительность ограничения.\n\n"
+        "Настройка общая для вступления в группы и каналы. Каждое вступление по-прежнему требует отдельного подтверждения.",
+        kb([
+            [("⏳ Ждать и продолжать" + (" ✓" if mode == "wait" else ""), "joinpolicy:set:wait")],
+            [("⛔ Остановить вступление" + (" ✓" if mode == "stop" else ""), "joinpolicy:set:stop")],
+            [("⬅️ Настройки", "nav:settings")],
+        ]),
+    )
+
+
+@router.callback_query(F.data.startswith("joinpolicy:set:"))
+async def join_floodwait_settings_save(c: CallbackQuery):
+    if not await check_cb(c):
+        return
+    mode = c.data.rsplit(":", 1)[-1]
+    if mode not in {"wait", "stop"}:
+        await c.answer("Неизвестный режим.", show_alert=True)
+        return
+    async with SessionFactory() as db:
+        setting = await db.get(AppSetting, "join_floodwait_mode")
+        if setting:
+            setting.value = mode
+        else:
+            db.add(AppSetting(key="join_floodwait_mode", value=mode))
+        await db.commit()
+    await c.answer("Настройка сохранена.")
+    await join_floodwait_settings(c)
 
 LOG_CATEGORIES = {
     "main": "📌 Основные логи",
@@ -2996,9 +3057,21 @@ async def chat_join_confirm(c):
                 entity = await client.get_entity(pending["entity_id"])
             elif pending["kind"] == "public":
                 entity = await client.get_entity(pending["target"])
-                await client(JoinChannelRequest(entity))
+                async def report_floodwait(seconds):
+                    await edit(c,
+                        f"⏳ Telegram временно ограничил вступления. Жду {seconds} сек., затем повторю вступление в группу «{pending['title']}»…",
+                        kb([[("⬅️ К аккаунту", f"acc:view:{aid}")]]),
+                    )
+                await perform_join_request(aid, client, JoinChannelRequest(entity), report_floodwait)
             else:
-                joined = await client(ImportChatInviteRequest(hash=pending["target"]))
+                async def report_floodwait(seconds):
+                    await edit(c,
+                        f"⏳ Telegram временно ограничил вступления. Жду {seconds} сек., затем повторю вступление в группу «{pending['title']}»…",
+                        kb([[("⬅️ К аккаунту", f"acc:view:{aid}")]]),
+                    )
+                joined = await perform_join_request(
+                    aid, client, ImportChatInviteRequest(hash=pending["target"]), report_floodwait
+                )
                 entity = next((x for x in joined.chats if _group_entity(x)), None)
                 if entity is None:
                     raise RuntimeError("Telegram не вернул вступившую группу.")
@@ -3010,6 +3083,9 @@ async def chat_join_confirm(c):
             title = (getattr(entity, "title", None) or pending["title"] or "Группа")[:255]
     except Exception as exc:
         # Approval-only invite links are not equivalent to membership; explain that no binding was created.
+        if isinstance(exc, FloodWaitError):
+            await edit(c, f"⛔ Telegram ограничил вступления. Повторная попытка остановлена. Подождите {int(exc.seconds)} сек. и попробуйте снова.", kb([[('🔗 Другая ссылка', f'chat:joinlink:{aid}')], [('⬅️ К аккаунту', f'acc:view:{aid}')]]))
+            return
         if "InviteRequestSentError" in type(exc).__name__:
             await edit(c, "Запрос на вступление отправлен администраторам группы. Аккаунт пока не добавлен в активные чаты — повторите после одобрения.", kb([[("🔗 Проверить другую ссылку", f"chat:joinlink:{aid}")], [("⬅️ К аккаунту", f"acc:view:{aid}")]]))
             return
@@ -4377,9 +4453,21 @@ async def channel_join_confirm(c: CallbackQuery):
                 entity = await client.get_entity(pending["target"])
                 if not _channel_entity(entity):
                     raise ValueError("Ссылка больше не ведёт на канал.")
-                await client(JoinChannelRequest(entity))
+                async def report_floodwait(seconds):
+                    await edit(c,
+                        f"⏳ Telegram временно ограничил вступления. Жду {seconds} сек., затем повторю подписку на канал «{pending['title']}»…",
+                        kb([[("⬅️ К результатам", f"channel:results:{aid}")]]),
+                    )
+                await perform_join_request(aid, client, JoinChannelRequest(entity), report_floodwait)
             else:
-                joined = await client(ImportChatInviteRequest(hash=pending["target"]))
+                async def report_floodwait(seconds):
+                    await edit(c,
+                        f"⏳ Telegram временно ограничил вступления. Жду {seconds} сек., затем повторю подписку на канал «{pending['title']}»…",
+                        kb([[("⬅️ К результатам", f"channel:results:{aid}")]]),
+                    )
+                joined = await perform_join_request(
+                    aid, client, ImportChatInviteRequest(hash=pending["target"]), report_floodwait
+                )
                 entity = next((chat for chat in joined.chats if _channel_entity(chat)), None)
                 if entity is None:
                     raise RuntimeError("Telegram не вернул вступивший канал.")
@@ -4390,6 +4478,9 @@ async def channel_join_confirm(c: CallbackQuery):
             channel_id = int(utils.get_peer_id(entity))
             title = (getattr(entity, "title", None) or pending["title"] or "Канал")[:255]
     except Exception as exc:
+        if isinstance(exc, FloodWaitError):
+            await edit(c, f"⛔ Telegram ограничил вступления. Повторная попытка остановлена. Подождите {int(exc.seconds)} сек. и попробуйте снова.", kb([[('📣 Другой канал', f'tool:channels:account:{aid}')], [('⬅️ К результатам', f'channel:results:{aid}')]]))
+            return
         if "InviteRequestSentError" in type(exc).__name__:
             await edit(c, "Запрос на подписку отправлен администраторам канала. Канал появится в списке после одобрения.", kb([
                 [("📣 Проверить другой канал", f"tool:channels:account:{aid}")],
