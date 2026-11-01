@@ -7,6 +7,7 @@ from app.settings import get_settings
 from app.storage.db import SessionFactory, init_db
 from app.storage.models import Account, ChatBinding
 from app.telegram_gateway.proxy import telethon_proxy
+from app.telegram_gateway.session import configure_telethon_sqlite_session
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Enable or disable monitoring for an existing Telegram dialog.")
@@ -21,6 +22,7 @@ async def main() -> None:
         if not account or not account.enabled:
             raise SystemExit("Аккаунт не найден или выключен.")
     client = TelegramClient(account.session_path, cfg.telegram_api_id, cfg.telegram_api_hash, proxy=telethon_proxy(account.proxy_config_encrypted))
+    configure_telethon_sqlite_session(client)
     await client.connect()
     try:
         if not await client.is_user_authorized():
