@@ -474,7 +474,7 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         "schedreaction": "Формат: @username | ID_публикации | emoji | now либо YYYY-MM-DD HH:MM UTC. Пример: @mychannel | 123 | 🔥 | 2026-11-03 18:00. Это одна реакция на одну выбранную публикацию, без накрутки.",
 
         "editprofile": "Отправьте новые поля через |\nФормат: имя | фамилия | BIO | username\nЧтобы оставить поле без изменений, укажите -",
-        "consent": "Добавить только пользователя, который явно согласился получать сообщения. Формат: @username | broadcast или invite | источник согласия.",
+        "consent": "Добавить только пользователя с явным согласием. Формат: @username | broadcast, invite или direct_invite | источник согласия. Для direct_invite человек должен сам попросить добавить его в конкретную группу.",
         "consentgroup": "Укажите @username, ссылку или Telegram peer ID группы, где аккаунт является администратором, затем через | источник разрешения. Пример: @mygroup | собственная группа, публикации разрешены администратором.",
         "revokegroup": "Отправьте @username, ссылку или Telegram peer ID группы, для которой нужно отозвать разрешение на публикации.",
 
@@ -946,8 +946,8 @@ async def management_input_received(m: Message, state: FSMContext):
             if len(parts) != 3 or not parts[2]:
                 raise ValueError("Формат: @username | broadcast/invite | источник согласия.")
             scope = parts[1].lower()
-            if scope not in {"broadcast", "invite"}:
-                raise ValueError("Тип согласия: broadcast или invite.")
+            if scope not in {"broadcast", "invite", "direct_invite"}:
+                raise ValueError("Тип согласия: broadcast, invite или direct_invite.")
             peer = await telegram_management.resolve_peer_for_consent(aid, parts[0])
             await telegram_automation.grant_consent(
                 aid, peer["peer_id"], peer_ref=peer["peer_ref"],
