@@ -549,6 +549,16 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         except Exception as exc:
             await edit(c, f"Не удалось получить контакты: {type(exc).__name__}: {str(exc)[:250]}", back_home())
         return
+    if action == "global-limits":
+        await state.clear()
+        await state.update_data(
+            management_action="global-limits", management_account_id=0,
+            ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id,
+            return_callback="tool:management",
+        )
+        await state.set_state(Flow.management_input)
+        await edit(c, prompts[action], CANCEL)
+        return
     if action == "photo":
         await state.clear()
         await state.update_data(
@@ -815,8 +825,10 @@ async def management_input_received(m: Message, state: FSMContext):
             message = "Профиль обновлён."
         else:
             raise ValueError("Неизвестное действие.")
+        back_callback = "tool:management" if action == "global-limits" else f"tool:management:account:{aid}"
+        back_label = "↩️ К управлению аккаунтами" if action == "global-limits" else "↩️ К инструментам аккаунта"
         await finish_prompt(m, state, message, kb([
-            [("↩️ К инструментам аккаунта", f"tool:management:account:{aid}")],
+            [(back_label, back_callback)],
             [("🏠 Главное меню", "nav:home")],
         ]))
     except telegram_management.FloodWaitError as exc:
