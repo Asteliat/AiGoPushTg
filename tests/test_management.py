@@ -148,3 +148,27 @@ async def test_batch_subscription_stops_on_floodwait(monkeypatch):
     result = await management.manage_subscriptions_batch(1, ["first", "second", "third"], action="join")
     assert result["flood_wait_seconds"] == 17
     assert result["processed"] == 1
+
+
+
+@pytest.mark.asyncio
+async def test_parse_chat_participants_requires_group_admin(monkeypatch):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from app.telegram_gateway import management
+
+    class FakeClient:
+        async def get_entity(self, _target):
+            return SimpleNamespace(id=42, title="Private group", megagroup=True, broadcast=False)
+
+        async def get_permissions(self, _entity, _user):
+            return SimpleNamespace(is_admin=False, is_creator=False)
+
+    @asynccontextmanager
+    async def fake_client(_account_id):
+        yield SimpleNamespace(id=1), FakeClient()
+
+    monkeypatch.setattr(management, "isolated_account_client", fake_client)
+    with pytest.raises(PermissionError, match="администраторам"):
+        await management.parse_chat_participants(1, "@privategroup")

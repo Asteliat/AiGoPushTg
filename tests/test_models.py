@@ -99,3 +99,20 @@ def test_channel_comment_policy_uses_existing_global_values_and_channel_override
     channel.min_comments_override = 1
     channel.insufficient_action_override = "off_skip"
     assert resolve_channel_comment_policy(account, channel) == (False, "skip", 1, 60)
+
+
+
+def test_account_tool_queue_models_are_persistent():
+    from app.storage.models import (
+        AutomationOperationEvent,
+        AutomationSchedule,
+        AutomationTask,
+        AutomationTaskRecipient,
+        ScheduledReaction,
+    )
+
+    assert {"account_id", "kind", "payload", "status", "scheduled_at"} <= set(AutomationTask.__table__.columns.keys())
+    assert {"task_id", "peer_id", "status", "attempts"} <= set(AutomationTaskRecipient.__table__.columns.keys())
+    assert {"account_id", "kind", "recipients_json", "interval_seconds", "next_run_at", "max_runs"} <= set(AutomationSchedule.__table__.columns.keys())
+    assert {"account_id", "chat_ref", "message_id", "emoji", "run_at", "status"} <= set(ScheduledReaction.__table__.columns.keys())
+    assert {"account_id", "operation", "occurred_at"} <= set(AutomationOperationEvent.__table__.columns.keys())
