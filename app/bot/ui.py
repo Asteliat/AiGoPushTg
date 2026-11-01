@@ -863,15 +863,17 @@ async def management_campaign_content_received(m: Message, state: FSMContext):
     data = await state.get_data()
     kind = data.get("campaign_kind")
     payload = {"text": "", "file_path": "", "caption": ""}
-    if m.document:
-        if int(m.document.file_size or 0) > 20 * 1024 * 1024:
+    attachment = m.document or (m.photo[-1] if m.photo else None) or m.video or m.audio
+    if attachment:
+        if int(getattr(attachment, "file_size", 0) or 0) > 20 * 1024 * 1024:
             await prompt_message(m, state, "Файл больше 20 МБ. Отправьте файл меньшего размера.")
             return
         upload_dir = os.path.join(str(cfg.data_dir), "automation_uploads")
         os.makedirs(upload_dir, mode=0o700, exist_ok=True)
-        filename = secrets.token_hex(16) + "_" + re.sub(r"[^a-zA-Z0-9._-]", "_", m.document.file_name or "file.bin")[:80]
+        original_name = getattr(attachment, "file_name", None) or ("photo.jpg" if m.photo else "file.bin")
+        filename = secrets.token_hex(16) + "_" + re.sub(r"[^a-zA-Z0-9._-]", "_", original_name)[:80]
         path = os.path.join(upload_dir, filename)
-        await m.bot.download(m.document, destination=path)
+        await m.bot.download(attachment, destination=path)
         payload["file_path"] = path
         payload["caption"] = (m.caption or "")[:4096]
     else:
