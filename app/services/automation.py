@@ -976,6 +976,23 @@ async def dispatch_due_schedules(*, max_schedules: int = 10) -> int:
              .with_for_update(skip_locked=True).limit(1))
             if not row:
                 break
+            if row.last_task_id:
+                previous_task = await db.get(AutomationTask, row.last_task_id)
+                if previous_task and previous_task.status in {"failed", "needs_review"}:
+                    row.status = "paused"
+                    row.last_error = (
+                        f"Расписание приостановлено: предыдущая задача #{previous_task.id} "
+                        f"имеет статус {previous_task.status}; сначала разберите её."
+                    )
+                    row.updated_at = now
+                    await db.commit()
+                    continue
+                if previous_task and previous_task.status in {"queued", "running", "paused"}:
+                    row.next_run_at = now + timedelta(seconds=60)
+                    row.last_error = f"Ожидание завершения предыдущей задачи #{previous_task.id}."
+                    row.updated_at = now
+                    await db.commit()
+                    continue
             try:
                 ids = list(dict.fromkeys(int(x) for x in json.loads(row.recipients_json)))
                 scope = "invite" if row.kind == "invite" else ("group_publish" if row.kind == "group_broadcast" else "broadcast")
