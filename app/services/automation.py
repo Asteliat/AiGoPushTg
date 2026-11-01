@@ -191,7 +191,7 @@ async def campaign_status(task_id: int) -> dict:
             .group_by(AutomationTaskRecipient.status)
         )).all())
         return {
-            "id": task.id, "kind": task.kind, "status": task.status,
+            "id": task.id, "account_id": task.account_id, "kind": task.kind, "status": task.status,
             "scheduled_at": _aware(task.scheduled_at).isoformat(),
             "last_error": task.last_error, "recipients": counts,
         }
