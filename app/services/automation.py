@@ -40,6 +40,19 @@ def _aware(value: datetime) -> datetime:
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
 
+def _has_invite_permission(permissions) -> bool:
+    """Check Telegram's invite_users right, not merely the admin role."""
+    if getattr(permissions, "is_creator", False):
+        return True
+    if not getattr(permissions, "is_admin", False):
+        return False
+    invite_users = getattr(permissions, "invite_users", None)
+    if invite_users is not None:
+        return bool(invite_users)
+    admin_rights = getattr(permissions, "admin_rights", None)
+    return bool(getattr(admin_rights, "invite_users", False)) if admin_rights is not None else False
+
+
 async def _resolve_campaign_peer(client, peer_id: int, peer_ref: str = ""):
     """Resolve by stored username but verify it still belongs to the consented peer ID.
 
@@ -231,6 +244,8 @@ async def list_consents(account_id: int, *, scope: str | None = None) -> list[di
 async def create_campaign(
     account_id: int, *, kind: str, recipients: list[int],
     payload: dict, scheduled_at: datetime | None = None,
+    recipient_refs: dict[int, str] | None = None,
+    recipient_labels: dict[int, str] | None = None,
 ) -> int:
     normalized = _validate_payload(kind, payload)
     unique_ids = list(dict.fromkeys(int(peer_id) for peer_id in recipients))
@@ -245,12 +260,18 @@ async def create_campaign(
         if not account or not account.enabled:
             raise ValueError("Аккаунт не найден или отключён.")
         if kind == "direct_invite":
-            consents = list((await db.scalars(select(AutomationInviteConsent).where(
-                AutomationInviteConsent.account_id == account_id,
-                AutomationInviteConsent.peer_id.in_(unique_ids),
-                AutomationInviteConsent.target_group_id == int(normalized["target_group_id"]),
-                AutomationInviteConsent.revoked_at.is_(None),
-            ))).all())
+            refs, labels = recipient_refs or {}, recipient_labels or {}
+            missing_refs = [peer_id for peer_id in unique_ids if not str(refs.get(peer_id) or "").strip()]
+            if missing_refs:
+                raise ValueError(
+                    f"Для {len(missing_refs)} получателей не сохранён username. "
+                    "Повторно выберите пользователей по @username."
+                )
+            by_id = {
+                peer_id: {"peer_ref": str(refs[peer_id]).strip(),
+                          "peer_label": str(labels.get(peer_id) or refs[peer_id]).strip()}
+                for peer_id in unique_ids
+            }
         else:
             consents = list((await db.scalars(select(AutomationConsent).where(
                 AutomationConsent.account_id == account_id,
@@ -258,13 +279,13 @@ async def create_campaign(
                 AutomationConsent.scope == scope,
                 AutomationConsent.revoked_at.is_(None),
             ))).all())
-        by_id = {int(item.peer_id): item for item in consents}
-        missing = [peer_id for peer_id in unique_ids if peer_id not in by_id]
-        if missing:
-            raise ValueError(
-                f"Нет действующего согласия для {len(missing)} получателей. "
-                "Без подтверждённого opt-in рассылка не создаётся."
-            )
+            by_id = {int(item.peer_id): item for item in consents}
+            missing = [peer_id for peer_id in unique_ids if peer_id not in by_id]
+            if missing:
+                raise ValueError(
+                    f"Нет действующего согласия для {len(missing)} получателей. "
+                    "Без подтверждённого opt-in рассылка не создаётся."
+                )
         task = AutomationTask(
             account_id=account_id, kind=kind,
             payload=json.dumps(normalized, ensure_ascii=False),
@@ -273,9 +294,11 @@ async def create_campaign(
         db.add(task)
         await db.flush()
         for peer_id in unique_ids:
-            consent = by_id[peer_id]
+            recipient = by_id[peer_id]
             db.add(AutomationTaskRecipient(
-                task_id=task.id, peer_id=peer_id, peer_ref=consent.peer_ref, peer_label=consent.peer_label,
+                task_id=task.id, peer_id=peer_id,
+                peer_ref=recipient.peer_ref if kind != "direct_invite" else recipient["peer_ref"],
+                peer_label=recipient.peer_label if kind != "direct_invite" else recipient["peer_label"],
             ))
         await db.commit()
         return int(task.id)
@@ -679,27 +702,21 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                             recipient.status = "pending"
                             await db.commit()
                             break
-                        # Consent is checked again immediately before each send.
-                        scope = "invite" if kind == "invite" else ("group_publish" if kind == "group_broadcast" else "broadcast")
-                        if kind == "direct_invite":
-                            consent = await db.scalar(select(AutomationInviteConsent).where(
-                                AutomationInviteConsent.account_id == account_id,
-                                AutomationInviteConsent.peer_id == recipient.peer_id,
-                                AutomationInviteConsent.target_group_id == int(payload["target_group_id"]),
-                                AutomationInviteConsent.revoked_at.is_(None),
-                            ))
-                        else:
+                        # Opt-in remains mandatory for private messages and invite links.
+                        # Direct group invitations are checked by Telegram privacy and invite permissions.
+                        if kind != "direct_invite":
+                            scope = "invite" if kind == "invite" else ("group_publish" if kind == "group_broadcast" else "broadcast")
                             consent = await db.scalar(select(AutomationConsent).where(
                                 AutomationConsent.account_id == account_id,
                                 AutomationConsent.peer_id == recipient.peer_id,
                                 AutomationConsent.scope == scope,
                                 AutomationConsent.revoked_at.is_(None),
                             ))
-                        if not consent:
-                            recipient.status = "skipped"
-                            recipient.last_error = "Consent revoked before delivery."
-                            await db.commit()
-                            continue
+                            if not consent:
+                                recipient.status = "skipped"
+                                recipient.last_error = "Consent revoked before delivery."
+                                await db.commit()
+                                continue
                         sent_query = select(func.count()).select_from(
                             AutomationTaskRecipient
                         ).join(AutomationTask).where(
@@ -739,8 +756,10 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                             if not getattr(target_group, "megagroup", False):
                                 raise ValueError("Прямое приглашение поддерживается только в супергруппы.")
                             permissions = await client.get_permissions(target_group, "me")
-                            if not (getattr(permissions, "is_admin", False) or getattr(permissions, "is_creator", False)):
-                                raise PermissionError("Аккаунт больше не является администратором целевой группы.")
+                            if not _has_invite_permission(permissions):
+                                raise PermissionError(
+                                    "У аккаунта нет права приглашать участников (invite_users) в целевую группу."
+                                )
                             user = await _resolve_campaign_peer(client, peer_id, peer_ref)
                             try:
                                 await client(InviteToChannelRequest(channel=target_group, users=[user]))

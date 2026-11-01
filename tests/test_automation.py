@@ -91,17 +91,23 @@ def test_direct_invite_requires_a_target_group():
 
 
 
-@pytest.mark.asyncio
-async def test_direct_invite_consent_requires_supergroup():
-    from app.services.automation import grant_direct_invite_consent
+def test_direct_invite_permission_requires_invite_users_right():
+    from types import SimpleNamespace
+    from app.services.automation import _has_invite_permission
 
-    with pytest.raises(ValueError, match="супергруппу"):
-        await grant_direct_invite_consent(
-            1,
-            peer={"peer_id": 42, "peer_label": "User"},
-            group={"peer_id": -10042, "is_megagroup": False},
-            consent_source="user asked",
-        )
+    assert _has_invite_permission(SimpleNamespace(is_creator=True, is_admin=True))
+    assert _has_invite_permission(SimpleNamespace(is_admin=True, invite_users=True))
+    assert not _has_invite_permission(SimpleNamespace(is_admin=True, invite_users=False))
+    assert not _has_invite_permission(SimpleNamespace(is_admin=False, invite_users=True))
+    assert not _has_invite_permission(SimpleNamespace(is_admin=True))
+
+
+def test_direct_invite_permission_checks_admin_rights_object():
+    from types import SimpleNamespace
+    from app.services.automation import _has_invite_permission
+
+    assert _has_invite_permission(SimpleNamespace(is_admin=True, admin_rights=SimpleNamespace(invite_users=True)))
+    assert not _has_invite_permission(SimpleNamespace(is_admin=True, admin_rights=SimpleNamespace(invite_users=False)))
 
 
 

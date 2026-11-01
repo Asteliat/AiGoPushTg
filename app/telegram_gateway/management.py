@@ -643,6 +643,23 @@ async def resolve_group_for_consent(account_id: int, group_ref: str) -> dict:
             }
 
 
+async def resolve_group_for_direct_invite(account_id: int, group_ref: str) -> dict:
+    """Resolve a supergroup and verify Telegram's invite_users permission."""
+    group = await resolve_group_for_consent(account_id, group_ref)
+    if not group.get("is_megagroup"):
+        raise ValueError("Прямое добавление доступно только в супергруппы.")
+    from app.services.automation import _has_invite_permission
+    async with _account_lock(account_id):
+        async with isolated_account_client(account_id) as (_account, client):
+            target = await client.get_entity(group["peer_id"])
+            permissions = await client.get_permissions(target, "me")
+            if not _has_invite_permission(permissions):
+                raise PermissionError(
+                    "У аккаунта нет права приглашать участников (invite_users) в этой группе."
+                )
+    return group
+
+
 async def resolve_groups_for_consent(account_id: int, group_refs: list[str]) -> list[dict]:
     """Resolve up to 100 operator-selected groups and verify admin rights in one session."""
     values = []
