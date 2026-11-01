@@ -59,3 +59,31 @@ def test_real_telethon_client_session_is_configured(tmp_path):
         assert client.session._conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
     finally:
         client.session.close()
+
+
+
+def test_copy_sqlite_session_creates_consistent_snapshot(tmp_path):
+    from app.telegram_gateway.management import _copy_sqlite_session
+
+    source = tmp_path / "live-account.session"
+    snapshot = tmp_path / "isolated-account.session"
+    writer = sqlite3.connect(source)
+    try:
+        writer.execute("PRAGMA journal_mode = WAL")
+        writer.execute("CREATE TABLE entities (id INTEGER PRIMARY KEY, username TEXT)")
+        writer.execute("INSERT INTO entities(username) VALUES ('original-user')")
+        writer.commit()
+
+        _copy_sqlite_session(str(source), str(snapshot))
+
+        copied = sqlite3.connect(snapshot)
+        try:
+            assert copied.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+            assert copied.execute("SELECT username FROM entities").fetchall() == [("original-user",)]
+        finally:
+            copied.close()
+
+        # Snapshot operations must never mutate the worker-owned source database.
+        assert writer.execute("SELECT COUNT(*) FROM entities").fetchone()[0] == 1
+    finally:
+        writer.close()
