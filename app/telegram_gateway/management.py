@@ -615,7 +615,8 @@ async def resolve_group_for_consent(account_id: int, group_ref: str) -> dict:
     value = value.lstrip("@")
     async with _account_lock(account_id):
         async with isolated_account_client(account_id) as (_account, client):
-            entity = await client.get_entity(value)
+            target = int(value) if value.lstrip("-").isdigit() else value
+            entity = await client.get_entity(target)
             is_group = bool(
                 getattr(entity, "megagroup", False)
                 or getattr(entity, "gigagroup", False)
@@ -629,7 +630,7 @@ async def resolve_group_for_consent(account_id: int, group_ref: str) -> dict:
             username = getattr(entity, "username", None)
             return {
                 "peer_id": int(utils.get_peer_id(entity)),
-                "peer_ref": f"@{username}" if username else str(int(utils.get_peer_id(entity))),
+                "peer_ref": f"@{username}" if username else "",
                 "peer_label": str(getattr(entity, "title", None) or username or entity.id),
             }
 
@@ -651,7 +652,8 @@ async def resolve_groups_for_consent(account_id: int, group_refs: list[str]) -> 
         async with isolated_account_client(account_id) as (_account, client):
             result = []
             for value in values:
-                entity = await client.get_entity(value)
+                target = int(value) if value.lstrip("-").isdigit() else value
+                entity = await client.get_entity(target)
                 is_group = bool(
                     getattr(entity, "megagroup", False)
                     or getattr(entity, "gigagroup", False)
@@ -666,7 +668,7 @@ async def resolve_groups_for_consent(account_id: int, group_refs: list[str]) -> 
                 username = getattr(entity, "username", None)
                 result.append({
                     "peer_id": peer_id,
-                    "peer_ref": f"@{username}" if username else str(peer_id),
+                    "peer_ref": f"@{username}" if username else "",
                     "peer_label": str(getattr(entity, "title", None) or username or entity.id),
                 })
             return result
@@ -682,7 +684,8 @@ async def resolve_group_reference(account_id: int, group_ref: str) -> dict:
         raise ValueError("Укажите группу.")
     async with _account_lock(account_id):
         async with isolated_account_client(account_id) as (_account, client):
-            entity = await client.get_entity(value)
+            target = int(value) if value.lstrip("-").isdigit() else value
+            entity = await client.get_entity(target)
             is_group = bool(
                 getattr(entity, "megagroup", False)
                 or getattr(entity, "gigagroup", False)
@@ -692,7 +695,7 @@ async def resolve_group_reference(account_id: int, group_ref: str) -> dict:
                 raise ValueError("Это не группа.")
             peer_id = int(utils.get_peer_id(entity))
             username = getattr(entity, "username", None)
-            return {"peer_id": peer_id, "peer_ref": f"@{username}" if username else str(peer_id),
+            return {"peer_id": peer_id, "peer_ref": f"@{username}" if username else "",
                     "peer_label": str(getattr(entity, "title", None) or username or entity.id)}
 
 
