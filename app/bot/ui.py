@@ -296,7 +296,6 @@ async def tools_menu(c: CallbackQuery):
         [("🔎 Поиск групп", "tool:groups")],
         [("📣 Поиск каналов", "tool:channels")],
         [("🛠 Управление аккаунтами", "tool:management")],
-        [("🧪 Тест активности (симуляция)", "tool:simulation")],
         [("🎯 Глобальные триггеры", "trigger:global")],
         [("⬅️ Главное меню", "nav:home")],
     ]))
@@ -876,26 +875,6 @@ async def management_campaigns_render(c: CallbackQuery, aid: int):
     await edit(c, "📋 Очередь и история задач\n\nВыберите задачу.", kb(rows))
 
 
-@router.callback_query(F.data == "tool:simulation")
-async def management_simulation_start(c: CallbackQuery, state: FSMContext):
-    if not await check_cb(c): return
-    await state.clear()
-    await state.update_data(
-        management_action="simulation", management_account_id=0,
-        ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id,
-        return_callback="tool:menu",
-    )
-    await state.set_state(Flow.management_input)
-    await edit(c,
-        "🧪 Локальная симуляция активности\n\n"
-        "Отправьте: ID_тестового_поста | просмотры | реакции\n"
-        "Пример: demo-post-1 | 1200 | 35\n\n"
-        "Это синтетические значения только для проверки интерфейса и статистики. "
-        "Telegram API не вызывается, реальные публикации и счётчики не меняются.",
-        CANCEL,
-    )
-
-
 @router.message(Flow.management_input)
 async def management_input_received(m: Message, state: FSMContext):
     if not await check_msg(m) or not await private(m): return
@@ -905,21 +884,6 @@ async def management_input_received(m: Message, state: FSMContext):
     raw = (m.text or "").strip()
     await delete_msg(m)
     try:
-        if action == "simulation":
-            parts = [x.strip() for x in raw.split("|")]
-            if len(parts) != 3: raise ValueError("Нужно три поля через |.")
-            result = await telegram_management.simulate_post_activity(
-                post_key=parts[0], requested_views=int(parts[1]), requested_reactions=int(parts[2])
-            )
-            message = (
-                "🧪 Симуляция завершена\n\n"
-                f"Тестовый пост: {result['post_key']}\n"
-                f"Смоделировано просмотров: {result['simulated_views']}\n"
-                f"Смоделировано реакций: {result['simulated_reactions']}\n\n"
-                f"ℹ️ {result['notice']}"
-            )
-            await finish_prompt(m, state, message, kb([[("⬅️ Инструменты", "tool:menu")]]))
-            return
         if action in {"broadcastlimits", "invitelimits", "subscriptionlimits", "reactionlimits", "global-broadcast", "global-invite", "global-subscription", "global-reaction"}:
             parts = [x.strip() for x in raw.split("|")]
             if len(parts) != 4:
@@ -1135,9 +1099,21 @@ async def management_input_received(m: Message, state: FSMContext):
             writer.writerow(["telegram_peer_id", "entity_id", "type", "title", "username", "participants_count", "unread_count"])
             for item in items:
                 writer.writerow([item["peer_id"], item["id"], item["kind"], item["title"], item["username"], item["participants_count"] or "", item["unread_count"]])
+            txt_lines = [f"ГРУППЫ И КАНАЛЫ АККАУНТА #{aid}", f"Всего: {len(items)}", ""]
+            for index, item in enumerate(items, 1):
+                txt_lines.extend([
+                    f"{index}. {item['title']}",
+                    f"   Тип: {item['kind']}",
+                    f"   ID: {item['id']} · Peer ID: {item['peer_id']}",
+                    f"   Username: @{item['username']}" if item["username"] else "   Username: —",
+                    f"   Участников: {item['participants_count'] if item['participants_count'] is not None else 'нет данных'}",
+                    f"   Непрочитано: {item['unread_count']}",
+                    "",
+                ])
+            await m.answer_document(BufferedInputFile("\n".join(txt_lines).encode("utf-8"), filename=f"dialogs-account-{aid}.txt"), caption=f"Группы и каналы аккаунта #{aid}: {len(items)} записей.")
             document = BufferedInputFile(output.getvalue().encode("utf-8-sig"), filename=f"dialogs-account-{aid}.csv")
-            await m.answer_document(document, caption=f"Группы и каналы аккаунта #{aid}: {len(items)} записей.")
-            message = f"CSV сформирован. Найдено групп и каналов: {len(items)}."
+            await m.answer_document(document, caption="Дополнительно: таблица CSV.")
+            message = f"Сформированы TXT и CSV. Найдено групп и каналов: {len(items)}."
         elif action in {"joinbatch", "leavebatch"}:
             links = [line.strip() for line in raw.replace(",", "\n").splitlines() if line.strip()]
             result = await telegram_management.manage_subscriptions_batch(
@@ -1175,18 +1151,27 @@ async def management_input_received(m: Message, state: FSMContext):
                     post["id"], post["date"], post["views"], post["forwards"],
                     post["replies"], reactions, post["has_media"], post["text"],
                 ])
-            document = BufferedInputFile(
-                output.getvalue().encode("utf-8-sig"),
-                filename=f"history-account-{aid}-{result['channel_id']}.csv",
-            )
-            await m.answer_document(
-                document,
-                caption=f"История «{result['title']}»: выгружено {len(result['posts'])} публикаций. Только сообщения, доступные аккаунту.",
-            )
+            txt_lines = [
+                f"ИСТОРИЯ: {result['title']}",
+                f"Аккаунт: #{aid}", f"Chat ID: {result['channel_id']}",
+                f"Username: @{result['username']}" if result["username"] else "Username: —",
+                f"Экспортировано сообщений: {len(result['posts'])}", "",
+            ]
+            for post in result["posts"]:
+                reactions = ", ".join(f"{item['emoji']} × {item['count']}" for item in post["reactions"]) or "нет"
+                txt_lines.extend([
+                    f"Публикация #{post['id']}", f"Дата: {post['date'] or '—'}",
+                    f"Просмотры: {post['views']} · Пересылки: {post['forwards']} · Ответы: {post['replies']}",
+                    f"Реакции: {reactions}", f"Медиа: {'да' if post['has_media'] else 'нет'}",
+                    "Текст:", post["text"] or "[без текста]", "", "─" * 48, "",
+                ])
+            await m.answer_document(BufferedInputFile("\n".join(txt_lines).encode("utf-8"), filename=f"history-account-{aid}-{result['channel_id']}.txt"), caption=f"История «{result['title']}»: TXT, {len(result['posts'])} публикаций.")
+            document = BufferedInputFile(output.getvalue().encode("utf-8-sig"), filename=f"history-account-{aid}-{result['channel_id']}.csv")
+            await m.answer_document(document, caption="Дополнительно: таблица CSV.")
             message = (
                 f"🔍 {result['title']} · выгружено публикаций: {len(result['posts'])}\n"
                 f"Username: @{result['username'] or '—'} · ID: {result['channel_id']}\n"
-                "Полная таблица сообщений отправлена в CSV."
+                "Результаты отправлены в TXT и CSV."
             )
         elif action == "parseparticipants":
             parts = [x.strip() for x in raw.split("|")]
@@ -1202,20 +1187,24 @@ async def management_input_received(m: Message, state: FSMContext):
                     person["id"], person["username"], person["first_name"],
                     person["last_name"], person["is_bot"], person["is_deleted"],
                 ])
-            document = BufferedInputFile(
-                output.getvalue().encode("utf-8-sig"),
-                filename=f"participants-account-{aid}-{result['chat_id']}.csv",
-            )
-            await m.answer_document(
-                document,
-                caption=(
-                    f"Участники: {result['title']}\n"
-                    f"Получено от Telegram: {result['visible_count']} "
-                    f"(запрошено максимум {result['requested_limit']}).\n"
-                    "Выгружены только публичные поля, доступные этому аккаунту."
-                ),
-            )
-            message = f"CSV-файл сформирован. Доступно участников: {result['visible_count']}."
+            txt_lines = [
+                f"УЧАСТНИКИ ГРУППЫ: {result['title']}",
+                f"Аккаунт: #{aid}", f"Chat ID: {result['chat_id']}",
+                f"Username: @{result['username']}" if result["username"] else "Username: —",
+                f"Получено от Telegram: {result['visible_count']} из запрошенных {result['requested_limit']}", "",
+            ]
+            for index, person in enumerate(result["participants"], 1):
+                full_name = " ".join(filter(None, [person["first_name"], person["last_name"]])) or "Без имени"
+                txt_lines.append(
+                    f"{index}. {full_name} · ID: {person['id']} · "
+                    f"Username: @{person['username']}" if person["username"] else
+                    f"{index}. {full_name} · ID: {person['id']} · Username: —"
+                )
+                txt_lines.append(f"   Бот: {'да' if person['is_bot'] else 'нет'} · Удалён: {'да' if person['is_deleted'] else 'нет'}")
+            await m.answer_document(BufferedInputFile("\n".join(txt_lines).encode("utf-8"), filename=f"participants-account-{aid}-{result['chat_id']}.txt"), caption=f"Участники: {result['title']} · {result['visible_count']} записей в TXT.")
+            document = BufferedInputFile(output.getvalue().encode("utf-8-sig"), filename=f"participants-account-{aid}-{result['chat_id']}.csv")
+            await m.answer_document(document, caption="Дополнительно: таблица CSV. Выгружены только публичные поля, доступные аккаунту.")
+            message = f"Сформированы TXT и CSV. Доступно участников: {result['visible_count']}."
         elif action == "join":
             await telegram_management.join_chat(aid, raw); message = "Аккаунт вступил в чат."
         elif action == "leave":
