@@ -668,8 +668,8 @@ async def resolve_peers_for_consent(account_id: int, peer_refs: list[str]) -> li
         if not value or value.startswith("+") or value.startswith("joinchat"):
             raise ValueError(f"Некорректный username получателя: {raw}")
         values.append(value)
-    if not values or len(values) > 100:
-        raise ValueError("Укажите от 1 до 100 получателей за одну задачу.")
+    if not values or len(values) > 500:
+        raise ValueError("Укажите от 1 до 500 получателей за одну задачу.")
     async with _account_lock(account_id):
         async with isolated_account_client(account_id) as (_account, client):
             result = []

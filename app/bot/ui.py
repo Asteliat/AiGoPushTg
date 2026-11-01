@@ -602,10 +602,21 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         await edit(c, "Отправьте фотографию, которую нужно установить на профиль аккаунта. Поддерживается фото или изображение-документ до 10 МБ.", CANCEL)
         return
     if action in {"campaign", "schedule"}:
+        mode = "once" if action == "campaign" else "recurring"
         await state.clear()
-        await state.update_data(management_action="campaign_header" if action == "campaign" else "schedule_header", management_account_id=aid)
-        await state.set_state(Flow.management_input)
-        await edit(c, prompts[action], CANCEL)
+        await state.update_data(
+            campaign_mode=mode, management_account_id=aid,
+            ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id,
+            return_callback=f"tool:management:account:{aid}",
+        )
+        title = "Выберите тип задачи" if mode == "once" else "Выберите тип повторяющейся задачи"
+        await edit(c, title + "\n\nПолучатели должны иметь активное согласие. Публикации в группах доступны только если аккаунт — администратор.",
+            kb([
+                [("📨 Личное сообщение", f"tool:campaign:start:{aid}:broadcast:{mode}")],
+                [("🔗 Отправить приглашение", f"tool:campaign:start:{aid}:invite:{mode}")],
+                [("📣 Опубликовать в своей группе", f"tool:campaign:start:{aid}:group_broadcast:{mode}")],
+                [("↩️ Назад", f"tool:management:account:{aid}")],
+            ]))
         return
     if action not in prompts:
         await c.answer("Неизвестное действие.", show_alert=True); return
@@ -669,6 +680,42 @@ async def management_schedule_change(c: CallbackQuery):
         await management_schedule_status(c)
     except Exception as exc:
         await c.answer(str(exc)[:180], show_alert=True)
+
+
+
+
+@router.callback_query(F.data.startswith("tool:campaign:start:"))
+async def management_campaign_wizard_start(c: CallbackQuery, state: FSMContext):
+    if not await check_cb(c):
+        return
+    parts = c.data.split(":")
+    if len(parts) != 6:
+        await c.answer("Некорректный сценарий.", show_alert=True)
+        return
+    aid, kind, mode = int(parts[3]), parts[4], parts[5]
+    if kind not in {"broadcast", "invite", "group_broadcast"} or mode not in {"once", "recurring"}:
+        await c.answer("Неизвестный тип задачи.", show_alert=True)
+        return
+    async with SessionFactory() as db:
+        account = await db.get(Account, aid)
+        if not account or not account.enabled:
+            await c.answer("Аккаунт не найден или выключен.", show_alert=True)
+            return
+    await state.clear()
+    await state.update_data(
+        management_action="campaign_time", management_account_id=aid,
+        campaign_kind=kind, campaign_mode=mode,
+        campaign_schedule_interval_seconds=0, campaign_schedule_max_runs=0,
+        ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id,
+        return_callback=f"tool:management:account:{aid}",
+    )
+    await state.set_state(Flow.management_input)
+    await edit(c,
+        "Шаг 1 из 4 · Время запуска\n\n"
+        "Отправьте now для немедленного запуска или дату и время в UTC: YYYY-MM-DD HH:MM.\n"
+        "Пример: 2026-11-05 18:30.",
+        CANCEL,
+    )
 
 
 @router.callback_query(F.data.startswith("tool:campaign:status:"))
@@ -1187,7 +1234,7 @@ async def management_campaign_content_received(m: Message, state: FSMContext):
     await state.set_state(Flow.management_campaign_confirm)
     recipients = data.get("campaign_recipient_labels", [])
     preview = (
-        f"📨 Предпросмотр задачи\n\nТип: {kind}\nПолучателей: {len(recipients)}\n"
+        f"📨 Предпросмотр задачи\n\nТип: {kind}\nРежим: {'повторяющееся расписание' if data.get('campaign_mode') == 'recurring' else 'один запуск'}\nПолучателей: {len(recipients)}\n"
         f"Запуск (UTC): {data.get('campaign_scheduled_at')}\nПолучатели: {', '.join(recipients[:12])}"
         + (" и другие" if len(recipients) > 12 else "")
         + f"\n\nТекст: {(payload['text'] or payload['caption'] or 'Файл без подписи')[:700]}\n\n"
