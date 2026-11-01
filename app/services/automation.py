@@ -238,14 +238,36 @@ async def _account_limits(account_id: int) -> tuple[int, int]:
     async with SessionFactory() as db:
         rows = list((await db.scalars(select(AppSetting).where(
             AppSetting.key.in_([
+                "automation.default.interval_seconds",
+                "automation.default.daily_limit",
                 f"automation.{account_id}.interval_seconds",
                 f"automation.{account_id}.daily_limit",
             ])
         ))).all())
     values = {row.key: row.value for row in rows}
-    interval = max(1, min(3600, int(values.get(f"automation.{account_id}.interval_seconds", "30"))))
-    daily = max(1, min(500, int(values.get(f"automation.{account_id}.daily_limit", "50"))))
+    default_interval = max(1, min(3600, int(values.get("automation.default.interval_seconds", "30"))))
+    default_daily = max(1, min(500, int(values.get("automation.default.daily_limit", "50"))))
+    interval = max(1, min(3600, int(values.get(f"automation.{account_id}.interval_seconds", str(default_interval)))))
+    daily = max(1, min(500, int(values.get(f"automation.{account_id}.daily_limit", str(default_daily)))))
     return interval, daily
+
+
+async def set_global_automation_limits(*, interval_seconds: int, daily_limit: int) -> None:
+    if not 1 <= int(interval_seconds) <= 3600:
+        raise ValueError("Интервал должен быть от 1 до 3600 секунд.")
+    if not 1 <= int(daily_limit) <= 500:
+        raise ValueError("Дневной лимит должен быть от 1 до 500 сообщений.")
+    async with SessionFactory() as db:
+        for key, value in (
+            ("automation.default.interval_seconds", str(int(interval_seconds))),
+            ("automation.default.daily_limit", str(int(daily_limit))),
+        ):
+            row = await db.get(AppSetting, key)
+            if row:
+                row.value = value
+            else:
+                db.add(AppSetting(key=key, value=value))
+        await db.commit()
 
 
 async def set_account_limits(account_id: int, *, interval_seconds: int, daily_limit: int) -> None:
@@ -458,5 +480,6 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
 __all__ = [
     "campaign_status", "create_campaign", "grant_consent", "list_campaigns", "list_consents",
     "process_due_campaigns", "retry_failed_campaign", "revoke_consent", "set_account_limits",
+    "set_global_automation_limits",
     "set_campaign_status",
 ]
