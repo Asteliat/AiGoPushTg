@@ -20,6 +20,7 @@ from app.storage.models import (
     Account,
     AppSetting,
     AutomationConsent,
+    AutomationSchedule,
     AutomationTask,
     AutomationTaskRecipient,
     utcnow,
@@ -280,13 +281,19 @@ async def _account_limits(account_id: int, operation: str = "broadcast") -> tupl
                 f"automation.{account_id}.daily_limit",
                 f"automation.{account_id}.quiet_start_utc",
                 f"automation.{account_id}.quiet_end_utc",
+                f"automation.default.{operation}.interval_seconds",
+                f"automation.default.{operation}.daily_limit",
+                f"automation.{account_id}.{operation}.interval_seconds",
+                f"automation.{account_id}.{operation}.daily_limit",
             ])
         ))).all())
     values = {row.key: row.value for row in rows}
     default_interval = max(1, min(3600, int(values.get("automation.default.interval_seconds", "30"))))
     default_daily = max(1, min(500, int(values.get("automation.default.daily_limit", "50"))))
-    interval = max(1, min(3600, int(values.get(f"automation.{account_id}.interval_seconds", str(default_interval)))))
-    daily = max(1, min(500, int(values.get(f"automation.{account_id}.daily_limit", str(default_daily)))))
+    operation_interval = max(1, min(3600, int(values.get(f"automation.default.{operation}.interval_seconds", str(default_interval)))))
+    operation_daily = max(1, min(500, int(values.get(f"automation.default.{operation}.daily_limit", str(default_daily)))))
+    interval = max(1, min(3600, int(values.get(f"automation.{account_id}.{operation}.interval_seconds", values.get(f"automation.{account_id}.interval_seconds", str(operation_interval))))))
+    daily = max(1, min(500, int(values.get(f"automation.{account_id}.{operation}.daily_limit", values.get(f"automation.{account_id}.daily_limit", str(operation_daily))))))
     quiet_start = values.get(f"automation.{account_id}.quiet_start_utc", values.get("automation.default.quiet_start_utc", "")) or None
     quiet_end = values.get(f"automation.{account_id}.quiet_end_utc", values.get("automation.default.quiet_end_utc", "")) or None
     return interval, daily, quiet_start, quiet_end
@@ -429,8 +436,10 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                 AutomationTaskRecipient.status == "sending",
             ))).all())
             for stale_item in stale_sending:
-                stale_item.status = "pending"
-                stale_item.last_error = "Recovered after worker restart; delivery may be retried."
+                # Telegram may have accepted the message before the process lost its ACK.
+                # Never retry an ambiguous delivery automatically.
+                stale_item.status = "uncertain"
+                stale_item.last_error = "Результат неизвестен после перезапуска: проверьте Telegram перед ручным повтором."
             await db.commit()
 
         try:
@@ -453,7 +462,11 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                             .limit(1)
                         )
                         if not recipient:
-                            current.status = "completed"
+                            uncertain_count = await db.scalar(select(func.count()).select_from(AutomationTaskRecipient).where(
+                                AutomationTaskRecipient.task_id == task_id,
+                                AutomationTaskRecipient.status == "uncertain",
+                            ))
+                            current.status = "needs_review" if int(uncertain_count or 0) else "completed"
                             current.completed_at = utcnow()
                             current.updated_at = utcnow()
                             await db.commit()
@@ -534,7 +547,9 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                                 AutomationTaskRecipient.peer_id == peer_id,
                             ))
                             if item:
-                                item.status = "failed"
+                                # Transport errors may occur after Telegram accepted a message.
+                                uncertain = isinstance(exc, (TimeoutError, ConnectionError, OSError))
+                                item.status = "uncertain" if uncertain else "failed"
                                 item.last_error = f"{type(exc).__name__}: {str(exc)[:500]}"
                             await db.commit()
                     else:
@@ -777,11 +792,23 @@ async def resolve_uncertain_recipient(task_id: int, peer_id: int, *, delivered: 
             item.last_error = "Оператор проверил Telegram: сообщение не доставлено; разрешён повтор."
         task = await db.get(AutomationTask, task_id)
         if task and task.status == "needs_review":
-            remaining = await db.scalar(select(func.count()).select_from(AutomationTaskRecipient).where(
+            remaining_uncertain = await db.scalar(select(func.count()).select_from(AutomationTaskRecipient).where(
                 AutomationTaskRecipient.task_id == task_id,
                 AutomationTaskRecipient.status == "uncertain",
             ))
-            if not int(remaining or 0):
-                task.status = "queued" if not delivered else "completed"
-                task.completed_at = None if not delivered else utcnow()
+            remaining_pending = await db.scalar(select(func.count()).select_from(AutomationTaskRecipient).where(
+                AutomationTaskRecipient.task_id == task_id,
+                AutomationTaskRecipient.status.in_(["pending", "sending"]),
+            ))
+            remaining_failed = await db.scalar(select(func.count()).select_from(AutomationTaskRecipient).where(
+                AutomationTaskRecipient.task_id == task_id,
+                AutomationTaskRecipient.status == "failed",
+            ))
+            if not int(remaining_uncertain or 0):
+                if int(remaining_pending or 0):
+                    task.status = "queued"
+                    task.completed_at = None
+                else:
+                    task.status = "failed" if int(remaining_failed or 0) else "completed"
+                    task.completed_at = utcnow()
         await db.commit()

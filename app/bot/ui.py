@@ -421,9 +421,10 @@ async def management_account_menu(c: CallbackQuery):
         [("📷 Изменить фото профиля", f"tool:mg:photo:{aid}")],
         [("🤝 Добавить согласие", f"tool:mg:consent:{aid}"), ("🚫 Отозвать согласие", f"tool:mg:revokeconsent:{aid}")],
         [("👥 Список согласий", f"tool:mg:consents:{aid}")],
-        [("📨 Создать рассылку / приглашение", f"tool:mg:campaign:{aid}")],
+        [("📨 Разовая рассылка / приглашение", f"tool:mg:campaign:{aid}")],
+        [("🗓 Повторяющееся расписание", f"tool:mg:schedule:{aid}")],
         [("📋 Очередь и история задач", f"tool:mg:campaigns:{aid}")],
-        [("⏱ Лимиты отправки", f"tool:mg:limits:{aid}")],
+        [("⏱ Лимиты рассылки и приглашений", f"tool:mg:limits:{aid}")],
         [("♻️ Сбросить лимиты к глобальным", f"tool:mg:resetlimits:{aid}")],
         [("🎯 Автоответчики и триггеры", f"trigger:account:{aid}")],
         [("⬅️ К аккаунтам", "tool:management")],
@@ -460,7 +461,8 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         "consent": "Добавить только пользователя, который явно согласился получать сообщения. Формат: @username | broadcast или invite | источник согласия.",
         "revokeconsent": "Отправьте @username получателя. Его согласия на рассылки и приглашения будут отозваны.",
         "consents": "Показать сохранённые согласия.",
-        "campaign": "Формат: broadcast или invite | now либо YYYY-MM-DD HH:MM UTC | @user1,@user2. Только получатели с активным согласием; максимум 100 за задачу.",
+        "campaign": "Формат: broadcast или invite | now либо YYYY-MM-DD HH:MM UTC | @user1,@user2. Только получатели с активным согласием; максимум 500 за задачу.",
+        "schedule": "Создание повторяющейся кампании. Формат: broadcast или invite | старт now либо YYYY-MM-DD HH:MM UTC | интервал в часах (не менее 24) | число запусков (1–365) | @user1,@user2. Каждое повторение заново проверяет согласия.",
         "limits": "Формат: интервал_секунд | максимум_сообщений_за_24ч | тихо_с | тихо_до (UTC). Пример: 30 | 50 | 23:00 | 08:00. Без тихих часов: 30 | 50 | - | -.",
         "global-limits": "Глобальные значения по умолчанию для аккаунтов без индивидуального переопределения. Формат: интервал_секунд | максимум_сообщений_за_24ч | тихо_с | тихо_до (UTC). Пример: 30 | 50 | 23:00 | 08:00. Без тихих часов: 30 | 50 | - | -.",
     }
@@ -550,15 +552,75 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         await state.set_state(Flow.management_photo)
         await edit(c, "Отправьте фотографию, которую нужно установить на профиль аккаунта. Поддерживается фото или изображение-документ до 10 МБ.", CANCEL)
         return
-    if action == "campaign":
+    if action in {"campaign", "schedule"}:
         await state.clear()
-        await state.update_data(management_action="campaign_header", management_account_id=aid)
+        await state.update_data(management_action="campaign_header" if action == "campaign" else "schedule_header", management_account_id=aid)
         await state.set_state(Flow.management_input)
         await edit(c, prompts[action], CANCEL)
         return
     if action not in prompts:
         await c.answer("Неизвестное действие.", show_alert=True); return
     await management_prompt(c, state, action, aid, prompts[action])
+
+
+@router.callback_query(F.data.startswith("tool:schedule:list:"))
+async def management_schedule_list(c: CallbackQuery):
+    if not await check_cb(c):
+        return
+    aid = int(c.data.rsplit(":", 1)[1])
+    items = await telegram_automation.list_schedules(aid)
+    rows = [[(f"#{item['id']} · {item['kind']} · {item['status']} · запусков {item['runs_count']}/{item['max_runs']}", f"tool:schedule:status:{item['id']}")] for item in items]
+    rows.append([("↩️ К инструментам аккаунта", f"tool:management:account:{aid}")])
+    await edit(c, "🗓 Повторяющиеся расписания\n\nВыберите расписание.", kb(rows))
+
+
+@router.callback_query(F.data.startswith("tool:schedule:status:"))
+async def management_schedule_status(c: CallbackQuery):
+    if not await check_cb(c):
+        return
+    schedule_id = int(c.data.rsplit(":", 1)[1])
+    all_items = []
+    async with SessionFactory() as db:
+        from app.storage.models import AutomationSchedule
+        row = await db.get(AutomationSchedule, schedule_id)
+        if row:
+            aid = row.account_id
+            snapshot = {"id": row.id, "kind": row.kind, "status": row.status,
+                        "next_run_at": row.next_run_at.isoformat(), "interval_seconds": row.interval_seconds,
+                        "runs_count": row.runs_count, "max_runs": row.max_runs, "last_error": row.last_error}
+        else:
+            snapshot = None
+    if not snapshot:
+        await c.answer("Расписание не найдено.", show_alert=True)
+        return
+    hours = snapshot["interval_seconds"] // 3600
+    rows = []
+    if snapshot["status"] == "active":
+        rows.append([("⏸ Приостановить", f"tool:schedule:change:{schedule_id}:paused")])
+    elif snapshot["status"] == "paused":
+        rows.append([("▶️ Возобновить", f"tool:schedule:change:{schedule_id}:active")])
+    if snapshot["status"] not in {"completed", "cancelled"}:
+        rows.append([("⛔ Отменить", f"tool:schedule:change:{schedule_id}:cancelled")])
+    rows.append([("↩️ К расписаниям", f"tool:schedule:list:{aid}")])
+    detail = (f"🗓 Расписание #{schedule_id}\nТип: {snapshot['kind']}\nСтатус: {snapshot['status']}\n"
+              f"Следующий запуск UTC: {snapshot['next_run_at']}\nИнтервал: {hours} ч.\n"
+              f"Запусков: {snapshot['runs_count']}/{snapshot['max_runs']}")
+    if snapshot["last_error"]:
+        detail += f"\nОшибка: {snapshot['last_error'][:500]}"
+    await edit(c, detail, kb(rows))
+
+
+@router.callback_query(F.data.startswith("tool:schedule:change:"))
+async def management_schedule_change(c: CallbackQuery):
+    if not await check_cb(c):
+        return
+    _, _, _, schedule_raw, status = c.data.split(":")
+    try:
+        await telegram_automation.set_schedule_status(int(schedule_raw), status)
+        await c.answer("Расписание обновлено.")
+        await management_schedule_status(c)
+    except Exception as exc:
+        await c.answer(str(exc)[:180], show_alert=True)
 
 
 @router.callback_query(F.data.startswith("tool:campaign:status:"))
@@ -583,6 +645,10 @@ async def management_campaign_status(c: CallbackQuery):
         if log_lines:
             text_value += "\n\nЖурнал доставок:\n" + "\n".join(log_lines)
         rows = []
+        uncertain = [entry for entry in item.get("delivery_log", []) if entry["status"] == "uncertain"]
+        for entry in uncertain[:8]:
+            rows.append([(f"⚠️ {entry['peer_label'][:22]} · отметить доставленным", f"tool:campaign:resolve:{task_id}:{entry['peer_id']}:sent")])
+            rows.append([(f"↻ {entry['peer_label'][:22]} · разрешить повтор", f"tool:campaign:resolve:{task_id}:{entry['peer_id']}:retry")])
         failed_count = int(item["recipients"].get("failed", 0) or 0)
         pending_count = int(item["recipients"].get("pending", 0) or 0)
         if item["status"] in {"completed", "failed"} and (
@@ -599,6 +665,21 @@ async def management_campaign_status(c: CallbackQuery):
         await edit(c, text_value, kb(rows))
     except Exception as exc:
         await edit(c, f"Не удалось получить задачу: {type(exc).__name__}: {str(exc)[:250]}", back_home())
+
+
+@router.callback_query(F.data.startswith("tool:campaign:resolve:"))
+async def management_campaign_resolve(c: CallbackQuery):
+    if not await check_cb(c):
+        return
+    _, _, _, task_raw, peer_raw, decision = c.data.split(":")
+    try:
+        await telegram_automation.resolve_uncertain_recipient(
+            int(task_raw), int(peer_raw), delivered=(decision == "sent")
+        )
+        await c.answer("Результат доставки обновлён.")
+        await management_campaign_status(c)
+    except Exception as exc:
+        await c.answer(str(exc)[:180], show_alert=True)
 
 
 @router.callback_query(F.data.startswith("tool:campaign:pause:"))
@@ -723,10 +804,11 @@ async def management_input_received(m: Message, state: FSMContext):
                 quiet_start_utc=parts[2], quiet_end_utc=parts[3],
             )
             message = "Лимиты и тихие часы аккаунта сохранены."
-        elif action == "campaign_header":
-            parts = [x.strip() for x in raw.split("|", 2)]
-            if len(parts) != 3:
-                raise ValueError("Формат: broadcast/invite | время UTC или now | @user1,@user2.")
+        elif action in {"campaign_header", "schedule_header"}:
+            parts = [x.strip() for x in raw.split("|", 4 if action == "schedule_header" else 2)]
+            expected = 5 if action == "schedule_header" else 3
+            if len(parts) != expected:
+                raise ValueError("Формат рассылки: тип | время UTC или now | @получатели. Для расписания: тип | старт | интервал часов | число запусков | @получатели.")
             kind = parts[0].lower()
             if kind not in {"broadcast", "invite"}:
                 raise ValueError("Тип задачи: broadcast или invite.")
@@ -736,13 +818,26 @@ async def management_input_received(m: Message, state: FSMContext):
                     scheduled = datetime.strptime(parts[1], "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
                 except ValueError as exc:
                     raise ValueError("Время должно быть YYYY-MM-DD HH:MM UTC.") from exc
-            refs = [item.strip() for item in parts[2].split(",") if item.strip()]
+            interval_seconds = 0
+            max_runs = 0
+            refs_raw = parts[2]
+            if action == "schedule_header":
+                if not parts[2].isdigit() or not parts[3].isdigit():
+                    raise ValueError("Интервал и число запусков должны быть целыми числами.")
+                interval_seconds = int(parts[2]) * 3600
+                max_runs = int(parts[3])
+                if interval_seconds < 86400 or not 1 <= max_runs <= 365:
+                    raise ValueError("Интервал — минимум 24 часа; число запусков — от 1 до 365.")
+                refs_raw = parts[4]
+            refs = [item.strip() for item in refs_raw.split(",") if item.strip()]
             peers = await telegram_management.resolve_peers_for_consent(aid, refs)
             await state.update_data(
                 management_action="campaign_content", management_account_id=aid,
                 campaign_kind=kind, campaign_scheduled_at=scheduled.isoformat(),
                 campaign_recipients=[peer["peer_id"] for peer in peers],
                 campaign_recipient_labels=[peer["peer_label"] for peer in peers],
+                campaign_schedule_interval_seconds=interval_seconds,
+                campaign_schedule_max_runs=max_runs,
             )
             await state.set_state(Flow.management_campaign_content)
             await prompt_message(m, state, f"Получателей найдено: {len(peers)}. Следующим сообщением отправьте текст или прикрепите документ.\nПеред запуском будет предпросмотр. Для invite добавьте ссылку t.me.")
@@ -957,13 +1052,24 @@ async def management_campaign_confirm(c: CallbackQuery, state: FSMContext):
         await c.answer("Предпросмотр устарел. Создайте задачу заново.", show_alert=True)
         return
     try:
-        task_id = await telegram_automation.create_campaign(
-            int(data["management_account_id"]), kind=data["campaign_kind"],
-            recipients=data["campaign_recipients"], payload=data["campaign_payload"],
-            scheduled_at=datetime.fromisoformat(data["campaign_scheduled_at"]),
-        )
+        if int(data.get("campaign_schedule_interval_seconds") or 0):
+            task_id = await telegram_automation.create_schedule(
+                int(data["management_account_id"]), kind=data["campaign_kind"],
+                recipients=data["campaign_recipients"], payload=data["campaign_payload"],
+                starts_at=datetime.fromisoformat(data["campaign_scheduled_at"]),
+                interval_seconds=int(data["campaign_schedule_interval_seconds"]),
+                max_runs=int(data.get("campaign_schedule_max_runs") or 1),
+            )
+            success_text = f"✅ Повторяющееся расписание #{task_id} создано. Каждый запуск повторно проверяет согласия; минимальный интервал — 24 часа."
+        else:
+            task_id = await telegram_automation.create_campaign(
+                int(data["management_account_id"]), kind=data["campaign_kind"],
+                recipients=data["campaign_recipients"], payload=data["campaign_payload"],
+                scheduled_at=datetime.fromisoformat(data["campaign_scheduled_at"]),
+            )
+            success_text = f"✅ Задача #{task_id} поставлена в очередь. Она выполняется последовательно с учётом согласий, лимита аккаунта и FloodWait Telegram."
         await state.clear()
-        await edit(c, f"✅ Задача #{task_id} поставлена в очередь. Она выполняется последовательно с учётом согласий, лимита аккаунта и FloodWait Telegram.", kb([
+        await edit(c, success_text, kb([
             [("↩️ К инструментам аккаунта", f"tool:management:account:{data['management_account_id']}")],
             [("🏠 Главное меню", "nav:home")],
         ]))
