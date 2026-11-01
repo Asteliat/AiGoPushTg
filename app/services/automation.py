@@ -213,10 +213,22 @@ async def campaign_status(task_id: int) -> dict:
             .where(AutomationTaskRecipient.task_id == task_id)
             .group_by(AutomationTaskRecipient.status)
         )).all())
+        delivery_rows = list((await db.scalars(
+            select(AutomationTaskRecipient)
+            .where(AutomationTaskRecipient.task_id == task_id)
+            .order_by(AutomationTaskRecipient.id)
+            .limit(100)
+        )).all())
         return {
             "id": task.id, "account_id": task.account_id, "kind": task.kind, "status": task.status,
             "scheduled_at": _aware(task.scheduled_at).isoformat(),
             "last_error": task.last_error, "recipients": counts,
+            "delivery_log": [{
+                "peer_label": row.peer_label or row.peer_ref or str(row.peer_id),
+                "peer_ref": row.peer_ref, "status": row.status,
+                "attempts": row.attempts, "last_error": row.last_error,
+                "delivered_at": _aware(row.delivered_at).isoformat() if row.delivered_at else "",
+            } for row in delivery_rows],
         }
 
 
