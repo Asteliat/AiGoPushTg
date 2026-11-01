@@ -75,3 +75,14 @@ def test_scheduled_reaction_rejects_missing_message_id():
         _validate_payload("reaction", {
             "chat": "@publicgroup", "message_id": 0, "emoji": "👍",
         })
+
+
+
+def test_group_invitation_payload_requires_target_group():
+    payload = _validate_payload("group_invite", {"target_group": "@mygroup"})
+    assert payload["target_group"] == "@mygroup"
+
+
+def test_group_invitation_payload_rejects_empty_target():
+    with pytest.raises(ValueError, match="публичную супергруппу"):
+        _validate_payload("group_invite", {})
