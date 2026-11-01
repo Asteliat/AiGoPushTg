@@ -180,6 +180,29 @@ async def set_campaign_status(task_id: int, status: str) -> None:
         await db.commit()
 
 
+async def retry_failed_campaign(task_id: int) -> int:
+    async with SessionFactory() as db:
+        task = await db.get(AutomationTask, task_id)
+        if not task or task.status in {"cancelled", "paused", "running"}:
+            raise ValueError("Задачу нельзя повторить в текущем статусе.")
+        failed = list((await db.scalars(select(AutomationTaskRecipient).where(
+            AutomationTaskRecipient.task_id == task_id,
+            AutomationTaskRecipient.status == "failed",
+        ))).all())
+        if not failed:
+            raise ValueError("В задаче нет неудачных доставок для повтора.")
+        for recipient in failed:
+            recipient.status = "pending"
+            recipient.last_error = ""
+        task.status = "queued"
+        task.scheduled_at = utcnow()
+        task.completed_at = None
+        task.last_error = ""
+        task.updated_at = utcnow()
+        await db.commit()
+        return len(failed)
+
+
 async def campaign_status(task_id: int) -> dict:
     async with SessionFactory() as db:
         task = await db.get(AutomationTask, task_id)
@@ -419,6 +442,6 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
 
 __all__ = [
     "campaign_status", "create_campaign", "grant_consent", "list_campaigns", "list_consents",
-    "process_due_campaigns", "revoke_consent", "set_account_limits",
+    "process_due_campaigns", "retry_failed_campaign", "revoke_consent", "set_account_limits",
     "set_campaign_status",
 ]
