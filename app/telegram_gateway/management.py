@@ -410,7 +410,7 @@ async def parse_chat_history(
                 if cutoff and (not message_date or message_date < cutoff):
                     continue
                 body = (message.message or "").strip()
-                links = list(dict.fromkeys(re.findall(r"(?i)(?:https?://)?(?:www\\.)?(?:t\\.me|telegram\\.me)/[^\\s<>()]+|https?://[^\\s<>()]+", body)))
+                links = list(dict.fromkeys(re.findall(r"(?i)(?:https?://)?(?:www\.)?(?:t\.me|telegram\.me)/[^\s<>()]+|https?://[^\s<>()]+", body)))
                 if terms and not any(term in body.casefold() for term in terms):
                     continue
                 reaction_items = []
