@@ -789,7 +789,7 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                             current = await db.get(AutomationTask, task_id)
                             if current and current.status == "running":
                                 current.status = "queued"
-                                current.scheduled_at = utcnow() + timedelta(seconds=int(policy.get("batch_pause_seconds", interval)))
+                                current.scheduled_at = utcnow() + timedelta(seconds=max(interval, int(policy.get("batch_pause_seconds", interval))))
                                 current.last_error = (
                                     f"Пакет {processed_in_batch}/{batch_size} обработан; "
                                     f"следующий пакет через {int(policy.get('batch_pause_seconds', interval))} сек."
