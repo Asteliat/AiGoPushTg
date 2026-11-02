@@ -48,3 +48,24 @@ def test_telegram_init_data_rejects_non_admin(monkeypatch):
     with pytest.raises(HTTPException) as error:
         miniapp._telegram_user_id(_signed_init_data("test-token", 999))
     assert error.value.status_code == 403
+
+
+def test_telegram_init_data_rejects_duplicate_fields(monkeypatch):
+    monkeypatch.setattr(
+        miniapp, "get_settings",
+        lambda: SimpleNamespace(bot_token="test-token", admin_id_set={12345}),
+    )
+    signed = _signed_init_data("test-token", 12345)
+    with pytest.raises(HTTPException) as error:
+        miniapp._telegram_user_id(signed + "&user=%7B%22id%22%3A12345%7D")
+    assert error.value.status_code == 401
+
+
+def test_telegram_init_data_rejects_expired_signature(monkeypatch):
+    monkeypatch.setattr(
+        miniapp, "get_settings",
+        lambda: SimpleNamespace(bot_token="test-token", admin_id_set={12345}),
+    )
+    with pytest.raises(HTTPException) as error:
+        miniapp._telegram_user_id("auth_date=1&user=%7B%22id%22%3A12345%7D&hash=bad")
+    assert error.value.status_code == 401
