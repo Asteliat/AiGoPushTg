@@ -376,7 +376,7 @@ async def get_chat_overview(account_id: int, link: str) -> ChatOverview:
 async def parse_chat_history(
     account_id: int, channel: str, *, limit: int = 20, days: int = 0,
     keywords: list[str] | None = None, include_comments: bool = False,
-    comment_limit: int = 20,
+    comment_limit: int = 20, message_delay_seconds: int = 0,
 ) -> dict:
     """Parse accessible message history with optional date/keyword filters and comments."""
     from datetime import datetime, timedelta, timezone
@@ -384,6 +384,7 @@ async def parse_chat_history(
     limit = max(1, min(int(limit), 500))
     days = max(0, min(int(days), 365))
     comment_limit = max(1, min(int(comment_limit), 100))
+    message_delay_seconds = max(0, min(int(message_delay_seconds), 9999))
     terms = [str(term).strip().casefold() for term in (keywords or []) if str(term).strip()]
     cutoff = datetime.now(timezone.utc) - timedelta(days=days) if days else None
     async with _account_lock(account_id):
@@ -398,6 +399,8 @@ async def parse_chat_history(
             posts = []
             scanned = 0
             async for message in client.iter_messages(entity, limit=limit):
+                if message_delay_seconds:
+                    await asyncio.sleep(message_delay_seconds)
                 if not message or getattr(message, "action", None):
                     continue
                 scanned += 1
@@ -453,7 +456,8 @@ async def parse_chat_history(
                 "username": getattr(entity, "username", None),
                 "posts": posts,
                 "scanned": scanned,
-                "filters": {"days": days, "keywords": terms, "comments": include_comments},
+                "filters": {"days": days, "keywords": terms, "comments": include_comments,
+                            "message_delay_seconds": message_delay_seconds},
             }
 
 
