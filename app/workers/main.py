@@ -481,16 +481,11 @@ async def main():
                 addressed = force_addressed or mentioned or (reply_to and reply_to.sender_id == current.telegram_user_id)
                 if addressed:
                     probability_key = "mention_reply_probability"
-                elif current.ai_identity_disclosed:
+                else:
+                    # Autonomous group replies are controlled only by the configured
+                    # proactive probability (agent override -> global setting).
                     probability_key = "proactive_reply_probability"
                     proactive = True
-                else:
-                    logging.info(
-                        "Proactive group replies are disabled until AI-management disclosure is enabled: "
-                        "account=%s chat=%s",
-                        aid, event.chat_id,
-                    )
-                    return
             elif event.is_private:
                 probability_key = "dm_reply_probability"
             else:
