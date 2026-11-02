@@ -67,3 +67,40 @@ def test_inbox_reply_requires_an_existing_message_reference():
         reply_to_message_id=10, text="Hello",
     )
     assert payload.reply_to_message_id == 10
+
+
+def test_inbox_context_uses_separate_lines_for_messages():
+    from types import SimpleNamespace
+
+    context = miniapp._format_inbox_context([
+        SimpleNamespace(out=False, message="Привет"),
+        SimpleNamespace(out=True, message="Здравствуйте"),
+        SimpleNamespace(out=False, message=None),
+    ])
+
+    assert context.splitlines() == [
+        "Собеседник: Привет",
+        "Аккаунт: Здравствуйте",
+        "Собеседник: [медиа/вложение]",
+    ]
+    assert "\\n" not in context
+
+
+def test_ai_agent_snapshot_is_detached_from_orm_model():
+    from types import SimpleNamespace
+
+    source = SimpleNamespace(
+        enabled=True,
+        api_key="secret",
+        base_url="https://api.example/v1",
+        model="example-model",
+        timeout_seconds=45,
+    )
+    snapshot = miniapp._snapshot_agent(source)
+
+    source.api_key = "changed"
+    source.model = "changed-model"
+
+    assert snapshot.api_key == "secret"
+    assert snapshot.model == "example-model"
+    assert snapshot.timeout_seconds == 45
