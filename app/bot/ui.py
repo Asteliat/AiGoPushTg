@@ -5845,6 +5845,17 @@ async def chat_join_confirm(c):
         await c.answer("Предпросмотр устарел. Проверьте ссылку ещё раз.", show_alert=True); return
     try:
         async with isolated_account_client(aid) as (_account, client):
+            me = await client.get_me()
+            if me is None or int(me.id) != int(_account.telegram_user_id):
+                actual_id = int(me.id) if me is not None and getattr(me, "id", None) else None
+                raise RuntimeError(
+                    f"Сессия аккаунта #{aid} не совпадает с записью аккаунта: "
+                    f"ожидался Telegram ID {_account.telegram_user_id}, получен {actual_id}."
+                )
+            logging.info(
+                "Chat join started: account_id=%s telegram_user_id=%s username=%s kind=%s already=%s",
+                aid, int(me.id), getattr(me, "username", None), pending.get("kind"), pending.get("already", False),
+            )
             entity = None
             if pending.get("already") and pending.get("entity_id"):
                 entity = await client.get_entity(pending["entity_id"])
@@ -5857,7 +5868,8 @@ async def chat_join_confirm(c):
                         f"⏳ Telegram временно ограничил вступления. Жду {seconds} сек., затем повторю вступление в группу «{pending['title']}»…",
                         kb([[("⬅️ К аккаунту", f"acc:view:{aid}")]]),
                     )
-                await perform_join_request(aid, client, JoinChannelRequest(entity), report_floodwait)
+                join_result = await perform_join_request(aid, client, JoinChannelRequest(entity), report_floodwait)
+                logging.info("Chat join RPC accepted: account_id=%s telegram_user_id=%s request=JoinChannelRequest result=%s", aid, int(me.id), type(join_result).__name__)
             else:
                 async def report_floodwait(seconds):
                     await edit(c,
@@ -5867,6 +5879,7 @@ async def chat_join_confirm(c):
                 joined = await perform_join_request(
                     aid, client, ImportChatInviteRequest(hash=pending["target"]), report_floodwait
                 )
+                logging.info("Chat join RPC accepted: account_id=%s telegram_user_id=%s request=ImportChatInviteRequest chats=%s", aid, int(me.id), [(type(x).__name__, getattr(x, "id", None)) for x in (getattr(joined, "chats", []) or [])])
                 entity = next((x for x in joined.chats if _group_entity(x)), None)
                 if entity is None:
                     raise RuntimeError("Telegram не вернул вступившую группу.")
@@ -5885,6 +5898,10 @@ async def chat_join_confirm(c):
                     break
                 if attempt < 2:
                     await asyncio.sleep(1)
+            logging.info(
+                "Chat membership verification: account_id=%s telegram_user_id=%s chat_id=%s entity_type=%s is_member=%s",
+                aid, int(me.id), chat_id, type(entity).__name__, is_member,
+            )
             if not is_member:
                 await edit(
                     c,
@@ -5893,6 +5910,10 @@ async def chat_join_confirm(c):
                 )
                 return
     except Exception as exc:
+        logging.exception(
+            "Chat join failed: account_id=%s kind=%s error_type=%s",
+            aid, pending.get("kind"), type(exc).__name__,
+        )
         # Approval-only invite links are not equivalent to membership; explain that no binding was created.
         if isinstance(exc, FloodWaitError):
             await edit(c, f"⛔ Telegram ограничил вступления. Повторная попытка остановлена. Подождите {int(exc.seconds)} сек. и попробуйте снова.", kb([[('🔗 Другая ссылка', f'chat:joinlink:{aid}')], [('⬅️ К аккаунту', f'acc:view:{aid}')]]))
@@ -5919,7 +5940,7 @@ async def chat_join_confirm(c):
                 await edit(c, f"Аккаунт уже состоит в группе, но не удалось обновить её в списке: {type(nested).__name__}.", kb([[("⬅️ К аккаунту", f"acc:view:{aid}")]]))
                 return
         else:
-            await edit(c, f"Не удалось вступить: {type(exc).__name__}. Проверьте срок действия ссылки, лимиты Telegram и доступность группы.", kb([[("🔗 Другая ссылка", f"chat:joinlink:{aid}")], [("⬅️ К аккаунту", f"acc:view:{aid}")]]))
+            await edit(c, f"Не удалось вступить: {type(exc).__name__}: {str(exc)[:180]}. Проверьте ссылку, ограничения Telegram и доступность группы.", kb([[("🔗 Другая ссылка", f"chat:joinlink:{aid}")], [("⬅️ К аккаунту", f"acc:view:{aid}")]]))
             return
     if entity is None:
         await edit(c, "Telegram не подтвердил вступление: чат не определён. Запись не создана.", kb([
