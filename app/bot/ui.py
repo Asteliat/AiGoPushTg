@@ -856,10 +856,16 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
             await edit(c, f"Не удалось сбросить лимиты: {type(exc).__name__}: {str(exc)[:250]}", back_home())
         return
     if action == "reactions":
-        items = await telegram_automation.list_scheduled_reactions(aid, limit=20)
-        rows = [[(f"#{item['id']} · {item['emoji']} · {item['status']}", f"tool:reaction:status:{item['id']}")] for item in items]
-        rows.append([("↩️ К инструментам аккаунта", f"tool:management:account:{aid}")])
-        await edit(c, "📆 Запланированные реакции\n\nВыберите запись." if items else "Запланированных реакций пока нет.", kb(rows))
+        selected_ids = [int(value) for value in (await state.get_data()).get("management_account_ids") or [aid]]
+        rows = []
+        for account_id in selected_ids:
+            items = await telegram_automation.list_scheduled_reactions(account_id, limit=20)
+            rows.extend([(
+                f"#{item['id']} · аккаунт #{account_id} · {item['emoji']} · {item['status']}",
+                f"tool:reaction:status:{item['id']}",
+            )] for item in items)
+        rows.append([("↩️ К модулю", f"tool:module:reaction")])
+        await edit(c, "📆 Запланированные реакции\n\nВыберите запись." if rows[:-1] else "Запланированных реакций пока нет.", kb(rows))
         return
     if action == "schedules":
         items = await telegram_automation.list_schedules(aid, limit=20)
@@ -868,28 +874,30 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         await edit(c, "🗓 Повторяющиеся расписания\n\nВыберите расписание." if items else "Расписаний пока нет.", kb(rows))
         return
     if action == "campaigns":
-        items = await telegram_automation.list_campaigns(aid, limit=12)
-        if not items:
-            await edit(c, "Задач пока нет.", kb([[("↩️ К инструментам аккаунта", f"tool:management:account:{aid}")]]))
-            return
+        selected_ids = [int(value) for value in (await state.get_data()).get("management_account_ids") or [aid]]
         rows = []
-        for item in items:
-            rows.append([(f"#{item['id']} · {item['kind']} · {item['status']}", f"tool:campaign:status:{item['id']}")])
-        rows.append([("↩️ К инструментам аккаунта", f"tool:management:account:{aid}")])
-        await edit(c, "📋 Очередь и история задач\n\nВыберите задачу для просмотра статуса и управления.", kb(rows))
+        for account_id in selected_ids:
+            items = await telegram_automation.list_campaigns(account_id, limit=20)
+            for item in items:
+                rows.append([(f"#{item['id']} · аккаунт #{account_id} · {item['kind']} · {item['status']}", f"tool:campaign:status:{item['id']}")])
+        rows.append([("↩️ К модулю", f"tool:module:{(await state.get_data()).get('module_selection_module') or 'broadcast'}")])
+        await edit(c, "📋 Очередь и история задач\n\nВыберите задачу для просмотра статуса и управления." if rows[:-1] else "Задач пока нет.", kb(rows))
         return
     if action == "profile":
-        try:
-            data = await telegram_management.get_profile(aid)
-            txt = (
-                f"👤 Профиль аккаунта #{aid}\n\n"
-                f"Имя: {data['first_name']}\nФамилия: {data['last_name']}\n"
-                f"Username: @{data['username'] or 'не задан'}\n"
-                f"Телефон: {data['phone'] or 'не доступен'}\nBIO: {data['about'] or 'не задано'}"
-            )
-            await edit(c, txt, kb([[("⬅️ К инструментам аккаунта", f"tool:management:account:{aid}")]]))
-        except Exception as exc:
-            await edit(c, f"Не удалось получить профиль: {type(exc).__name__}: {str(exc)[:250]}", back_home())
+        selected_ids = [int(value) for value in (await state.get_data()).get("management_account_ids") or [aid]]
+        lines = ["👤 Профили выбранных аккаунтов", ""]
+        for account_id in selected_ids:
+            try:
+                profile_data = await telegram_management.get_profile(account_id)
+                lines.extend([
+                    f"Аккаунт #{account_id}",
+                    f"Имя: {profile_data['first_name']} {profile_data['last_name']}",
+                    f"Username: @{profile_data['username'] or 'не задан'}",
+                    f"BIO: {profile_data['about'] or 'не задано'}", "",
+                ])
+            except Exception as exc:
+                lines.append(f"❌ #{account_id}: {type(exc).__name__}: {str(exc)[:180]}")
+        await edit(c, "\\n".join(lines)[:3900], kb([[("↩️ К модулю", "tool:module:profile")]]))
         return
     if action == "contacts":
         try:
