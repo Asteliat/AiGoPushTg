@@ -21,7 +21,7 @@ from typing import AsyncIterator
 from telethon import TelegramClient, utils
 from telethon.errors import FloodWaitError
 from telethon.tl.functions.channels import JoinChannelRequest, LeaveChannelRequest
-from telethon.tl.functions.contacts import DeleteContactsRequest, ImportContactsRequest
+from telethon.tl.functions.contacts import DeleteContactsRequest, GetBlockedRequest, ImportContactsRequest
 from telethon.tl.functions.messages import CheckChatInviteRequest, ImportChatInviteRequest, SendReactionRequest
 from telethon.tl.functions.users import GetFullUserRequest
 from telethon.tl.functions.account import UpdateProfileRequest, UpdateUsernameRequest
@@ -521,6 +521,7 @@ async def parse_chat_participants(
     exclude_bots: bool = False, exclude_deleted: bool = False,
     username_only: bool = False, photo_only: bool = False,
     premium_only: bool = False, active_days: int = 0, exclude_scam: bool = False,
+    exclude_blocked: bool = False,
 ) -> dict:
     """Export visible participant metadata with opt-in filters; never infer personal attributes."""
     from datetime import datetime, timedelta, timezone
@@ -549,6 +550,20 @@ async def parse_chat_participants(
             participants = []
             scanned = 0
             activity_unknown = 0
+            blocked_ids: set[int] = set()
+            if exclude_blocked:
+                offset = 0
+                while True:
+                    blocked_page = await client(GetBlockedRequest(offset=offset, limit=100))
+                    blocked_items = list(getattr(blocked_page, "blocked", []) or [])
+                    for blocked_item in blocked_items:
+                        peer = getattr(blocked_item, "peer", None)
+                        blocked_id = getattr(peer, "user_id", None)
+                        if blocked_id:
+                            blocked_ids.add(int(blocked_id))
+                    if len(blocked_items) < 100:
+                        break
+                    offset += len(blocked_items)
             cutoff = datetime.now(timezone.utc) - timedelta(days=active_days) if active_days else None
             async for user in client.iter_participants(entity, limit=limit):
                 if not getattr(user, "id", None):
@@ -557,12 +572,15 @@ async def parse_chat_participants(
                 is_bot = bool(getattr(user, "bot", False))
                 is_deleted = bool(getattr(user, "deleted", False))
                 is_scam = bool(getattr(user, "scam", False))
+                is_blocked = int(user.id) in blocked_ids
                 username = getattr(user, "username", None) or ""
                 if exclude_bots and is_bot:
                     continue
                 if exclude_deleted and is_deleted:
                     continue
                 if exclude_scam and is_scam:
+                    continue
+                if exclude_blocked and is_blocked:
                     continue
                 if username_only and not username:
                     continue
@@ -590,6 +608,7 @@ async def parse_chat_participants(
                     "is_bot": is_bot,
                     "is_deleted": is_deleted,
                     "is_scam": is_scam,
+                    "is_blocked": is_blocked,
                     "has_photo": bool(getattr(user, "photo", None)),
                     "is_premium": bool(getattr(user, "premium", False)),
                     "last_seen": last_seen.isoformat() if last_seen else "",
@@ -604,7 +623,7 @@ async def parse_chat_participants(
                 "requested_limit": limit,
                 "filters": {
                     "exclude_bots": exclude_bots, "exclude_deleted": exclude_deleted,
-                    "exclude_scam": exclude_scam,
+                    "exclude_scam": exclude_scam, "exclude_blocked": exclude_blocked,
                     "username_only": username_only, "photo_only": photo_only,
                     "premium_only": premium_only, "active_days": active_days,
                 },
