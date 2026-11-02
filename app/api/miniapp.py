@@ -815,6 +815,7 @@ async def inbox_ai_draft(payload: InboxPeerInput, _: int = Depends(require_admin
                          db: AsyncSession = Depends(get_session)):
     from app.telegram_gateway.management import isolated_account_client
     from app.ai.provider import generate_reply
+    from telethon.tl.types import User
 
     account = await db.get(Account, payload.account_id)
     if not account or not account.enabled:
