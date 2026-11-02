@@ -840,7 +840,9 @@ async def inbox_ai_draft(payload: InboxPeerInput, _: int = Depends(require_admin
     style += "\\n\\nЕсли собеседник спрашивает, является ли ответ автоматическим, отвечай честно."
     await db.rollback()
     try:
-        async with isolated_account_client(payload.account_id) as (_account, client):
+        async with isolated_account_client(payload.account_id) as (live_account, client):
+            if not live_account.enabled or live_account.manual_pause:
+                raise HTTPException(409, "Аккаунт отключён или находится на паузе.")
             entity = await _resolve_inbox_entity(client, payload.peer_id, payload.peer_ref)
             if getattr(entity, "broadcast", False) and not getattr(entity, "megagroup", False):
                 raise HTTPException(400, "Для вещательных каналов нельзя создавать ответ в личном inbox.")
@@ -912,9 +914,10 @@ async def inbox_send_reply(payload: InboxReplyInput, actor: int = Depends(requir
             recent = []
             async for item in client.iter_messages(entity, limit=30):
                 recent.append(item)
+            latest = recent[0] if recent else None
             target = next((item for item in recent if int(item.id) == payload.reply_to_message_id), None)
-            if target is None or target.out:
-                raise HTTPException(409, "Ответ можно отправить только на существующее входящее сообщение. Обновите переписку.")
+            if target is None or target.out or latest is None or int(latest.id) != payload.reply_to_message_id or latest.out:
+                raise HTTPException(409, "Ответ можно отправить только на последнее входящее сообщение. Обновите переписку.")
             sent = await client.send_message(
                 entity, payload.text.strip(), reply_to=payload.reply_to_message_id,
                 link_preview=False,
