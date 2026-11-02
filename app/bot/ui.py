@@ -866,6 +866,51 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         "limits": "Формат: интервал_секунд | максимум_сообщений_за_24ч | тихо_с | тихо_до (UTC). Пример: 30 | 50 | 23:00 | 08:00. Без тихих часов: 30 | 50 | - | -.",
         "global-limits": "Глобальные значения по умолчанию для аккаунтов без индивидуального переопределения. Формат: интервал_секунд | максимум_сообщений_за_24ч | тихо_с | тихо_до (UTC). Пример: 30 | 50 | 23:00 | 08:00. Без тихих часов: 30 | 50 | - | -.",
     }
+    if action == "contactlog":
+        selected_ids = [int(value) for value in (await state.get_data()).get("management_account_ids") or [aid]]
+        lines = ["📜 Журнал операций с контактами", ""]
+        async with SessionFactory() as db:
+            for account_id in selected_ids:
+                row = await db.get(AppSetting, f"contacts.log.{account_id}")
+                lines.append(f"Аккаунт #{account_id}")
+                try:
+                    entries = json.loads(row.value) if row and row.value else []
+                except (TypeError, ValueError):
+                    entries = []
+                for entry in entries[-20:]:
+                    lines.append(f"• {entry.get('at', '—')} · {entry.get('action', 'операция')}: {entry.get('details', '')}")
+                if not entries:
+                    lines.append("Операций пока нет.")
+                lines.append("")
+        await edit(c, "\\n".join(lines)[:3900], kb([[("↩️ К модулю", "tool:module:contacts")]]))
+        return
+    if action == "dedupecontacts":
+        selected_ids = [int(value) for value in (await state.get_data()).get("management_account_ids") or [aid]]
+        results = []
+        for account_id in selected_ids:
+            try:
+                contacts = await telegram_management.list_contacts(account_id, limit=500)
+                seen = set()
+                duplicate_ids = []
+                for contact in contacts:
+                    phone = re.sub(r"[^0-9+]", "", str(contact.get("phone") or ""))
+                    if not phone:
+                        continue
+                    if phone in seen:
+                        duplicate_ids.append(int(contact["id"]))
+                    else:
+                        seen.add(phone)
+                removed = 0
+                for user_id in duplicate_ids:
+                    await telegram_management.delete_contact(account_id, user_id)
+                    removed += 1
+                details = f"проверено {len(contacts)}, удалено дубликатов по номеру {removed}"
+                await record_contact_operation(account_id, "deduplicate", details)
+                results.append(f"✅ #{account_id}: {details}.")
+            except Exception as exc:
+                results.append(f"❌ #{account_id}: {type(exc).__name__}: {str(exc)[:140]}")
+        await edit(c, "\\n".join(results)[:3900], kb([[("↩️ К модулю", "tool:module:contacts")]]))
+        return
     if action == "exportcontacts":
         selected_ids = [int(value) for value in (await state.get_data()).get("management_account_ids") or [aid]]
         sent = 0
