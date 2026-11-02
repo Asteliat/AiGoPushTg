@@ -842,7 +842,7 @@ async def inbox_ai_draft(payload: InboxPeerInput, _: int = Depends(require_admin
     style += "\n\nЕсли собеседник спрашивает, является ли ответ автоматическим, отвечай честно."
     await db.rollback()
     try:
-        async with isolated_account_client(payload.account_id) as (_live_account, client):
+        async with isolated_account_client(payload.account_id) as (_, client):
             entity = await _resolve_inbox_entity(client, payload.peer_id, payload.peer_ref)
             if getattr(entity, "broadcast", False) and not getattr(entity, "megagroup", False):
                 raise HTTPException(400, "Для вещательных каналов нельзя создавать ответ в личном inbox.")
