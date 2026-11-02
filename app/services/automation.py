@@ -520,7 +520,7 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
     for _ in range(max(1, min(max_tasks, 5))):
         async with SessionFactory() as db:
             now = utcnow()
-            task = await db.scalar(
+            candidates = list((await db.scalars(
                 select(AutomationTask)
                 .where(
                     or_(
@@ -533,9 +533,23 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                 )
                 .order_by(AutomationTask.scheduled_at, AutomationTask.id)
                 .with_for_update(skip_locked=True)
-                .limit(1)
-            )
+                .limit(50)
+            )).all())
+            task = None
+            for candidate in candidates:
+                candidate_module = _module_name_for_kind(candidate.kind)
+                quarantine_row = await db.get(
+                    AppSetting, f"automation.quarantine.{candidate.account_id}.{candidate_module}"
+                )
+                if quarantine_row and quarantine_row.value:
+                    candidate.status = "paused"
+                    candidate.last_error = f"Карантин модуля {candidate_module}: {quarantine_row.value}"
+                    candidate.updated_at = now
+                    continue
+                task = candidate
+                break
             if not task:
+                await db.commit()
                 break
             task.status = "running"
             task.started_at = now
