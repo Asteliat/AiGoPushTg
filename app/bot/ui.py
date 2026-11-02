@@ -463,6 +463,10 @@ async def tool_module_accounts(c: CallbackQuery, state: FSMContext):
         if not account or not account.enabled:
             await c.answer("Аккаунт не найден или выключен.", show_alert=True)
             return
+        if module in {"broadcast", "invite"}:
+            await state.clear()
+            await render_campaign_kind_selection(c, state, module, [aid])
+            return
         title, actions = MODULE_ACTIONS[module]
         rows = [[(label, f"tool:mg:{action}:{aid}")] for label, action in actions]
         rows.extend([
@@ -481,6 +485,10 @@ async def tool_module_accounts(c: CallbackQuery, state: FSMContext):
             select(Account).where(Account.enabled.is_(True)).order_by(Account.id)
         )).all())
     title = MODULE_ACTIONS[module][0]
+    if module in {"broadcast", "invite"}:
+        await state.clear()
+        await render_module_account_selection(c, state, module, [])
+        return
     rows = [[(f"👤 {a.display_name[:28]} · #{a.id}", f"tool:module:account:{module}:{a.id}")] for a in accounts]
     rows.extend([
         [("⚙️ Глобальные настройки модуля", f"tool:policy:{module}")],
