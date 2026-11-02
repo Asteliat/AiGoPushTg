@@ -1782,10 +1782,20 @@ async def management_input_received(m: Message, state: FSMContext):
             document = BufferedInputFile(output.getvalue().encode("utf-8-sig"), filename=f"participants-account-{aid}-{result['chat_id']}.csv")
             await m.answer_document(document, caption="Дополнительно: таблица CSV. Выгружены только публичные поля, доступные аккаунту.")
             message = f"Сформированы TXT и CSV. Доступно участников: {result['visible_count']}."
-        elif action == "join":
-            await telegram_management.join_chat(aid, raw); message = "Аккаунт вступил в чат."
-        elif action == "leave":
-            await telegram_management.leave_chat(aid, raw); message = "Аккаунт вышел из чата."
+        elif action in {"join", "leave"}:
+            account_ids = [int(value) for value in (data.get("management_account_ids") or [aid])]
+            results = []
+            for account_id in account_ids:
+                try:
+                    if action == "join":
+                        await telegram_management.join_chat(account_id, raw)
+                        results.append(f"✅ #{account_id}: вступил в чат.")
+                    else:
+                        await telegram_management.leave_chat(account_id, raw)
+                        results.append(f"✅ #{account_id}: вышел из чата.")
+                except Exception as exc:
+                    results.append(f"❌ #{account_id}: {type(exc).__name__}: {str(exc)[:120]}")
+            message = "\\n".join(results)
         elif action == "schedreaction":
             parts = [x.strip() for x in raw.split("|")]
             if len(parts) != 4:
