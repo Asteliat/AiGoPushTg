@@ -17,7 +17,7 @@ from app.settings import get_settings
 from app.storage.db import SessionFactory, get_session
 from app.storage.models import (
     Account, AIAgent, AppSetting, AuditEvent, ChannelBinding, ChatBinding,
-    Example, Persona, TriggerRule, AutomationTask, AutomationTaskRecipient, AutomationSchedule,
+    Example, Persona, TriggerRule, AutomationTask, AutomationTaskRecipient, AutomationSchedule, ScheduledReaction,
 )
 from app.services import automation as telegram_automation
 
@@ -608,6 +608,41 @@ class CampaignStatusInput(BaseModel):
 
 class ScheduleStatusInput(BaseModel):
     status: str = Field(pattern="^(active|paused|cancelled)$")
+
+
+
+class ReactionStatusInput(BaseModel):
+    status: str = Field(pattern="^(cancelled|sent|retry)$")
+
+
+@router.get("/reactions")
+async def get_reactions(_: int = Depends(require_admin), db: AsyncSession = Depends(get_session)):
+    rows = (await db.scalars(
+        select(ScheduledReaction).order_by(desc(ScheduledReaction.id)).limit(100)
+    )).all()
+    return [{
+        "id": row.id, "account_id": row.account_id, "chat_ref": row.chat_ref,
+        "message_id": row.message_id, "emoji": row.emoji, "run_at": row.run_at.isoformat(),
+        "status": row.status, "last_error": row.last_error,
+    } for row in rows]
+
+
+@router.patch("/reactions/{reaction_id}")
+async def update_reaction(reaction_id: int, payload: ReactionStatusInput,
+                          actor: int = Depends(require_admin)):
+    try:
+        if payload.status == "cancelled":
+            await telegram_automation.cancel_scheduled_reaction(reaction_id)
+        else:
+            await telegram_automation.resolve_scheduled_reaction(
+                reaction_id, delivered=payload.status == "sent",
+            )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    async with SessionFactory() as db:
+        await _audit(db, actor, "reaction.status", "reaction", f"{reaction_id}:{payload.status}")
+        await db.commit()
+    return {"ok": True}
 
 
 @router.get("/campaigns")
