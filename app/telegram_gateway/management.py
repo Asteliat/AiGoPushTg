@@ -550,6 +550,8 @@ async def manage_subscriptions_batch(
                     break
                 except FloodWaitError as exc:
                     flood_wait = max(1, int(exc.seconds))
+                    from app.services.automation import record_module_floodwait
+                    await record_module_floodwait(account_id, "subscription", flood_wait)
                     results.append({"link": value, "status": "flood_wait", "error": f"{flood_wait}s"})
                     break
                 except Exception as exc:
@@ -570,18 +572,22 @@ async def react_to_message(
         raise ValueError("Эта реакция не входит в список поддерживаемых.")
     if int(message_id) <= 0:
         raise ValueError("Некорректный ID публикации.")
-    from app.services.automation import reserve_operation_slot
+    from app.services.automation import record_module_floodwait, reserve_operation_slot
     await reserve_operation_slot(account_id, "reaction")
-    async with _account_lock(account_id):
-        async with isolated_account_client(account_id) as (_account, client):
-            entity = await client.get_entity(chat.strip())
-            await client(SendReactionRequest(
-                peer=entity,
-                msg_id=int(message_id),
-                reaction=[ReactionEmoji(emoticon=emoji)],
-                big=False,
-                add_to_recent=False,
-            ))
+    try:
+        async with _account_lock(account_id):
+            async with isolated_account_client(account_id) as (_account, client):
+                entity = await client.get_entity(chat.strip())
+                await client(SendReactionRequest(
+                    peer=entity,
+                    msg_id=int(message_id),
+                    reaction=[ReactionEmoji(emoticon=emoji)],
+                    big=False,
+                    add_to_recent=False,
+                ))
+    except FloodWaitError as exc:
+        await record_module_floodwait(account_id, "reaction", max(1, int(exc.seconds)))
+        raise
 
 
 async def resolve_peer(account_id: int, peer_ref: str) -> dict:
