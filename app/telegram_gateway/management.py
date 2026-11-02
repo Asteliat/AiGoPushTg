@@ -453,12 +453,16 @@ async def join_chat(account_id: int, link: str) -> None:
 
 
 async def verify_chat_membership(client, entity) -> bool:
-    """Ask Telegram for the current account's membership before recording a joined chat."""
+    """Verify the authenticated Telegram user is an actual participant."""
+    me = await client.get_me()
+    if me is None or not getattr(me, "id", None):
+        raise RuntimeError("Telegram не вернул текущий аккаунт для проверки членства.")
     try:
-        await client.get_permissions(entity, "me")
+        # Resolve the current account explicitly instead of relying on the magic "me" string.
+        await client.get_permissions(entity, me)
         return True
     except Exception as exc:
-        if "UserNotParticipant" in type(exc).__name__ or "ParticipantIdInvalid" in type(exc).__name__:
+        if type(exc).__name__ in {"UserNotParticipantError", "ParticipantIdInvalidError"}:
             return False
         raise
 
