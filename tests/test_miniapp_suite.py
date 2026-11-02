@@ -30,3 +30,9 @@ def test_channel_assistant_settings_are_bounded():
 def test_content_draft_is_persisted_as_its_own_table():
     assert ContentDraft.__tablename__ == "content_drafts"
     assert {"prompt", "body", "status", "account_id", "agent_id", "persona_id"} <= set(ContentDraft.__table__.columns.keys())
+
+
+def test_retired_bulk_automation_is_disabled_by_default():
+    from app.settings import Settings
+
+    assert Settings(_env_file=None).legacy_automation_enabled is False
