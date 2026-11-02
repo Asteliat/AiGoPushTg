@@ -19,20 +19,20 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import AsyncIterator
 
-from telethon import TelegramClient
+from telethon import TelegramClient, utils
 from telethon.errors import FloodWaitError
 from telethon.tl.functions.channels import JoinChannelRequest, LeaveChannelRequest
 from telethon.tl.functions.contacts import DeleteContactsRequest, GetBlockedRequest, ImportContactsRequest
 from telethon.tl.functions.messages import CheckChatInviteRequest, ImportChatInviteRequest, SendReactionRequest
 from telethon.tl.functions.users import GetFullUserRequest
 from telethon.tl.functions.account import UpdateProfileRequest, UpdateUsernameRequest
-from telethon.tl.types import ChatInviteAlready, InputPhoneContact, ReactionEmoji
+from telethon.tl.types import ChatInviteAlready, InputPeerChannel, InputPeerChat, InputPhoneContact, ReactionEmoji
 
 from app.settings import get_settings
-from sqlalchemy import text
+from sqlalchemy import select, text
 
 from app.storage.db import SessionFactory, engine
-from app.storage.models import Account
+from app.storage.models import Account, ChatBinding
 from app.telegram_gateway.proxy import telethon_proxy
 from app.telegram_gateway.session import configure_telethon_sqlite_session
 
@@ -1004,30 +1004,73 @@ def _normalize_manual_message_target(target: str):
     return value
 
 
+def _bound_chat_input_peer(binding):
+    """Build a Telegram input peer from the stable ID and access hash saved at join time."""
+    bare_id, peer = utils.resolve_id(int(binding.chat_id))
+    if binding.peer_type == "chat":
+        return InputPeerChat(chat_id=bare_id)
+    if binding.peer_type == "channel" and binding.access_hash is not None:
+        return InputPeerChannel(channel_id=bare_id, access_hash=int(binding.access_hash))
+    return None
+
+
+async def _resolve_manual_message_peer(client, account_id: int, peer):
+    """Resolve a peer normally, then fall back to the durable binding for private groups."""
+    resolution_error = None
+    try:
+        entity = await client.get_entity(peer)
+        if entity is not None:
+            return entity, None
+    except (ValueError, TypeError) as exc:
+        resolution_error = exc
+
+    if isinstance(peer, int):
+        async with SessionFactory() as db:
+            binding = await db.scalar(select(ChatBinding).where(
+                ChatBinding.account_id == int(account_id),
+                ChatBinding.chat_id == int(peer),
+            ))
+            if binding:
+                input_peer = _bound_chat_input_peer(binding)
+                if input_peer is not None:
+                    return input_peer, binding.title
+                raise ValueError(
+                    "Для этой приватной группы не сохранён access hash. "
+                    "Повторно проверьте вступление в группу через бота."
+                ) from resolution_error
+
+    if resolution_error:
+        raise ValueError(
+            "Не удалось разрешить чат. Если это приватная группа, повторно добавьте её "
+            "через ссылку-приглашение в карточке аккаунта."
+        ) from resolution_error
+    raise ValueError("Telegram не вернул объект чата. Проверьте ID и членство аккаунта.")
+
+
 async def preview_message_target(account_id: int, target: str) -> dict:
     """Resolve one explicitly selected Telegram peer before a manual message is sent."""
     value = _normalize_manual_message_target(target)
     async with _account_lock(account_id):
         async with isolated_account_client(account_id) as (_account, client):
-            entity = await client.get_entity(value)
-            if bool(getattr(entity, "broadcast", False)) and not bool(getattr(entity, "megagroup", False)):
-                raise ValueError("Это канал для публикаций, а не чат. Выберите группу или личный диалог.")
+            entity, saved_title = await _resolve_manual_message_peer(client, account_id, value)
             title = (
                 getattr(entity, "title", None)
+                or saved_title
                 or " ".join(filter(None, [
                     getattr(entity, "first_name", None),
                     getattr(entity, "last_name", None),
                 ]))
-                or (f"@{entity.username}" if getattr(entity, "username", None) else str(entity.id))
+                or (f"@{entity.username}" if getattr(entity, "username", None) else str(getattr(entity, "id", value)))
             )
             kind = "группа" if (
                 getattr(entity, "megagroup", False)
                 or getattr(entity, "gigagroup", False)
-                or entity.__class__.__name__ == "Chat"
+                or entity.__class__.__name__ in {"Chat", "InputPeerChat", "InputPeerChannel"}
             ) else "личный чат"
+            peer_id = int(getattr(entity, "id", value))
             return {
                 "title": str(title)[:200],
-                "peer_id": int(entity.id),
+                "peer_id": peer_id,
                 "username": str(getattr(entity, "username", None) or ""),
                 "kind": kind,
             }
@@ -1043,20 +1086,23 @@ async def send_message_to_chat(account_id: int, target: str, message: str) -> di
     peer = _normalize_manual_message_target(target)
     async with _account_lock(account_id):
         async with isolated_account_client(account_id) as (_account, client):
-            entity = await client.get_entity(peer)
+            entity, saved_title = await _resolve_manual_message_peer(client, account_id, peer)
             if bool(getattr(entity, "broadcast", False)) and not bool(getattr(entity, "megagroup", False)):
                 raise ValueError("Отправка в вещательные каналы отключена. Выберите группу или личный диалог.")
             sent = await client.send_message(entity, value, parse_mode=None, link_preview=False)
+            if sent is None or getattr(sent, "id", None) is None:
+                raise RuntimeError("Telegram не вернул подтверждение отправленного сообщения.")
             return {
                 "message_id": int(sent.id),
-                "peer_id": int(entity.id),
+                "peer_id": int(getattr(entity, "id", peer)),
                 "title": str(
                     getattr(entity, "title", None)
+                    or saved_title
                     or " ".join(filter(None, [
                         getattr(entity, "first_name", None),
                         getattr(entity, "last_name", None),
                     ]))
-                    or (f"@{entity.username}" if getattr(entity, "username", None) else str(entity.id))
+                    or (f"@{entity.username}" if getattr(entity, "username", None) else str(getattr(entity, "id", peer)))
                 )[:200],
             }
 
