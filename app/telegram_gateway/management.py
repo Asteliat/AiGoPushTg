@@ -273,7 +273,10 @@ async def set_profile_photo(account_id: int, photo_path: str) -> None:
 
         async with _account_lock(account_id):
             async with isolated_account_client(account_id) as (_account, client):
-                await client.upload_profile_photo(jpeg_path)
+                uploaded_file = await client.upload_file(jpeg_path)
+                from telethon.tl.functions.photos import UploadProfilePhotoRequest
+
+                await client(UploadProfilePhotoRequest(file=uploaded_file))
                 uploaded = await client.get_profile_photos("me", limit=1)
                 if not uploaded:
                     raise RuntimeError("Telegram не подтвердил наличие фотографии профиля.")
