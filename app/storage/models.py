@@ -35,7 +35,6 @@ class Account(Base):
     learning_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     learning_limit: Mapped[int] = mapped_column(Integer, default=500, server_default="500", nullable=False)
     learning_prompt: Mapped[str] = mapped_column(Text, default="", server_default="", nullable=False)
-    ai_identity_disclosed: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
     reply_cooldown_seconds_override: Mapped[int | None] = mapped_column(Integer, nullable=True)
     channel_post_instructions: Mapped[str] = mapped_column(Text, default="", server_default="", nullable=False)
     channel_comments_instructions: Mapped[str] = mapped_column(Text, default="", server_default="", nullable=False)
