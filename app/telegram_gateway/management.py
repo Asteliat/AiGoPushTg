@@ -1034,9 +1034,25 @@ async def _resolve_manual_message_peer(client, account_id: int, peer):
                 input_peer = _bound_chat_input_peer(binding)
                 if input_peer is not None:
                     return input_peer, binding.title
+                # Backfill old bindings created before access hashes were persisted.
+                # Telegram's dialog list carries fresh InputChannel access hashes.
+                async for dialog in client.iter_dialogs():
+                    candidate = dialog.entity
+                    if int(utils.get_peer_id(candidate)) != int(peer):
+                        continue
+                    access_hash = getattr(candidate, "access_hash", None)
+                    if access_hash is not None:
+                        binding.access_hash = int(access_hash)
+                        binding.peer_type = "channel"
+                        await db.commit()
+                        return candidate, binding.title
+                    if candidate.__class__.__name__ == "Chat":
+                        binding.peer_type = "chat"
+                        await db.commit()
+                        return candidate, binding.title
                 raise ValueError(
-                    "Для этой приватной группы не сохранён access hash. "
-                    "Повторно проверьте вступление в группу через бота."
+                    "Не удалось восстановить доступ к этой группе. "
+                    "Повторно вступите в неё по ссылке-приглашению через бота."
                 ) from resolution_error
 
     if resolution_error:
