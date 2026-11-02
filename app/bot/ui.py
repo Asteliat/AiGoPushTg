@@ -811,7 +811,7 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         "parsechats": "Формат: all | 200, groups | 200 или channels | 200. Можно отправить только тип (all/groups/channels) или число. Результат будет отправлен в TXT и CSV.",
         "joinbatch": "Создание задачи подписки. Отправьте now | ссылки или дату YYYY-MM-DD HH:MM UTC | ссылки, по одной на строку. Можно загрузить TXT/CSV. Максимум 500 ссылок; задача попадёт в очередь, её можно приостановить или отменить.",
         "leavebatch": "Создание задачи отписки. Отправьте now | ссылки или дату YYYY-MM-DD HH:MM UTC | ссылки, по одной на строку. Можно загрузить TXT/CSV. Максимум 500 ссылок; задача попадёт в очередь, её можно приостановить или отменить.",
-        "parsechannel": "Формат: @канал | сообщений (1–500) | за сколько дней (0 = без ограничения) | ключевые слова через запятую или - | комментарии да/нет.\nПример: @telegram | 100 | 7 | впн, VPN, випиэн | да. Выгрузка будет в TXT и CSV.",
+        "parsechannel": "Формат: @чат или канал | сообщений (1–500) | за сколько дней (0 = без ограничения) | ключевые слова через запятую или - | комментарии да/нет | задержка между сообщениями в секундах (0–9999).\nПример: @telegram | 100 | 7 | впн, VPN, випиэн | да | 2. Комментарии выгружаются, если Telegram предоставляет к ним доступ. Результат — TXT и CSV.",
         "parseparticipants": "Формат: @группа | лимит | без ботов | без удалённых | только username | только фото | только Premium | активны за N дней (0 = без фильтра) | без scam (да/нет).\nПример: @mygroup | 500 | да | да | нет | да | нет | 7 | да. Нужны права администратора. Активность учитывается только при доступном точном времени последнего посещения; скрытые данные не угадываются.",
         "join": "Отправьте @username или публичную ссылку t.me/… для вступления.",
         "leave": "Отправьте @username или публичную ссылку t.me/… для выхода.",
@@ -1718,8 +1718,8 @@ async def management_input_received(m: Message, state: FSMContext):
             )
         elif action == "parsechannel":
             parts = [x.strip() for x in raw.split("|")]
-            if not 1 <= len(parts) <= 5:
-                raise ValueError("Формат: @канал | количество | дни | ключевые слова | комментарии да/нет.")
+            if not 1 <= len(parts) <= 6:
+                raise ValueError("Формат: @чат | количество | дни | ключевые слова | комментарии да/нет | задержка между сообщениями.")
             limit = int(parts[1]) if len(parts) > 1 and parts[1] else 20
             days = int(parts[2]) if len(parts) > 2 and parts[2] else 0
             keywords = [] if len(parts) < 4 or parts[3] in {"", "-"} else [x.strip() for x in parts[3].split(",") if x.strip()]
@@ -1727,6 +1727,7 @@ async def management_input_received(m: Message, state: FSMContext):
             result = await telegram_management.parse_chat_history(
                 aid, parts[0], limit=limit, days=days, keywords=keywords,
                 include_comments=include_comments,
+                message_delay_seconds=int(parts[5]) if len(parts) > 5 and parts[5] else 0,
             )
             output = io.StringIO()
             writer = csv.writer(output)
@@ -1743,7 +1744,7 @@ async def management_input_received(m: Message, state: FSMContext):
                 f"Аккаунт: #{aid}", f"Chat ID: {result['channel_id']}",
                 f"Username: @{result['username']}" if result["username"] else "Username: —",
                 f"Экспортировано сообщений: {len(result['posts'])} из просмотренных {result.get('scanned', len(result['posts']))}",
-                f"Фильтры: дней={result['filters']['days'] or 'все'} · ключевые слова={', '.join(result['filters']['keywords']) or 'нет'} · комментарии={'да' if result['filters']['comments'] else 'нет'}", "",
+                f"Фильтры: дней={result['filters']['days'] or 'все'} · ключевые слова={', '.join(result['filters']['keywords']) or 'нет'} · комментарии={'да' if result['filters']['comments'] else 'нет'} · задержка={result['filters']['message_delay_seconds']} сек.", "",
             ]
             for post in result["posts"]:
                 reactions = ", ".join(f"{item['emoji']} × {item['count']}" for item in post["reactions"]) or "нет"
