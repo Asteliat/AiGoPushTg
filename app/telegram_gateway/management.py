@@ -452,6 +452,17 @@ async def join_chat(account_id: int, link: str) -> None:
         raise
 
 
+async def verify_chat_membership(client, entity) -> bool:
+    """Ask Telegram for the current account's membership before recording a joined chat."""
+    try:
+        await client.get_permissions(entity, "me")
+        return True
+    except Exception as exc:
+        if "UserNotParticipant" in type(exc).__name__ or "ParticipantIdInvalid" in type(exc).__name__:
+            return False
+        raise
+
+
 async def leave_chat(account_id: int, link: str) -> None:
     """Leave one explicitly selected chat, respecting global subscription policy."""
     value = link.strip()
