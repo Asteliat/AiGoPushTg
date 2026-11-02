@@ -423,7 +423,7 @@ async def delete_contact(account_id: int, user_id: int) -> None:
 
 
 async def join_chat(account_id: int, link: str) -> None:
-    """Join one explicit public chat or invite link, respecting global subscription policy."""
+    """Join one explicit public chat or invite link and verify actual membership."""
     value = link.strip()
     if not value:
         raise ValueError("Укажите ссылку или @username.")
@@ -433,20 +433,37 @@ async def join_chat(account_id: int, link: str) -> None:
         async with _account_lock(account_id):
             async with isolated_account_client(account_id) as (_account, client):
                 lowered = value.lower().rstrip("/")
+                entity = None
                 if "t.me/+" in lowered or "t.me/joinchat/" in lowered:
                     invite_hash = value.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1].lstrip("+")
                     if not invite_hash:
                         raise ValueError("Некорректная приватная ссылка-приглашение.")
                     invite = await client(CheckChatInviteRequest(hash=invite_hash))
                     if isinstance(invite, ChatInviteAlready):
-                        return
-                    await client(ImportChatInviteRequest(hash=invite_hash))
-                    return
-                target = value
-                if "t.me/" in lowered:
-                    target = value.rstrip("/").rsplit("/", 1)[-1]
-                entity = await client.get_entity(target)
-                await client(JoinChannelRequest(entity))
+                        entity = invite.chat
+                    else:
+                        joined = await client(ImportChatInviteRequest(hash=invite_hash))
+                        entity = next(iter(getattr(joined, "chats", []) or []), None)
+                else:
+                    target = value
+                    if "t.me/" in lowered:
+                        target = value.rstrip("/").rsplit("/", 1)[-1]
+                    entity = await client.get_entity(target)
+                    await client(JoinChannelRequest(entity))
+
+                if entity is None:
+                    raise RuntimeError("Telegram не вернул объект группы после вступления.")
+                is_member = False
+                for attempt in range(3):
+                    is_member = await verify_chat_membership(client, entity)
+                    if is_member:
+                        break
+                    if attempt < 2:
+                        await asyncio.sleep(1)
+                if not is_member:
+                    raise RuntimeError(
+                        "Telegram не подтвердил членство аккаунта. Возможно, требуется одобрение администратора."
+                    )
     except FloodWaitError as exc:
         await record_module_floodwait(account_id, "subscription", max(1, int(exc.seconds)))
         raise
