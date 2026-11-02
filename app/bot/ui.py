@@ -1,5 +1,5 @@
 from __future__ import annotations
-import asyncio, csv, io, os, re, secrets, tempfile, logging
+import asyncio, csv, io, os, re, secrets, tempfile, logging, hashlib
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from aiogram import F, Router
@@ -332,6 +332,8 @@ MODULE_ACTIONS = {
     "subscription": ("📢 Подписка и отписка", [
         ("➕ Пакетная подписка", "joinbatch"),
         ("➖ Пакетная отписка", "leavebatch"),
+        ("🗓 Повторяющаяся подписка", "joinrepeat"),
+        ("🗓 Повторяющаяся отписка", "leaverepeat"),
         ("➕ Вступить по ссылке", "join"),
         ("➖ Выйти из чата", "leave"),
         ("📋 Очередь и журнал", "campaigns"),
@@ -814,6 +816,8 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         "parsechats": "Формат: all | 200, groups | 200 или channels | 200. Можно отправить только тип (all/groups/channels) или число. Результат будет отправлен в TXT и CSV.",
         "joinbatch": "Создание задачи подписки. Отправьте now | ссылки или дату YYYY-MM-DD HH:MM UTC | ссылки, по одной на строку. Можно загрузить TXT/CSV. Максимум 500 ссылок; задача попадёт в очередь, её можно приостановить или отменить.",
         "leavebatch": "Создание задачи отписки. Отправьте now | ссылки или дату YYYY-MM-DD HH:MM UTC | ссылки, по одной на строку. Можно загрузить TXT/CSV. Максимум 500 ссылок; задача попадёт в очередь, её можно приостановить или отменить.",
+        "joinrepeat": "Повторяющаяся подписка. Первая строка: старт (now или YYYY-MM-DD HH:MM UTC) | интервал в часах (1–8760) | число запусков (1–365) | окончание YYYY-MM-DD HH:MM UTC или -. Далее ссылки, по одной на строку. Можно загрузить TXT/CSV.",
+        "leaverepeat": "Повторяющаяся отписка. Первая строка: старт (now или YYYY-MM-DD HH:MM UTC) | интервал в часах (1–8760) | число запусков (1–365) | окончание YYYY-MM-DD HH:MM UTC или -. Далее ссылки, по одной на строку. Можно загрузить TXT/CSV.",
         "parsechannel": "Формат: @чат или all | сообщений на чат (1–500) | дни (0 = все) | ключевые слова через запятую/; или - | комментарии да/нет | задержка между сообщениями (сек.) | задержка между чатами (сек.).\nПример: all | 100 | 7 | впн, VPN, випиэн | да | 2 | 5. Собираются сообщения, публичные ссылки из текста и комментарии, если Telegram даёт к ним доступ. all обрабатывает доступные группы и каналы выбранного аккаунта. TXT и CSV.",
         "parseparticipants": "Формат: @группа | лимит | без ботов | без удалённых | только username | только фото | только Premium | активны за N дней | без scam | исключить заблокированных этим аккаунтом.\nПример: @mygroup | 500 | да | да | нет | да | нет | 7 | да | да. Нужны права администратора. Telegram не раскрывает, кто заблокировал сам аккаунт; фильтр учитывает только собственный список блокировки.",
         "join": "Отправьте @username или публичную ссылку t.me/… для вступления.",
@@ -1291,7 +1295,7 @@ async def management_input_document_received(m: Message, state: FSMContext):
         return
     data = await state.get_data()
     action = data.get("management_action")
-    if action not in {"campaign_recipients", "importcontacts", "joinbatch", "leavebatch"}:
+    if action not in {"campaign_recipients", "importcontacts", "joinbatch", "leavebatch", "joinrepeat", "leaverepeat"}:
         await m.answer("В этом шаге нужен текстовый ввод. TXT/CSV принимаются для получателей рассылки, подписок и импорта контактов.")
         return
     document = m.document
@@ -1719,34 +1723,76 @@ async def management_input_received(m: Message, state: FSMContext):
             document = BufferedInputFile(output.getvalue().encode("utf-8-sig"), filename=f"dialogs-account-{aid}.csv")
             await m.answer_document(document, caption="Дополнительно: таблица CSV.")
             message = f"Сформированы TXT и CSV. Найдено групп и каналов: {len(items)}."
-        elif action in {"joinbatch", "leavebatch"}:
-            schedule_at = datetime.now(timezone.utc)
-            link_block = raw
-            if "|" in raw:
-                time_part, link_block = raw.split("|", 1)
-                time_part = time_part.strip()
-                if time_part.lower() != "now":
-                    try:
-                        schedule_at = datetime.strptime(time_part, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
-                    except ValueError as exc:
-                        raise ValueError("Время должно быть now или YYYY-MM-DD HH:MM UTC.") from exc
-            links = [line.strip() for line in link_block.replace(",", "\\n").splitlines() if line.strip()]
+        elif action in {"joinbatch", "leavebatch", "joinrepeat", "leaverepeat"}:
+            repeating = action in {"joinrepeat", "leaverepeat"}
+            operation = "join" if action in {"joinbatch", "joinrepeat"} else "leave"
             account_ids = [int(value) for value in (data.get("management_account_ids") or [aid])]
-            created, failed = [], []
-            for account_id in account_ids:
-                try:
-                    task_id = await telegram_automation.create_subscription_task(
-                        account_id, links, action="join" if action == "joinbatch" else "leave",
-                        scheduled_at=schedule_at,
-                    )
-                    created.append((account_id, task_id))
-                except Exception as exc:
-                    failed.append((account_id, f"{type(exc).__name__}: {str(exc)[:160]}"))
-            message = "\\n".join(
-                [f"✅ Аккаунт #{account_id}: задача #{task_id}, ссылок: {len(set(links))}" for account_id, task_id in created]
-                + [f"❌ Аккаунт #{account_id}: {error}" for account_id, error in failed]
-                + [f"Старт UTC: {schedule_at.isoformat()}. Очередь и журнал — в этом же модуле."]
-            )
+            if repeating:
+                lines = [line.strip() for line in raw.splitlines() if line.strip()]
+                if len(lines) < 2:
+                    raise ValueError("Нужна первая строка с параметрами расписания и хотя бы одна ссылка.")
+                header = [value.strip() for value in lines[0].split("|")]
+                if len(header) != 4 or not header[1].isdigit() or not header[2].isdigit():
+                    raise ValueError("Первая строка: старт | интервал часов | число запусков | окончание или -.")
+                starts_at = datetime.now(timezone.utc) if header[0].lower() == "now" else datetime.strptime(header[0], "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+                interval_seconds = int(header[1]) * 3600
+                max_runs = int(header[2])
+                ends_at = None if header[3] in {"-", "нет"} else datetime.strptime(header[3], "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+                links = list(dict.fromkeys(line for line in lines[1:] if line))
+                if not 1 <= interval_seconds <= 31536000 or not 1 <= max_runs <= 365:
+                    raise ValueError("Интервал должен быть 1–8760 часов, число запусков — 1–365.")
+                if not links or len(links) > 500:
+                    raise ValueError("Укажите от 1 до 500 ссылок.")
+                recipients = {}
+                for link in links:
+                    peer_id = int.from_bytes(hashlib.sha256(link.casefold().encode("utf-8")).digest()[:8], "big") & ((1 << 63) - 1)
+                    recipients[peer_id or 1] = link
+                created, failed = [], []
+                for account_id in account_ids:
+                    try:
+                        task_id = await telegram_automation.create_schedule(
+                            account_id,
+                            kind="subscription_join" if operation == "join" else "subscription_leave",
+                            recipients=list(recipients),
+                            payload={"action": operation},
+                            starts_at=starts_at, ends_at=ends_at,
+                            interval_seconds=interval_seconds, max_runs=max_runs,
+                            recipient_refs=recipients, recipient_labels=recipients,
+                        )
+                        created.append((account_id, task_id))
+                    except Exception as exc:
+                        failed.append((account_id, f"{type(exc).__name__}: {str(exc)[:160]}"))
+                message = "\\n".join(
+                    [f"✅ Аккаунт #{account_id}: расписание #{task_id}, ссылок: {len(links)}" for account_id, task_id in created]
+                    + [f"❌ Аккаунт #{account_id}: {error}" for account_id, error in failed]
+                    + [f"Старт UTC: {starts_at.isoformat()} · интервал: {interval_seconds // 3600} ч. · запусков: {max_runs}."]
+                )
+            else:
+                schedule_at = datetime.now(timezone.utc)
+                link_block = raw
+                if "|" in raw:
+                    time_part, link_block = raw.split("|", 1)
+                    time_part = time_part.strip()
+                    if time_part.lower() != "now":
+                        try:
+                            schedule_at = datetime.strptime(time_part, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+                        except ValueError as exc:
+                            raise ValueError("Время должно быть now или YYYY-MM-DD HH:MM UTC.") from exc
+                links = [line.strip() for line in link_block.replace(",", "\\n").splitlines() if line.strip()]
+                created, failed = [], []
+                for account_id in account_ids:
+                    try:
+                        task_id = await telegram_automation.create_subscription_task(
+                            account_id, links, action=operation, scheduled_at=schedule_at,
+                        )
+                        created.append((account_id, task_id))
+                    except Exception as exc:
+                        failed.append((account_id, f"{type(exc).__name__}: {str(exc)[:160]}"))
+                message = "\\n".join(
+                    [f"✅ Аккаунт #{account_id}: задача #{task_id}, ссылок: {len(set(links))}" for account_id, task_id in created]
+                    + [f"❌ Аккаунт #{account_id}: {error}" for account_id, error in failed]
+                    + [f"Старт UTC: {schedule_at.isoformat()}. Очередь и журнал — в этом же модуле."]
+                )
         elif action == "chatinfo":
             item = await telegram_management.get_chat_overview(aid, raw)
             message = (
