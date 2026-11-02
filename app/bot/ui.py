@@ -1146,7 +1146,7 @@ async def management_campaign_wizard_start(c: CallbackQuery, state: FSMContext):
     if kind not in {"broadcast", "invite", "direct_invite", "group_broadcast"} or mode not in {"once", "recurring"}:
         await c.answer("Неизвестный тип задачи.", show_alert=True)
         return
-        async with SessionFactory() as db:
+    async with SessionFactory() as db:
         account = await db.get(Account, aid)
         if not account or not account.enabled:
             await c.answer("Аккаунт не найден или выключен.", show_alert=True)
