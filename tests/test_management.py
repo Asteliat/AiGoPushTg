@@ -704,7 +704,6 @@ async def test_verify_chat_membership_returns_false_for_non_member():
 async def test_bound_private_group_builds_input_peer_with_saved_access_hash():
     from types import SimpleNamespace
     from telethon.tl.types import InputPeerChannel
-    from telethon import utils
     from app.telegram_gateway.management import _bound_chat_input_peer
 
     # Telethon's canonical marked channel ID for raw channel ID 987654.
