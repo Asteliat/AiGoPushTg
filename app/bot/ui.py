@@ -623,6 +623,7 @@ async def management_account_menu(c: CallbackQuery):
         [("📨 Разовая рассылка / приглашение", f"tool:mg:campaign:{aid}")],
         [("🗓 Создать расписание", f"tool:mg:schedule:{aid}"), ("📅 Мои расписания", f"tool:mg:schedules:{aid}")],
         [("📋 Очередь и история задач", f"tool:mg:campaigns:{aid}")],
+        [("🤖 Автоответчик (только при выключенном ИИ)", f"tool:mg:autoresponder:{aid}")],
         [("🎯 Автоответчики и триггеры", f"trigger:account:{aid}")],
         [("⬅️ К аккаунтам", "tool:management")],
     ]))
@@ -660,6 +661,7 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         "schedreaction": "Формат: @username | ID_публикации | emoji | now либо YYYY-MM-DD HH:MM UTC. Пример: @mychannel | 123 | 🔥 | 2026-11-03 18:00. Это одна реакция на одну выбранную публикацию, без накрутки.",
 
         "editprofile": "Отправьте новые поля через |\nФормат: имя | фамилия | BIO | username\nЧтобы оставить поле без изменений, укажите -",
+        "autoresponder": "Формат: ВКЛ/ВЫКЛ | ключевые слова через запятую или - для всех сообщений | текст ответа | пауза в секундах.\nПример: ВКЛ | привет, цена, тариф | Привет! Чем помочь? | 60\nРаботает только в личных сообщениях и только пока ИИ выключен именно на этом аккаунте.",
         "campaign": "Формат: broadcast, invite или group_broadcast | now либо YYYY-MM-DD HH:MM UTC | @получатель1,@получатель2. Выберите конкретных получателей; максимум 500 за задачу.",
         "broadcastlimits": "Формат: интервал в секундах | максимум за 24 часа | тихо с HH:MM UTC или - | тихо до HH:MM UTC или -. Пример: 60 | 40 | 23:00 | 08:00.",
         "invitelimits": "Формат: интервал в секундах | максимум за 24 часа | тихо с HH:MM UTC или - | тихо до HH:MM UTC или -. Пример: 120 | 15 | 22:00 | 07:00.",
@@ -1075,7 +1077,39 @@ async def management_input_received(m: Message, state: FSMContext):
     raw = (m.text or "").strip()
     await delete_msg(m)
     try:
-        if action and action.startswith("policy-"):
+        if action == "autoresponder":
+            parts = [x.strip() for x in raw.split("|", 3)]
+            if len(parts) != 4:
+                raise ValueError("Формат: ВКЛ/ВЫКЛ | ключевые слова или - | текст ответа | пауза в секундах.")
+            enabled = parts[0].lower() in {"вкл", "включить", "on", "true", "1"}
+            if parts[0].lower() not in {"вкл", "включить", "on", "true", "1", "выкл", "выключить", "off", "false", "0"}:
+                raise ValueError("Первое поле должно быть ВКЛ или ВЫКЛ.")
+            keywords = "" if parts[1] in {"-", "все", "all"} else parts[1]
+            response = parts[2].strip()
+            cooldown = int(parts[3])
+            if enabled and not response:
+                raise ValueError("Для включённого автоответчика укажите текст ответа.")
+            if not 0 <= cooldown <= 86400:
+                raise ValueError("Пауза должна быть от 0 до 86400 секунд.")
+            async with SessionFactory() as db:
+                settings = {
+                    f"autoresponder.{aid}.enabled": "true" if enabled else "false",
+                    f"autoresponder.{aid}.keywords": keywords,
+                    f"autoresponder.{aid}.response": response,
+                    f"autoresponder.{aid}.cooldown_seconds": str(cooldown),
+                }
+                for key, value in settings.items():
+                    row = await db.get(AppSetting, key)
+                    if row:
+                        row.value = value
+                    else:
+                        db.add(AppSetting(key=key, value=value))
+                await db.commit()
+            message = (
+                "Автоответчик включён. Он отвечает только в личных чатах и только при выключенном ИИ аккаунта."
+                if enabled else "Автоответчик выключен."
+            )
+        elif action and action.startswith("policy-"):
             module = action.removeprefix("policy-")
             parts = [x.strip() for x in raw.split("|")]
             if len(parts) != 6 or any(not item.isdigit() for item in parts):
