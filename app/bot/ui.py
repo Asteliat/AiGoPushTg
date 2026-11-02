@@ -333,6 +333,7 @@ MODULE_ACTIONS = {
         ("➖ Пакетная отписка", "leavebatch"),
         ("➕ Вступить по ссылке", "join"),
         ("➖ Выйти из чата", "leave"),
+        ("📋 Очередь и журнал", "campaigns"),
     ]),
     "reaction": ("❤️ Реакции", [
         ("❤️ Реакция на публикацию", "reaction"),
@@ -757,8 +758,8 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         "delcontact": "Отправьте Telegram user ID контакта, которого нужно удалить.",
         "chatinfo": "Отправьте @username или публичную ссылку t.me/…",
         "parsechats": "Будет сформирован CSV со списком групп и каналов, в которых состоит аккаунт. Отправьте максимум диалогов (1–500), либо оставьте пустым для 200.",
-        "joinbatch": "Отправьте от 1 до 20 ссылок или @username, каждый с новой строки. Аккаунт будет вступать последовательно; при FloodWait остановится и покажет ожидание.",
-        "leavebatch": "Отправьте от 1 до 20 ссылок или @username, каждый с новой строки. Аккаунт будет выходить последовательно; при FloodWait остановится.",
+        "joinbatch": "Создание задачи подписки. Отправьте now | ссылки или дату YYYY-MM-DD HH:MM UTC | ссылки, по одной на строку. Можно загрузить TXT/CSV. Максимум 500 ссылок; задача попадёт в очередь, её можно приостановить или отменить.",
+        "leavebatch": "Создание задачи отписки. Отправьте now | ссылки или дату YYYY-MM-DD HH:MM UTC | ссылки, по одной на строку. Можно загрузить TXT/CSV. Максимум 500 ссылок; задача попадёт в очередь, её можно приостановить или отменить.",
         "parsechannel": "Формат: @канал | сообщений (1–500) | за сколько дней (0 = без ограничения) | ключевые слова через запятую или - | комментарии да/нет.\nПример: @telegram | 100 | 7 | впн, VPN, випиэн | да. Выгрузка будет в TXT и CSV.",
         "parseparticipants": "Формат: @группа | лимит | без ботов (да/нет) | без удалённых (да/нет) | только с username | только с фото | только Premium | активны за N дней (0 = без фильтра).\nПример: @mygroup | 500 | да | да | нет | да | нет | 7. Нужны права администратора. Активность учитывается только если Telegram показывает точное время последнего посещения; скрытые данные не угадываются.",
         "join": "Отправьте @username или публичную ссылку t.me/… для вступления.",
@@ -1184,8 +1185,8 @@ async def management_input_document_received(m: Message, state: FSMContext):
         return
     data = await state.get_data()
     action = data.get("management_action")
-    if action not in {"campaign_recipients", "importcontacts"}:
-        await m.answer("В этом шаге нужен текстовый ввод. TXT/CSV принимаются для получателей рассылки и импорта контактов.")
+    if action not in {"campaign_recipients", "importcontacts", "joinbatch", "leavebatch"}:
+        await m.answer("В этом шаге нужен текстовый ввод. TXT/CSV принимаются для получателей рассылки, подписок и импорта контактов.")
         return
     document = m.document
     if not document or document.file_size and document.file_size > 1_000_000:
@@ -1524,19 +1525,26 @@ async def management_input_received(m: Message, state: FSMContext):
             await m.answer_document(document, caption="Дополнительно: таблица CSV.")
             message = f"Сформированы TXT и CSV. Найдено групп и каналов: {len(items)}."
         elif action in {"joinbatch", "leavebatch"}:
-            links = [line.strip() for line in raw.replace(",", "\n").splitlines() if line.strip()]
-            result = await telegram_management.manage_subscriptions_batch(
-                aid, links, action="join" if action == "joinbatch" else "leave"
+            schedule_at = datetime.now(timezone.utc)
+            link_block = raw
+            if "|" in raw:
+                time_part, link_block = raw.split("|", 1)
+                time_part = time_part.strip()
+                if time_part.lower() != "now":
+                    try:
+                        schedule_at = datetime.strptime(time_part, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+                    except ValueError as exc:
+                        raise ValueError("Время должно быть now или YYYY-MM-DD HH:MM UTC.") from exc
+            links = [line.strip() for line in link_block.replace(",", "\n").splitlines() if line.strip()]
+            task_id = await telegram_automation.create_subscription_task(
+                aid, links, action="join" if action == "joinbatch" else "leave",
+                scheduled_at=schedule_at,
             )
-            completed = sum(1 for item in result["results"] if item["status"] in {"done", "already_member"})
-            failed = sum(1 for item in result["results"] if item["status"] == "failed")
-            message = f"Пакетная операция завершена: {completed}/{result['total']} успешно, ошибок: {failed}."
-            if result["flood_wait_seconds"]:
-                message += f"\n\n⏳ Telegram установил FloodWait: {result['flood_wait_seconds']} сек. Операция остановлена; повторного обхода ограничения не было."
-            if result["local_limit_seconds"]:
-                message += f"\n\n⏱ Сработал локальный лимит AtcivPerson. Продолжить можно через {result['local_limit_seconds']} сек."
-            details = [f"{item['status']} · {item['link']}" + (f" · {item['error']}" if item["error"] else "") for item in result["results"]]
-            message += "\n\n" + "\n".join(details[:15])
+            message = (
+                f"Задача #{task_id} поставлена в очередь: "
+                f"{'подписка' if action == 'joinbatch' else 'отписка'}, ссылок: {len(set(links))}. "
+                f"Старт UTC: {schedule_at.isoformat()}. Управление доступно в «Очередь и журнал»."
+            )
         elif action == "chatinfo":
             item = await telegram_management.get_chat_overview(aid, raw)
             message = (
