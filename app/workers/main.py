@@ -113,7 +113,7 @@ async def main():
         response = (values.get(keys[2], "") or "").strip()
         if not response:
             return False
-        terms = [item.strip().casefold() for item in re.split(r"[,;\\n]", values.get(keys[1], "")) if item.strip()]
+        terms = [item.strip().casefold() for item in re.split(r"[,;\n]", values.get(keys[1], "")) if item.strip()]
         folded = incoming.casefold()
         if terms and not any(term in folded for term in terms):
             return False
