@@ -111,6 +111,11 @@ def test_direct_invite_permission_checks_admin_rights_object():
 
 
 
+def test_recurring_subscription_payloads_are_valid():
+    assert _validate_payload("subscription_join", {"action": "join"}) == {"action": "join"}
+    assert _validate_payload("subscription_leave", {"action": "leave"}) == {"action": "leave"}
+
+
 def test_direct_invite_payload_is_valid_for_recurring_campaigns():
     from app.services.automation import _module_name_for_kind
 
