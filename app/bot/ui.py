@@ -6,7 +6,7 @@ from aiogram import F, Router
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, BufferedInputFile, ErrorEvent, WebAppInfo
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, BufferedInputFile, ErrorEvent
 from sqlalchemy import select
 from telethon import TelegramClient, utils
 from telethon.errors import FloodWaitError, SessionPasswordNeededError
@@ -34,22 +34,6 @@ from app.telegram_gateway import management as telegram_management
 from app.services import automation as telegram_automation
 
 router = Router()
-
-@router.callback_query(F.data.startswith("tool:"))
-async def retired_tool_callback(c: CallbackQuery):
-    """Redirect stale buttons from the retired bulk-tools menu."""
-    if not await check_cb(c):
-        return
-    await edit(c, "🧩 Старые массовые инструменты сняты с меню. Откройте Mini App — там находится новое рабочее пространство.", MAIN)
-
-
-@router.callback_query(F.data == "trigger:global")
-async def retired_global_trigger_callback(c: CallbackQuery):
-    if not await check_cb(c):
-        return
-    await edit(c, "🎯 Глобальные триггеры теперь находятся в Mini App → Модули → Умные триггеры.", MAIN)
-
-
 
 
 @router.errors()
@@ -143,14 +127,10 @@ def admin(uid): return uid is not None and uid in cfg.admin_id_set
 def kb(rows):
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=t, callback_data=d) for t,d in row] for row in rows])
 
-MAIN = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(text="👤 Аккаунты", callback_data="acc:list"),
-     InlineKeyboardButton(text="🤖 ИИ-агенты", callback_data="agent:menu")],
-    [InlineKeyboardButton(text="🎭 Персоны", callback_data="persona:menu"),
-     InlineKeyboardButton(text="💡 Примеры", callback_data="example:menu")],
-    *([[InlineKeyboardButton(text="🚀 Открыть Mini App", web_app=WebAppInfo(url=cfg.mini_app_url))]]
-      if cfg.mini_app_url.startswith("https://") else []),
-    [InlineKeyboardButton(text="⚙️ Настройки", callback_data="nav:settings")],
+MAIN = kb([
+    [("👤 Аккаунты", "acc:list"), ("🤖 ИИ-агенты", "agent:menu")],
+    [("🎭 Персоны", "persona:menu"), ("💡 Примеры", "example:menu")],
+    [("🧰 Инструменты", "tool:menu"), ("⚙️ Настройки", "nav:settings")],
 ])
 CANCEL = kb([[("❌ Отмена", "nav:cancel")]])
 
@@ -343,13 +323,16 @@ async def cancel_cb(c: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "tool:menu")
 async def tools_menu(c: CallbackQuery):
-    if not await check_cb(c):
-        return
-    await edit(
-        c,
-        "🧩 Старый раздел инструментов закрыт.\\n\\nОткройте Mini App — там собраны новые рабочие модули, поиск сообществ, ИИ-настройки и триггеры.",
-        MAIN,
-    )
+    if not await check_cb(c): return
+    await edit(c, "🧰 Инструменты\n\nВыберите модуль. Его параметры настраиваются внутри самого модуля и не смешиваются с настройками других модулей.", kb([
+        [("📩 Инвайтинг", "tool:module:invite"), ("🔍 Парсинг", "tool:module:parser")],
+        [("📇 Контакты", "tool:module:contacts"), ("📤 Рассылка", "tool:module:broadcast")],
+        [("📢 Подписка и отписка", "tool:module:subscription"), ("❤️ Реакции", "tool:module:reaction")],
+        [("✏️ Редактирование профиля", "tool:module:profile")],
+        [("🔎 Поиск групп", "tool:groups"), ("📣 Поиск каналов", "tool:channels")],
+        [("🎯 Глобальные триггеры", "trigger:global")],
+        [("⬅️ Главное меню", "nav:home")],
+    ]))
 
 
 MODULE_ACTIONS = {

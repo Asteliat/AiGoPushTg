@@ -91,7 +91,7 @@ services:
       postgres: {condition: service_healthy}
       migrate: {condition: service_completed_successfully}
     ports: ["127.0.0.1:8080:8080"]
-    networks: [internal, web]
+    networks: [internal]
   worker:
     build: .
     restart: unless-stopped
@@ -113,7 +113,4 @@ volumes:
   app_data:
 networks:
   internal:
-    driver: bridge
-  web:
-    name: atcivperson-web
     driver: bridge

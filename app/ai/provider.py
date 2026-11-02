@@ -55,8 +55,6 @@ async def generate_reply(*, agent: AIAgent, incoming_text: str, style_instructio
         )
     except Exception as exc:
         raise AIUnavailableError(f"Ошибка провайдера ИИ: {type(exc).__name__}: {str(exc)[:300]}") from exc
-    finally:
-        await client.close()
     result = response.choices[0].message.content
     if proactive and (not result or not result.strip() or result.strip() == "[[SKIP]]"):
         raise NoReplyNeeded()
@@ -137,8 +135,6 @@ async def summarize_chat_context(*, agent: AIAgent, messages: list[dict]) -> str
         raise
     except Exception as exc:
         raise AIUnavailableError(f"Не удалось обобщить контекст: {type(exc).__name__}: {str(exc)[:220]}") from exc
-    finally:
-        await client.close()
     result = response.choices[0].message.content
     if not result or not result.strip():
         raise AIUnavailableError("Провайдер ИИ вернул пустую сводку.")

@@ -2,15 +2,10 @@ from functools import lru_cache
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(
-        env_file=".env", env_file_encoding="utf-8", extra="ignore", env_ignore_empty=True
-    )
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore", env_ignore_empty=True)
     bot_token: str = ""
     api_secret_key: str = ""
-    mini_app_url: str = "https://panel.cloudre.store/miniapp"
-    legacy_automation_enabled: bool = False
     admin_ids: str = ""
     telegram_api_id: int = 0
     telegram_api_hash: str = ""
@@ -30,7 +25,6 @@ class Settings(BaseSettings):
     @property
     def admin_id_set(self) -> set[int]:
         return {int(x.strip()) for x in self.admin_ids.split(",") if x.strip().isdigit()}
-
 
 @lru_cache
 def get_settings() -> Settings:
