@@ -92,7 +92,7 @@ if(b.dataset.accountAction){const a=state.accounts.find(x=>x.id===Number(b.datas
 if(b.dataset.saveResult){const r=JSON.parse(decodeURIComponent(b.dataset.saveResult));const aid=Number($('#search-account').value);await api('/bindings',json('POST',{account_id:aid,kind:state.searchKind,peer_id:Number(r.id),title:r.title}));toast('Добавлено в список, пока выключено');return}
 if(b.dataset.copy){await navigator.clipboard.writeText(b.dataset.copy);toast('Ссылка скопирована');return}
 }catch(err){toast(err.message)}});
-content.addEventListener('change',async e=>{const s=e.target;if(s.dataset.account){const value=s.value?Number(s.value):null;try{await api('/accounts/'+s.dataset.account,json('PATCH',{[s.dataset.field]:value}));toast('Привязка обновлена')}catch(err){toast(err.message)}}});
+content.addEventListener('change',async e=>{const s=e.target;if(s.dataset.account){const value=s.dataset.field==='reply_mode'?s.value:(s.value?Number(s.value):null);try{await api('/accounts/'+s.dataset.account,json('PATCH',{[s.dataset.field]:value}));toast('Привязка обновлена')}catch(err){toast(err.message)}}});
 content.addEventListener('input',e=>{const x=e.target;if(x.dataset.setting){const o=$('#v-'+x.dataset.setting);if(o)o.textContent=x.dataset.setting.includes('probability')?x.value+'%':x.value+' сек.'}});
 $('#nav').addEventListener('click',e=>{const b=e.target.closest('button[data-page]');if(!b)return;state.page=b.dataset.page;render()});
 const originalSearch=search;search=async()=>{state.searchKind=state.toolTab;await originalSearch()};
