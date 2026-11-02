@@ -246,6 +246,10 @@ async def restore_previous_screen(c, callback_data, state: FSMContext | None = N
         return
     parts = callback_data.split(":")
     if callback_data == "tool:menu": await tools_menu(c)
+    elif callback_data.startswith("tool:parser:settings:"):
+        parts = callback_data.split(":")
+        if len(parts) == 4: await parser_settings_root(c, int(parts[3]))
+        else: await parser_settings_screen(c, int(parts[3]), parts[4])
     elif callback_data.startswith("tool:module:") and state is not None:
         await tool_module_accounts(c, state)
     elif callback_data.startswith("tool:policy:") and state is not None:
@@ -1084,6 +1088,9 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
     if not await check_cb(c): return
     _, _, action, aid_raw = c.data.split(":")
     aid = int(aid_raw)
+    if action == "parser_settings":
+        await parser_settings_root(c, aid)
+        return
     prompts = {
         "addcontact": "Отправьте номер телефона, имя и фамилию через |\nПример: +79990000000 | Иван | Иванов",
         "importcontacts": "Отправьте TXT или CSV (до 1000 контактов) либо вставьте строки формата: телефон | имя | фамилия. Для CSV используйте столбцы phone, first_name, last_name.",
@@ -1094,8 +1101,9 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         "leavebatch": "Создание задачи отписки. Отправьте now | ссылки или дату YYYY-MM-DD HH:MM UTC | ссылки, по одной на строку. Можно загрузить TXT/CSV. Максимум 500 ссылок; задача попадёт в очередь, её можно приостановить или отменить.",
         "joinrepeat": "Повторяющаяся подписка. Первая строка: старт (now или YYYY-MM-DD HH:MM UTC) | интервал в часах (1–8760) | число запусков (1–365) | окончание YYYY-MM-DD HH:MM UTC или -. Далее ссылки, по одной на строку. Можно загрузить TXT/CSV.",
         "leaverepeat": "Повторяющаяся отписка. Первая строка: старт (now или YYYY-MM-DD HH:MM UTC) | интервал в часах (1–8760) | число запусков (1–365) | окончание YYYY-MM-DD HH:MM UTC или -. Далее ссылки, по одной на строку. Можно загрузить TXT/CSV.",
-        "parsechannel": "Формат: @чат или all | сообщений на чат (1–500) | дни (0 = все) | ключевые слова через запятую/; или - | комментарии да/нет | задержка между сообщениями (сек.) | задержка между чатами (сек.).\nПример: all | 100 | 7 | впн, VPN, випиэн | да | 2 | 5. Собираются сообщения, публичные ссылки из текста и комментарии, если Telegram даёт к ним доступ. all обрабатывает доступные группы и каналы выбранного аккаунта. TXT и CSV.",
-        "parseparticipants": "Формат: @группа | лимит | без ботов | без удалённых | только username | только фото | только Premium | активны за N дней | без scam | исключить заблокированных этим аккаунтом.\nПример: @mygroup | 500 | да | да | нет | да | нет | 7 | да | да. Нужны права администратора. Telegram не раскрывает, кто заблокировал сам аккаунт; фильтр учитывает только собственный список блокировки.",
+        "parsechannel": "Отправьте @username или ссылку на группу/канал либо слово all, чтобы обработать доступные диалоги аккаунта. Лимиты, период, ключевые слова, фильтры и задержки настраиваются отдельно в «Настройки парсера» → «Парсер по сообщениям». Результат — TXT и CSV.",
+        "parseparticipants": "Отправьте @username или ссылку на свою группу. Лимит и фильтры настраиваются отдельно в «Настройки парсера» → «Парсер участников». Telegram разрешает полный список участников только при наличии прав администратора.",
+        "parsecomments": "Отправьте @username или ссылку на канал/группу. Количество публикаций и комментариев, период, ключевые слова, фильтры и задержка настраиваются в «Настройки парсера» → «Парсер по комментариям». Результат — TXT и CSV.",
         "join": "Отправьте @username или публичную ссылку t.me/… для вступления.",
         "leave": "Отправьте @username или публичную ссылку t.me/… для выхода.",
         "reaction": "Отправьте данные через |\nФормат: @username | ID_публикации | 👍",
@@ -1634,7 +1642,42 @@ async def management_input_received(m: Message, state: FSMContext):
     raw = (m.text or "").strip()
     await delete_msg(m)
     try:
-        if action == "autoresponder":
+        if action and action.startswith("parser-setting-"):
+            parts = action.split("-", 3)
+            if len(parts) != 4:
+                raise ValueError("Неизвестный параметр парсера.")
+            kind, field = parts[2], parts[3]
+            if kind not in PARSER_SETTING_DEFAULTS or field not in PARSER_SETTING_DEFAULTS[kind]:
+                raise ValueError("Неизвестный параметр парсера.")
+            default = PARSER_SETTING_DEFAULTS[kind][field]
+            if field == "keywords":
+                value = "" if raw.strip().lower() in {"-", "нет", "off"} else raw.strip()
+                if len(value) > 1000:
+                    raise ValueError("Список ключевых слов не должен превышать 1000 символов.")
+            else:
+                if not raw.isdigit():
+                    raise ValueError("Введите целое число.")
+                value = int(raw)
+                if field in {"limit", "post_limit", "comment_limit"}:
+                    minimum, maximum = 1, 500
+                elif field == "days":
+                    minimum, maximum = 0, 365
+                elif field.endswith("_delay_seconds"):
+                    minimum, maximum = 0, 9999
+                else:
+                    minimum, maximum = 0, 9999
+                if not minimum <= value <= maximum:
+                    raise ValueError(f"Допустимый диапазон: {minimum}–{maximum}.")
+            key = f"parser.settings.{aid}.{kind}.{field}"
+            async with SessionFactory() as db:
+                row = await db.get(AppSetting, key)
+                if row:
+                    row.value = str(value)
+                else:
+                    db.add(AppSetting(key=key, value=str(value)))
+                await db.commit()
+            message = f"Настройка парсера сохранена: {value if value != '' else 'фильтр ключевых слов отключён'}."
+        elif action == "autoresponder":
             parts = [x.strip() for x in raw.split("|", 3)]
             if len(parts) != 4:
                 raise ValueError("Формат: ВКЛ/ВЫКЛ | ключевые слова или - | текст ответа | пауза в секундах.")
