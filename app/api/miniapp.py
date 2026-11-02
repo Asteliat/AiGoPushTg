@@ -229,8 +229,6 @@ async def create_agent(payload: AgentInput, actor: int = Depends(require_admin),
     if await db.scalar(select(AIAgent.id).where(AIAgent.name == payload.name)):
         raise HTTPException(409, "Агент с таким названием уже существует.")
     values = payload.model_dump()
-    if row_name := await db.scalar(select(AIAgent.id).where(AIAgent.name == payload.name)):
-        raise HTTPException(409, "ИИ-агент с таким названием уже существует.")
     row = AIAgent(**values)
     if row.is_default:
         for item in (await db.scalars(select(AIAgent))).all():
