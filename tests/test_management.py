@@ -667,3 +667,34 @@ class _AsyncNullLock:
 
     async def __aexit__(self, *_args):
         return False
+
+
+@pytest.mark.asyncio
+async def test_verify_chat_membership_requires_telegram_confirmation():
+    from app.telegram_gateway import management
+
+    class FakeClient:
+        async def get_permissions(self, entity, user):
+            assert entity.id == 123
+            assert user == "me"
+            return object()
+
+    assert await management.verify_chat_membership(
+        FakeClient(), type("Group", (), {"id": 123})()
+    ) is True
+
+
+@pytest.mark.asyncio
+async def test_verify_chat_membership_returns_false_for_non_member():
+    from app.telegram_gateway import management
+
+    class UserNotParticipantError(Exception):
+        pass
+
+    class FakeClient:
+        async def get_permissions(self, _entity, _user):
+            raise UserNotParticipantError()
+
+    assert await management.verify_chat_membership(
+        FakeClient(), object()
+    ) is False
