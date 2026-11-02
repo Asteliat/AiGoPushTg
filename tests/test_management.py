@@ -670,25 +670,30 @@ class _AsyncNullLock:
 
 
 @pytest.mark.asyncio
-async def test_verify_chat_membership_requires_telegram_confirmation():
+async def test_verify_chat_membership_uses_get_participant_for_supergroup():
+    from types import SimpleNamespace
+    from telethon.tl.functions.channels import GetParticipantRequest
+    from telethon.tl.types import InputPeerSelf
     from app.telegram_gateway import management
 
     class FakeClient:
         async def get_me(self):
-            return type("User", (), {"id": 456})()
+            return SimpleNamespace(id=456)
 
-        async def get_permissions(self, entity, user):
-            assert entity.id == 123
-            assert user.id == 456
-            return object()
+        async def __call__(self, request):
+            assert isinstance(request, GetParticipantRequest)
+            assert request.channel.id == 123
+            assert isinstance(request.participant, InputPeerSelf)
+            return SimpleNamespace(participant=SimpleNamespace(left=False, kicked=False))
 
     assert await management.verify_chat_membership(
-        FakeClient(), type("Group", (), {"id": 123})()
+        FakeClient(), type("Channel", (), {"id": 123})()
     ) is True
 
 
 @pytest.mark.asyncio
 async def test_verify_chat_membership_returns_false_for_non_member():
+    from types import SimpleNamespace
     from app.telegram_gateway import management
 
     class UserNotParticipantError(Exception):
@@ -696,14 +701,51 @@ async def test_verify_chat_membership_returns_false_for_non_member():
 
     class FakeClient:
         async def get_me(self):
-            return type("User", (), {"id": 456})()
+            return SimpleNamespace(id=456)
 
-        async def get_permissions(self, _entity, user):
-            assert user.id == 456
+        async def __call__(self, _request):
             raise UserNotParticipantError()
 
     assert await management.verify_chat_membership(
-        FakeClient(), object()
+        FakeClient(), type("Channel", (), {"id": 123})()
+    ) is False
+
+
+@pytest.mark.asyncio
+async def test_verify_chat_membership_supports_basic_groups():
+    from types import SimpleNamespace
+    from app.telegram_gateway import management
+
+    class FakeClient:
+        async def get_me(self):
+            return SimpleNamespace(id=456)
+
+        async def get_participants(self, entity, limit):
+            assert entity.id == 123
+            assert limit == 200
+            return [SimpleNamespace(id=111), SimpleNamespace(id=456)]
+
+    assert await management.verify_chat_membership(
+        FakeClient(), type("Chat", (), {"id": 123})()
+    ) is True
+
+
+@pytest.mark.asyncio
+async def test_verify_chat_membership_rejects_left_participant():
+    from types import SimpleNamespace
+    from app.telegram_gateway import management
+
+    class FakeClient:
+        async def get_me(self):
+            return SimpleNamespace(id=456)
+
+        async def __call__(self, _request):
+            return SimpleNamespace(
+                participant=type("ChannelParticipantLeft", (), {})()
+            )
+
+    assert await management.verify_chat_membership(
+        FakeClient(), type("Channel", (), {"id": 123})()
     ) is False
 
 

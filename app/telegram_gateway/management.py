@@ -21,7 +21,7 @@ from typing import AsyncIterator
 
 from telethon import TelegramClient, utils
 from telethon.errors import FloodWaitError
-from telethon.tl.functions.channels import JoinChannelRequest, LeaveChannelRequest
+from telethon.tl.functions.channels import GetParticipantRequest, JoinChannelRequest, LeaveChannelRequest
 from telethon.tl.functions.contacts import DeleteContactsRequest, GetBlockedRequest, ImportContactsRequest
 from telethon.tl.functions.messages import CheckChatInviteRequest, ImportChatInviteRequest, SendReactionRequest
 from telethon.tl.functions.users import GetFullUserRequest
@@ -470,18 +470,41 @@ async def join_chat(account_id: int, link: str) -> None:
 
 
 async def verify_chat_membership(client, entity) -> bool:
-    """Verify the authenticated Telegram user is an actual participant."""
+    """Verify that the exact authenticated Telegram user is an active chat participant."""
     me = await client.get_me()
     if me is None or not getattr(me, "id", None):
         raise RuntimeError("Telegram не вернул текущий аккаунт для проверки членства.")
+    me_id = int(me.id)
+
+    # channels.getParticipant only accepts channels/supergroups. Basic groups use
+    # messages.getFullChat under Telethon's participant iterator.
+    if entity.__class__.__name__ == "Chat":
+        participants = await client.get_participants(entity, limit=200)
+        return any(int(getattr(user, "id", 0) or 0) == me_id for user in participants)
+
+    from telethon.tl.types import InputPeerSelf
     try:
-        # Resolve the current account explicitly instead of relying on the magic "me" string.
-        await client.get_permissions(entity, me)
-        return True
+        result = await client(GetParticipantRequest(
+            channel=entity,
+            participant=InputPeerSelf(),
+        ))
     except Exception as exc:
-        if type(exc).__name__ in {"UserNotParticipantError", "ParticipantIdInvalidError"}:
+        if type(exc).__name__ in {
+            "UserNotParticipantError",
+            "ParticipantIdInvalidError",
+        }:
             return False
         raise
+
+    participant = getattr(result, "participant", None)
+    if participant is None:
+        return False
+    participant_type = type(participant).__name__
+    if participant_type in {"ChannelParticipantLeft", "ChannelParticipantBanned"}:
+        return False
+    if bool(getattr(participant, "left", False)) or bool(getattr(participant, "kicked", False)):
+        return False
+    return True
 
 
 async def leave_chat(account_id: int, link: str) -> None:
