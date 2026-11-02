@@ -10,6 +10,7 @@ import hashlib
 import json
 import logging
 import re
+import random
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 
@@ -163,10 +164,19 @@ async def create_campaign(
     recipient_refs: dict[int, str] | None = None,
     recipient_labels: dict[int, str] | None = None,
     consent_verified: bool = False,
+    runtime_config: dict | None = None,
 ) -> int:
     normalized = _validate_payload(kind, payload)
     if consent_verified:
         normalized["consent_verified"] = True
+    if runtime_config:
+        normalized["_runtime"] = {
+            "delay_min_seconds": max(5, min(86400, int(runtime_config.get("delay_min_seconds", 30)))),
+            "delay_max_seconds": max(5, min(86400, int(runtime_config.get("delay_max_seconds", 120)))),
+            "daily_limit": max(1, min(10000, int(runtime_config.get("daily_limit", 20)))),
+        }
+        if normalized["_runtime"]["delay_min_seconds"] > normalized["_runtime"]["delay_max_seconds"]:
+            raise ValueError("Минимальная задержка не может быть больше максимальной.")
     unique_ids = list(dict.fromkeys(int(peer_id) for peer_id in recipients))
     if not unique_ids or len(unique_ids) > MAX_RECIPIENTS:
         raise ValueError(f"Выберите от 1 до {MAX_RECIPIENTS} получателей.")
@@ -576,7 +586,11 @@ async def process_due_campaigns(*, max_tasks: int = 1, safe_only: bool = False) 
             payload = json.loads(payload_raw)
             module = _module_name_for_kind(kind)
             policy = await module_policy(module)
-            interval, daily_limit = policy["interval_seconds"], policy["daily_account_limit"]
+            runtime = payload.get("_runtime") or {}
+            delay_min = max(5, int(runtime.get("delay_min_seconds", policy["interval_seconds"])))
+            delay_max = max(delay_min, int(runtime.get("delay_max_seconds", delay_min)))
+            interval = random.randint(delay_min, delay_max)
+            daily_limit = min(policy["daily_account_limit"], max(1, int(runtime.get("daily_limit", policy["daily_account_limit"]))))
             batch_size = policy["batch_size"]
             processed_in_batch = 0
             quiet_keys = [
@@ -839,6 +853,7 @@ async def process_due_campaigns(*, max_tasks: int = 1, safe_only: bool = False) 
                                 current.updated_at = utcnow()
                                 await db.commit()
                         break
+                    interval = random.randint(delay_min, delay_max)
                     await _sleep_with_task_heartbeat(task_id, interval)
         except Exception as exc:
             async with SessionFactory() as db:
