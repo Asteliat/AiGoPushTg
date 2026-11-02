@@ -449,14 +449,16 @@ async def parse_chat_history(
 
 
 async def parse_chat_participants(
-    account_id: int, chat: str, *, limit: int = 200
+    account_id: int, chat: str, *, limit: int = 200,
+    exclude_bots: bool = False, exclude_deleted: bool = False,
+    username_only: bool = False, photo_only: bool = False,
+    premium_only: bool = False, active_days: int = 0,
 ) -> dict:
-    """Return Telegram-visible public participant fields for an accessible group.
+    """Export visible participant metadata with opt-in filters; never infer personal attributes."""
+    from datetime import datetime, timedelta, timezone
 
-    Telegram decides which members are visible. The result is deliberately capped and
-    excludes phone numbers, private profile fields, and any attempt to bypass API limits.
-    """
     limit = max(1, min(int(limit), 500))
+    active_days = max(0, min(int(active_days), 365))
     target = chat.strip()
     if not target:
         raise ValueError("Укажите @username или ссылку на группу.")
@@ -477,23 +479,62 @@ async def parse_chat_participants(
             if not (getattr(permissions, "is_admin", False) or getattr(permissions, "is_creator", False)):
                 raise PermissionError("Экспорт участников доступен только администраторам собственной группы.")
             participants = []
+            scanned = 0
+            activity_unknown = 0
+            cutoff = datetime.now(timezone.utc) - timedelta(days=active_days) if active_days else None
             async for user in client.iter_participants(entity, limit=limit):
                 if not getattr(user, "id", None):
                     continue
+                scanned += 1
+                is_bot = bool(getattr(user, "bot", False))
+                is_deleted = bool(getattr(user, "deleted", False))
+                username = getattr(user, "username", None) or ""
+                if exclude_bots and is_bot:
+                    continue
+                if exclude_deleted and is_deleted:
+                    continue
+                if username_only and not username:
+                    continue
+                if photo_only and not getattr(user, "photo", None):
+                    continue
+                if premium_only and not bool(getattr(user, "premium", False)):
+                    continue
+                last_seen = None
+                status = getattr(user, "status", None)
+                if status is not None:
+                    last_seen = getattr(status, "was_online", None) or getattr(status, "expires", None)
+                if cutoff:
+                    if last_seen is None:
+                        activity_unknown += 1
+                        continue
+                    if last_seen.tzinfo is None:
+                        last_seen = last_seen.replace(tzinfo=timezone.utc)
+                    if last_seen < cutoff:
+                        continue
                 participants.append({
                     "id": int(user.id),
-                    "username": getattr(user, "username", None) or "",
+                    "username": username,
                     "first_name": getattr(user, "first_name", None) or "",
                     "last_name": getattr(user, "last_name", None) or "",
-                    "is_bot": bool(getattr(user, "bot", False)),
-                    "is_deleted": bool(getattr(user, "deleted", False)),
+                    "is_bot": is_bot,
+                    "is_deleted": is_deleted,
+                    "has_photo": bool(getattr(user, "photo", None)),
+                    "is_premium": bool(getattr(user, "premium", False)),
+                    "last_seen": last_seen.isoformat() if last_seen else "",
                 })
             return {
                 "chat_id": int(entity.id),
                 "title": str(getattr(entity, "title", "") or getattr(entity, "username", "") or target),
                 "username": getattr(entity, "username", None),
                 "visible_count": len(participants),
+                "scanned_count": scanned,
+                "activity_unknown_count": activity_unknown,
                 "requested_limit": limit,
+                "filters": {
+                    "exclude_bots": exclude_bots, "exclude_deleted": exclude_deleted,
+                    "username_only": username_only, "photo_only": photo_only,
+                    "premium_only": premium_only, "active_days": active_days,
+                },
                 "participants": participants,
             }
 
