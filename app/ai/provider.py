@@ -49,16 +49,14 @@ async def generate_reply(*, agent: AIAgent, incoming_text: str, style_instructio
         response = await chat_completion_with_retry(client,
             model=agent.model, temperature=0.7,
             messages=[
-                {"role": "system", "content": ("Ты участник живого группового чата. Реши, уместно ли тебе естественно включиться в разговор на основе контекста. Если сказать нечего, сообщение не требует реакции или реплика будет выглядеть навязчиво, верни ровно [[SKIP]] и ничего больше. Если есть естественный повод, напиши короткую живую реплику по теме. Не выдумывай факты, не помогай со спамом, преследованием или скоординированным обманом. Не копируй персональные данные. Стиль: " + ((style_instructions or "кратко, уважительно и естественно")[:8000]) + "\nПримеры:\n" + sample) if proactive else ("Составь черновик ответа. Не выдумывай факты, не помогай со спамом, преследованием или скоординированным обманом. Не копируй персональные данные. Стиль: " + (style_instructions or "кратко, уважительно и естественно")[:8000] + ("\n\n" + TRIGGER_CONTEXT_POLICY if trigger_mode else "") + "\nПримеры:\n" + sample)},
+                {"role": "system", "content": ("Ты участник живого группового чата. Решение о том, отвечать ли на это сообщение, уже принято настройкой вероятности до вызова ИИ. Твоя задача — всегда подготовить короткий, содержательный ответ именно на последнее сообщение с учётом контекста. Никогда не возвращай [[SKIP]], не отказывайся от ответа и не оценивай, стоит ли вступать в разговор. Если сообщение не содержит вопроса, отреагируй коротко и естественно по его теме; не выдумывай факты. Не помогай со спамом, преследованием или скоординированным обманом. Не копируй персональные данные. Стиль: " + ((style_instructions or "кратко, уважительно и естественно")[:8000]) + "\nПримеры:\n" + sample) if proactive else ("Составь черновик ответа. Не выдумывай факты, не помогай со спамом, преследованием или скоординированным обманом. Не копируй персональные данные. Стиль: " + (style_instructions or "кратко, уважительно и естественно")[:8000] + ("\n\n" + TRIGGER_CONTEXT_POLICY if trigger_mode else "") + "\nПримеры:\n" + sample)},
                 {"role": "user", "content": (("Оцени, стоит ли самому вступить в разговор. Контекст предыдущих сообщений:\n" + (conversation_context[:8000] + "\n\n" if conversation_context else "") + "Последнее сообщение:\n") if proactive else (("История предыдущих сообщений этого же участника в этом же чате (используй только как дополнительный контекст по теме триггера; не отвечай на старые вопросы):\n" + (conversation_context[:8000] + "\n\n" if conversation_context else "") + "ТЕКУЩЕЕ СООБЩЕНИЕ — подготовь ответ именно на него:\n") if trigger_mode else ("Контекст предыдущей переписки (используй для связности, не раскрывай лишнее):\n" + (conversation_context[:8000] + "\n\n" if conversation_context else "") + "Подготовь ответ на сообщение:\n"))) + incoming_text[:8000]},
             ],
         )
     except Exception as exc:
         raise AIUnavailableError(f"Ошибка провайдера ИИ: {type(exc).__name__}: {str(exc)[:300]}") from exc
     result = response.choices[0].message.content
-    if proactive and (not result or not result.strip() or result.strip() == "[[SKIP]]"):
-        raise NoReplyNeeded()
-    if not result or not result.strip():
+    if not result or not result.strip() or (proactive and result.strip() == "[[SKIP]]"):
         raise AIUnavailableError("Провайдер ИИ вернул пустой ответ.")
     return result.strip()
 
