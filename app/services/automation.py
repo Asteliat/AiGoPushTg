@@ -923,6 +923,13 @@ async def create_schedule(
     unique_ids = list(dict.fromkeys(int(peer_id) for peer_id in recipients))
     if not unique_ids or len(unique_ids) > MAX_RECIPIENTS:
         raise ValueError(f"Выберите от 1 до {MAX_RECIPIENTS} получателей.")
+    module = _module_name_for_kind(kind)
+    policy = await module_policy(module)
+    if len(unique_ids) > policy["per_account_limit"]:
+        raise ValueError(
+            f"Глобальный лимит модуля «{module}»: не более {policy['per_account_limit']} "
+            "получателей на один аккаунт в одном расписании."
+        )
     due = _aware(starts_at or utcnow())
     end = _aware(ends_at) if ends_at else None
     if due < utcnow() - timedelta(minutes=1) or (end and end <= due):
