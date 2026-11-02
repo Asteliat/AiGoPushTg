@@ -34,6 +34,7 @@ async def test_parse_chat_participants_returns_only_public_fields(monkeypatch):
     assert result["visible_count"] == 2
     assert result["participants"][0]["username"] == "one"
     assert "phone" not in result["participants"][0]
+    assert result["participants"][0]["is_scam"] is False
 
 
 @pytest.mark.asyncio
