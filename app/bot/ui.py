@@ -646,7 +646,7 @@ async def tool_policy_edit(c: CallbackQuery, state: FSMContext):
         f"⚙️ {title} · глобальные параметры\n\n"
         f"Интервал: {policy['interval_seconds']} сек.\n"
         f"Лимит на аккаунт за задачу/сутки: {policy['per_account_limit']} / {policy['daily_account_limit']}\n"
-        f"Пакет: {policy['batch_size']}\n"
+        f"Пакет: {policy['batch_size']} · пауза между пакетами: {policy['batch_pause_seconds']} сек.\n"
         f"Ожидание FloodWait до: {policy['floodwait_wait_seconds']} сек.\n"
         f"FloodWait до карантина: {policy['floodwait_threshold']}\n\n"
         "Отправьте 7 чисел через | в порядке: интервал между действиями | лимит на аккаунт за задачу | лимит за 24 часа на аккаунт | пользователей в пакете | пауза между пакетами | максимум ожидания FloodWait | FloodWait до карантина.\n"
