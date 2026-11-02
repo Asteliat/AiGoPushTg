@@ -113,6 +113,15 @@ async def create_subscription_task(
     normalized = list(dict.fromkeys(str(value).strip() for value in links if str(value).strip()))
     if not normalized or len(normalized) > MAX_RECIPIENTS:
         raise ValueError(f"Укажите от 1 до {MAX_RECIPIENTS} ссылок.")
+    for link in normalized:
+        lowered = link.lower()
+        is_private_invite = "t.me/+" in lowered or "t.me/joinchat/" in lowered
+        if len(link) > 255:
+            raise ValueError("Ссылка не должна превышать 255 символов.")
+        if action == "leave" and is_private_invite:
+            raise ValueError("Для отписки укажите @username или публичную ссылку t.me/канал.")
+        if "t.me/" not in lowered and not re.fullmatch(r"@?[A-Za-z0-9_]{5,32}", link):
+            raise ValueError(f"Некорректная ссылка или username: {link[:80]}")
     due = _aware(scheduled_at or utcnow())
     if due < utcnow() - timedelta(minutes=1):
         raise ValueError("Время запуска уже прошло.")
