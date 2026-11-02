@@ -111,18 +111,16 @@ def test_direct_invite_permission_checks_admin_rights_object():
 
 
 
-@pytest.mark.asyncio
-async def test_direct_invite_schedule_must_be_one_shot():
-    from datetime import datetime, timezone
-    from app.services.automation import create_schedule
+def test_direct_invite_payload_is_valid_for_recurring_campaigns():
+    from app.services.automation import _module_name_for_kind
 
-    with pytest.raises(ValueError, match="однократно"):
-        await create_schedule(
-            1, kind="direct_invite", recipients=[42],
-            payload={"target_group_id": -100123},
-            starts_at=datetime.now(timezone.utc), interval_seconds=86400,
-            max_runs=3,
-        )
+    payload = _validate_payload("direct_invite", {
+        "target_group_id": -100123,
+        "target_group_ref": "@mygroup",
+        "target_group_label": "My Group",
+    })
+    assert payload["target_group_id"] == -100123
+    assert _module_name_for_kind("direct_invite") == "invite"
 
 
 
@@ -185,6 +183,7 @@ def test_global_module_policy_defaults_and_batch_size():
 
     assert MODULE_POLICY_DEFAULTS["invite"]["per_account_limit"] == 99
     assert MODULE_POLICY_DEFAULTS["invite"]["daily_account_limit"] == 25
+    assert MODULE_POLICY_DEFAULTS["invite"]["batch_pause_seconds"] >= 1
     assert MODULE_POLICY_DEFAULTS["broadcast"]["batch_size"] == 10
     assert MODULE_POLICY_DEFAULTS["subscription"]["floodwait_threshold"] == 10
 
