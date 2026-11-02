@@ -994,13 +994,17 @@ async def management_campaign_wizard_start(c: CallbackQuery, state: FSMContext):
         if not account or not account.enabled:
             await c.answer("Аккаунт не найден или выключен.", show_alert=True)
             return
+    previous_data = await state.get_data()
+    selected_account_ids = previous_data.get("campaign_account_ids") or [aid]
+    selected_account_ids = [int(value) for value in selected_account_ids]
     await state.clear()
     await state.update_data(
         management_action="campaign_time", management_account_id=aid,
+        campaign_account_ids=selected_account_ids,
         campaign_kind=kind, campaign_mode=mode,
         campaign_schedule_interval_seconds=0, campaign_schedule_max_runs=0,
         ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id,
-        return_callback=f"tool:management:account:{aid}",
+        return_callback=f"tool:module:{previous_data.get('module_selection_module') or 'broadcast'}",
     )
     await state.set_state(Flow.management_input)
     await edit(c,
@@ -1735,47 +1739,63 @@ async def management_campaign_confirm(c: CallbackQuery, state: FSMContext):
     if data.get("management_action") != "campaign_content":
         await c.answer("Предпросмотр устарел. Создайте задачу заново.", show_alert=True)
         return
+    account_ids = [int(value) for value in (data.get("campaign_account_ids") or [data["management_account_id"]])]
+    recipient_refs = {
+        int(peer_id): str(peer_ref)
+        for peer_id, peer_ref in zip(data.get("campaign_recipients", []), data.get("campaign_recipient_refs", []))
+    }
+    recipient_labels = {
+        int(peer_id): str(label)
+        for peer_id, label in zip(data.get("campaign_recipients", []), data.get("campaign_recipient_labels", []))
+    }
+    succeeded = []
+    failed = []
     try:
-        if int(data.get("campaign_schedule_interval_seconds") or 0):
-            task_id = await telegram_automation.create_schedule(
-                int(data["management_account_id"]), kind=data["campaign_kind"],
-                recipients=data["campaign_recipients"], payload=data["campaign_payload"],
-                starts_at=datetime.fromisoformat(data["campaign_scheduled_at"]),
-                interval_seconds=int(data["campaign_schedule_interval_seconds"]),
-                max_runs=int(data.get("campaign_schedule_max_runs") or 1),
-                recipient_refs={
-                    int(peer_id): str(peer_ref)
-                    for peer_id, peer_ref in zip(data.get("campaign_recipients", []), data.get("campaign_recipient_refs", []))
-                },
-                recipient_labels={
-                    int(peer_id): str(label)
-                    for peer_id, label in zip(data.get("campaign_recipients", []), data.get("campaign_recipient_labels", []))
-                },
-            )
-            success_text = f"✅ Повторяющееся расписание #{task_id} создано. Telegram применяет приватность, ограничения аккаунта и требования Stars; локальные лимиты и FloodWait сохраняются."
-        else:
-            recipient_refs = {
-                int(peer_id): str(peer_ref)
-                for peer_id, peer_ref in zip(data.get("campaign_recipients", []), data.get("campaign_recipient_refs", []))
-            }
-            recipient_labels = {
-                int(peer_id): str(label)
-                for peer_id, label in zip(data.get("campaign_recipients", []), data.get("campaign_recipient_labels", []))
-            }
-            task_id = await telegram_automation.create_campaign(
-                int(data["management_account_id"]), kind=data["campaign_kind"],
-                recipients=data["campaign_recipients"], payload=data["campaign_payload"],
-                scheduled_at=datetime.fromisoformat(data["campaign_scheduled_at"]),
-                recipient_refs=recipient_refs, recipient_labels=recipient_labels,
-            )
-            success_text = (
-                f"✅ Задача #{task_id} поставлена в очередь. Telegram проверит приватность пользователей и право invite_users; лимиты и FloodWait соблюдаются."
-                if data["campaign_kind"] == "direct_invite"
-                else f"✅ Задача #{task_id} поставлена в очередь. Она выполняется последовательно с учётом ограничений Telegram, лимита аккаунта и FloodWait."
-            )
+        for account_id in account_ids:
+            try:
+                if int(data.get("campaign_schedule_interval_seconds") or 0):
+                    task_id = await telegram_automation.create_schedule(
+                        account_id, kind=data["campaign_kind"],
+                        recipients=data["campaign_recipients"], payload=data["campaign_payload"],
+                        starts_at=datetime.fromisoformat(data["campaign_scheduled_at"]),
+                        interval_seconds=int(data["campaign_schedule_interval_seconds"]),
+                        max_runs=int(data.get("campaign_schedule_max_runs") or 1),
+                        recipient_refs=recipient_refs, recipient_labels=recipient_labels,
+                    )
+                    succeeded.append((account_id, task_id, "расписание"))
+                else:
+                    task_id = await telegram_automation.create_campaign(
+                        account_id, kind=data["campaign_kind"],
+                        recipients=data["campaign_recipients"], payload=data["campaign_payload"],
+                        scheduled_at=datetime.fromisoformat(data["campaign_scheduled_at"]),
+                        recipient_refs=recipient_refs, recipient_labels=recipient_labels,
+                    )
+                    succeeded.append((account_id, task_id, "задача"))
+            except Exception as exc:
+                logging.exception("Could not enqueue campaign for account %s", account_id)
+                failed.append((account_id, f"{type(exc).__name__}: {str(exc)[:180]}"))
         await state.clear()
-        await edit(c, success_text, kb([
-            [("↩️ К инструментам аккаунта", f"tool:management:account:{data['management_account_id']}")],
+        if not succeeded:
+            await edit(c, "Не удалось создать задачи ни для одного аккаунта:\n" + "\n".join(
+                f"#{aid}: {error}" for aid, error in failed
+            ), kb([[("↩️ К инструментам", "tool:menu")]]))
+            return
+        lines = [
+            f"✅ Аккаунт #{aid}: {kind} #{task_id}"
+            for aid, task_id, kind in succeeded
+        ]
+        if failed:
+            lines.extend(["", "⚠️ Не удалось поставить в очередь:"] + [
+                f"#{aid}: {error}" for aid, error in failed
+            ])
+        lines.extend([
+            "",
+            "Каждый аккаунт получил отдельную задачу и выполняет её в собственной изолированной сессии.",
+            "Ограничения Telegram, приватность, права доступа и FloodWait остаются обязательными.",
+        ])
+        module = data.get("module_selection_module") or "broadcast"
+        await edit(c, "\n".join(lines), kb([
+            [("↩️ К модулю", f"tool:module:{module}")],
             [("🏠 Главное меню", "nav:home")],
         ]))
     except Exception as exc:
