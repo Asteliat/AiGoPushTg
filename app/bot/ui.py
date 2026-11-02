@@ -268,6 +268,7 @@ async def restore_previous_screen(c, callback_data, state: FSMContext | None = N
     elif callback_data.startswith("trigger:account:"): await trigger_screen(c, "account", int(parts[2]))
     elif callback_data.startswith("acc:view:"): await acc_view(c, int(parts[2]))
     elif callback_data.startswith("acc:runtime:menu:"): await account_runtime_menu(c, int(parts[3]))
+    elif callback_data.startswith("acc:runtime:menu:"): await account_runtime_menu(c, int(parts[3]))
     elif callback_data == "acc:list": await acc_list(c)
     elif callback_data.startswith("acc:learnprompt:"): await acc_learning_prompt(c, int(parts[2]))
     elif callback_data.startswith("acc:learn:"): await acc_learning_menu(c, int(parts[2]))
@@ -3564,7 +3565,7 @@ async def runtime_settings_text():
         lines.append(f"{label}: {shown}")
     lines += [
         "",
-        "Эти значения используются всеми агентами, у которых для конкретного параметра не задано индивидуальное значение.",
+        "Приоритет значений: собственная настройка аккаунта → настройка назначенного ИИ-агента → глобальное значение. Пустые индивидуальные настройки наследуют следующий уровень.",
         "При изменении глобального значения бот спросит, перезаписать ли настройки всех агентов или изменить только значение по умолчанию для тех, кто наследует глобальные настройки.",
         "",
         "Самостоятельное участие включайте только для аккаунтов, которые явно обозначены как управляемые ИИ. Для таких аккаунтов также включите отметку в карточке аккаунта.",
