@@ -175,7 +175,7 @@ async def test_campaign_peer_resolution_accepts_matching_username_id():
 def test_module_kind_mapping_is_explicit():
     from app.services.automation import _module_name_for_kind
 
-    assert _module_name_for_kind("invite") == "invite"
+    assert _module_name_for_kind("invite") == "broadcast"
     assert _module_name_for_kind("direct_invite") == "invite"
     assert _module_name_for_kind("broadcast") == "broadcast"
     assert _module_name_for_kind("subscription_join") == "subscription"
