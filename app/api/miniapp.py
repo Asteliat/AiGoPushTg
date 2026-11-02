@@ -14,7 +14,7 @@ from sqlalchemy import or_, select, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.settings import get_settings
-from app.storage.db import get_session
+from app.storage.db import SessionFactory, get_session
 from app.storage.models import (
     Account, AIAgent, AppSetting, AuditEvent, ChannelBinding, ChatBinding,
     Example, Persona, TriggerRule, ChannelAnalysis, ContentDraft,
@@ -843,7 +843,7 @@ async def inbox_ai_draft(payload: InboxPeerInput, _: int = Depends(require_admin
             entity = await _resolve_inbox_entity(client, payload.peer_id, payload.peer_ref)
             if getattr(entity, "broadcast", False) and not getattr(entity, "megagroup", False):
                 raise HTTPException(400, "Для вещательных каналов нельзя создавать ответ в личном inbox.")
-            if not isinstance(entity, __import__("telethon.tl.types", fromlist=["User"]).User):
+            if not isinstance(entity, User):
                 async with SessionFactory() as check_db:
                     binding = await check_db.scalar(select(ChatBinding).where(
                         ChatBinding.account_id == payload.account_id,
@@ -856,9 +856,9 @@ async def inbox_ai_draft(payload: InboxPeerInput, _: int = Depends(require_admin
             async for item in client.iter_messages(entity, limit=15):
                 raw.append(item)
             raw.reverse()
-            inbound = next((item for item in reversed(raw) if not item.out), None)
-            if inbound is None:
-                raise HTTPException(400, "В этом диалоге ещё нет входящего сообщения для ответа.")
+            inbound = raw[-1] if raw else None
+            if inbound is None or inbound.out:
+                raise HTTPException(409, "Последнее сообщение уже отправлено аккаунтом. Обновите диалог после нового входящего сообщения.")
             context = "\\n".join(
                 ("Аккаунт: " if item.out else "Собеседник: ") + ((item.message or "[медиа/вложение]")[:1200])
                 for item in raw
