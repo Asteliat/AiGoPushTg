@@ -214,3 +214,47 @@ async def test_parse_chat_history_applies_message_delay(monkeypatch):
     assert len(result["posts"]) == 2
     assert result["filters"]["message_delay_seconds"] == 3
     assert sleeps == [3, 3]
+
+@pytest.mark.asyncio
+async def test_parse_account_history_uses_each_dialog_and_isolates_chat_errors(monkeypatch):
+    import app.telegram_gateway.management as management
+
+    dialogs = [
+        {"id": 1, "peer_id": -1001, "title": "One"},
+        {"id": 2, "peer_id": -1002, "title": "Two"},
+        {"id": 3, "peer_id": -1003, "title": "Three"},
+    ]
+    parsed = []
+
+    async def fake_dialogs(_account_id, *, limit, kind):
+        assert limit == 500
+        assert kind == "all"
+        return dialogs
+
+    async def fake_history(_account_id, target, **kwargs):
+        parsed.append((target, kwargs))
+        if target == "-1002":
+            raise ValueError("private history")
+        return {"title": target, "channel_id": int(target), "posts": [{"id": 1}], "scanned": 1}
+
+    sleeps = []
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(management, "list_account_dialogs", fake_dialogs)
+    monkeypatch.setattr(management, "parse_chat_history", fake_history)
+    monkeypatch.setattr(management.asyncio, "sleep", fake_sleep)
+
+    result = await management.parse_account_history(
+        9, limit_per_chat=10, days=3, keywords=["vpn"],
+        message_delay_seconds=2, chat_delay_seconds=4,
+    )
+
+    assert result["chats_scanned"] == 3
+    assert result["chats_parsed"] == 2
+    assert result["messages_count"] == 2
+    assert len(result["errors"]) == 1
+    assert [item[0] for item in parsed] == ["-1001", "-1002", "-1003"]
+    assert sleeps == [4, 4]
+    assert all(item[1]["message_delay_seconds"] == 2 for item in parsed)
