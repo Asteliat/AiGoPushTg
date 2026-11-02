@@ -1777,7 +1777,7 @@ async def management_input_received(m: Message, state: FSMContext):
                     txt_lines.extend([
                         f"Публикация #{post['id']}", f"Дата: {post['date'] or '—'}",
                         f"Просмотры: {post['views']} · Пересылки: {post['forwards']} · Ответы: {post['replies']}",
-                        f"Реакции: {', '.join(f\"{item['emoji']} × {item['count']}\" for item in post['reactions']) or 'нет'}",
+                        f"Реакции: {reactions or 'нет'}",
                         f"Медиа: {'да' if post['has_media'] else 'нет'}",
                         "Текст:", post["text"] or "[без текста]",
                     ])
