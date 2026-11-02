@@ -1726,10 +1726,25 @@ async def management_input_received(m: Message, state: FSMContext):
             results = []
             for account_id in account_ids:
                 try:
-                    result = await telegram_management.import_contacts(account_id, contacts)
-                    results.append(
-                        f"✅ #{account_id}: импортировано {result['imported']} · найдено {result['users']} · повторно {result['retry_contacts']}"
-                    )
+                    existing = await telegram_management.list_contacts(account_id, limit=500)
+                    existing_phones = {
+                        re.sub(r"[^0-9+]", "", str(item.get("phone") or ""))
+                        for item in existing if item.get("phone")
+                    }
+                    account_contacts = [
+                        item for item in contacts
+                        if re.sub(r"[^0-9+]", "", item["phone"]) not in existing_phones
+                    ]
+                    imported = users = retry_contacts = 0
+                    for offset in range(0, len(account_contacts), 100):
+                        result = await telegram_management.import_contacts(account_id, account_contacts[offset:offset + 100])
+                        imported += result["imported"]
+                        users += result["users"]
+                        retry_contacts += result["retry_contacts"]
+                    skipped = len(contacts) - len(account_contacts)
+                    details = f"импортировано {imported}, найдено {users}, повторно {retry_contacts}, уже были {skipped}"
+                    await record_contact_operation(account_id, "import", details)
+                    results.append(f"✅ #{account_id}: {details}.")
                 except Exception as exc:
                     results.append(f"❌ #{account_id}: {type(exc).__name__}: {str(exc)[:120]}")
             message = "\\n".join(results)
@@ -1743,6 +1758,7 @@ async def management_input_received(m: Message, state: FSMContext):
                     count = await telegram_management.add_contact(
                         account_id, phone=parts[0], first_name=parts[1], last_name=parts[2] if len(parts) == 3 else ""
                     )
+                    await record_contact_operation(account_id, "add", f"номер {parts[0]} · добавлено {count}")
                     results.append(f"✅ #{account_id}: Telegram подтвердил добавление ({count}).")
                 except Exception as exc:
                     results.append(f"❌ #{account_id}: {type(exc).__name__}: {str(exc)[:120]}")
@@ -1753,6 +1769,7 @@ async def management_input_received(m: Message, state: FSMContext):
             for account_id in account_ids:
                 try:
                     await telegram_management.delete_contact(account_id, int(raw))
+                    await record_contact_operation(account_id, "delete", f"Telegram ID {int(raw)}")
                     results.append(f"✅ #{account_id}: контакт удалён.")
                 except Exception as exc:
                     results.append(f"❌ #{account_id}: {type(exc).__name__}: {str(exc)[:120]}")
