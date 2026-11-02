@@ -1,9 +1,13 @@
 import asyncio
 import logging
+
 from aiogram import Bot, Dispatcher
+from aiogram.types import MenuButtonWebApp, WebAppInfo
+
 from app.bot.handlers import router
 from app.settings import get_settings
 from app.storage.db import engine
+
 
 async def main() -> None:
     cfg = get_settings()
@@ -13,6 +17,13 @@ async def main() -> None:
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     (cfg.data_dir / "sessions").mkdir(parents=True, exist_ok=True)
     bot = Bot(token=cfg.bot_token)
+    if cfg.mini_app_url:
+        await bot.set_chat_menu_button(
+            menu_button=MenuButtonWebApp(
+                text="Открыть панель",
+                web_app=WebAppInfo(url=cfg.mini_app_url),
+            )
+        )
     dp = Dispatcher()
     dp.include_router(router)
     try:
@@ -20,6 +31,7 @@ async def main() -> None:
     finally:
         await bot.session.close()
         await engine.dispose()
+
 
 if __name__ == "__main__":
     asyncio.run(main())
