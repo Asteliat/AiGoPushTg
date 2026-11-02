@@ -933,11 +933,16 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         await edit(c, prompts[action], CANCEL)
         return
     if action == "photo":
+        previous = await state.get_data()
+        selected_ids = previous.get("management_account_ids") or [aid]
+        module = previous.get("module_selection_module")
         await state.clear()
         await state.update_data(
             management_action="photo", management_account_id=aid,
+            management_account_ids=[int(value) for value in selected_ids],
+            module_selection_module=module,
             ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id,
-            return_callback=f"tool:management:account:{aid}",
+            return_callback=f"tool:module:{module}" if module else f"tool:management:account:{aid}",
         )
         await state.set_state(Flow.management_photo)
         await edit(c, "Отправьте фотографию, которую нужно установить на профиль аккаунта. Поддерживается фото или изображение-документ до 10 МБ.", CANCEL)
@@ -1727,10 +1732,17 @@ async def management_input_received(m: Message, state: FSMContext):
                     run_at = datetime.strptime(parts[3], "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
                 except ValueError as exc:
                     raise ValueError("Время должно быть YYYY-MM-DD HH:MM UTC.") from exc
-            reaction_id = await telegram_automation.schedule_reaction(
-                aid, chat_ref=parts[0], message_id=int(parts[1]), emoji=parts[2], run_at=run_at,
-            )
-            message = f"Реакция #{reaction_id} запланирована на {run_at.isoformat()} UTC."
+            account_ids = [int(value) for value in (data.get("management_account_ids") or [aid])]
+            results = []
+            for account_id in account_ids:
+                try:
+                    reaction_id = await telegram_automation.schedule_reaction(
+                        account_id, chat_ref=parts[0], message_id=int(parts[1]), emoji=parts[2], run_at=run_at,
+                    )
+                    results.append(f"✅ #{account_id}: реакция #{reaction_id}")
+                except Exception as exc:
+                    results.append(f"❌ #{account_id}: {type(exc).__name__}: {str(exc)[:120]}")
+            message = "\\n".join(results) + f"\\nВремя UTC: {run_at.isoformat()}."
         elif action == "reaction":
             parts = [x.strip() for x in raw.split("|")]
             if len(parts) != 3: raise ValueError("Формат: чат | ID публикации | emoji.")
@@ -1762,8 +1774,11 @@ async def management_input_received(m: Message, state: FSMContext):
             message = "\\n".join(results)
         else:
             raise ValueError("Неизвестное действие.")
+        module = data.get("module_selection_module")
         if action and action.startswith("policy-"):
             back_callback, back_label = "tool:policy:menu", "↩️ К глобальным настройкам"
+        elif module:
+            back_callback, back_label = f"tool:module:{module}", "↩️ К модулю"
         else:
             back_callback = "tool:management" if action == "global-limits" or action.startswith("global-") else f"tool:management:account:{aid}"
             back_label = "↩️ К управлению аккаунтами" if action == "global-limits" or action.startswith("global-") else "↩️ К инструментам аккаунта"
@@ -1796,6 +1811,8 @@ async def management_photo_received(m: Message, state: FSMContext):
         return
     data = await state.get_data()
     aid = int(data.get("management_account_id") or 0)
+    account_ids = [int(value) for value in (data.get("management_account_ids") or [aid])]
+    module = data.get("module_selection_module") or "profile"
     original_name = getattr(photo, "file_name", None) or "profile.jpg"
     extension = os.path.splitext(original_name)[1].lower()
     if extension not in {".jpg", ".jpeg", ".png"}:
@@ -1806,9 +1823,15 @@ async def management_photo_received(m: Message, state: FSMContext):
     )
     try:
         await m.bot.download(photo, destination=path)
-        await telegram_management.set_profile_photo(aid, path)
-        await finish_prompt(m, state, "✅ Фото профиля обновлено.", kb([
-            [("↩️ К инструментам аккаунта", f"tool:management:account:{aid}")],
+        results = []
+        for account_id in account_ids:
+            try:
+                await telegram_management.set_profile_photo(account_id, path)
+                results.append(f"✅ #{account_id}: фото обновлено")
+            except Exception as exc:
+                results.append(f"❌ #{account_id}: {type(exc).__name__}: {str(exc)[:120]}")
+        await finish_prompt(m, state, "\\n".join(results), kb([
+            [("↩️ К модулю", f"tool:module:{module}")],
             [("🏠 Главное меню", "nav:home")],
         ]))
     except telegram_management.FloodWaitError as exc:
