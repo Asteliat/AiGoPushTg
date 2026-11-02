@@ -1209,19 +1209,32 @@ async def manage_subscriptions_batch(
                             raise
                     if action == "join":
                         lowered = value.lower().rstrip("/")
+                        entity = None
                         if "t.me/+" in lowered or "t.me/joinchat/" in lowered:
                             invite_hash = value.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1].lstrip("+")
                             if not invite_hash:
                                 raise ValueError("Некорректная приватная ссылка.")
                             invite = await client(CheckChatInviteRequest(hash=invite_hash))
                             if isinstance(invite, ChatInviteAlready):
-                                results.append({"link": value, "status": "already_member", "error": ""})
-                                continue
-                            await client(ImportChatInviteRequest(hash=invite_hash))
+                                entity = invite.chat
+                            else:
+                                joined = await client(ImportChatInviteRequest(hash=invite_hash))
+                                entity = next(iter(getattr(joined, "chats", []) or []), None)
                         else:
                             target = value.split("t.me/", 1)[1].split("/", 1)[0].split("?", 1)[0] if "t.me/" in lowered else value
                             entity = await client.get_entity(target)
                             await client(JoinChannelRequest(entity))
+                        if entity is None:
+                            raise RuntimeError("Telegram не вернул объект группы после вступления.")
+                        is_member = False
+                        for attempt in range(3):
+                            is_member = await verify_chat_membership(client, entity)
+                            if is_member:
+                                break
+                            if attempt < 2:
+                                await asyncio.sleep(1)
+                        if not is_member:
+                            raise RuntimeError("Telegram не подтвердил членство аккаунта в группе.")
                     else:
                         target = value.split("t.me/", 1)[1].split("/", 1)[0].split("?", 1)[0] if "t.me/" in value.lower() else value
                         entity = await client.get_entity(target)
