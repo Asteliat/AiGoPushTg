@@ -416,6 +416,8 @@ async def tool_module_account_actions(c: CallbackQuery):
 async def tool_module_quarantine(c: CallbackQuery):
     if not await check_cb(c):
         return
+    if c.data.startswith("tool:quarantine:clear:"):
+        return await tool_module_quarantine_clear(c)
     _, _, module, aid_raw = c.data.split(":")
     aid = int(aid_raw)
     if module not in {"invite", "broadcast", "subscription", "reaction"}:
