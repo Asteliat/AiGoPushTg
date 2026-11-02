@@ -1353,23 +1353,25 @@ async def management_input_received(m: Message, state: FSMContext):
                 raise ValueError("Для включённого автоответчика укажите текст ответа.")
             if not 0 <= cooldown <= 86400:
                 raise ValueError("Пауза должна быть от 0 до 86400 секунд.")
+            account_ids = [int(value) for value in (data.get("management_account_ids") or [aid])]
             async with SessionFactory() as db:
-                settings = {
-                    f"autoresponder.{aid}.enabled": "true" if enabled else "false",
-                    f"autoresponder.{aid}.keywords": keywords,
-                    f"autoresponder.{aid}.response": response,
-                    f"autoresponder.{aid}.cooldown_seconds": str(cooldown),
-                }
-                for key, value in settings.items():
-                    row = await db.get(AppSetting, key)
-                    if row:
-                        row.value = value
-                    else:
-                        db.add(AppSetting(key=key, value=value))
+                for account_id in account_ids:
+                    settings = {
+                        f"autoresponder.{account_id}.enabled": "true" if enabled else "false",
+                        f"autoresponder.{account_id}.keywords": keywords,
+                        f"autoresponder.{account_id}.response": response,
+                        f"autoresponder.{account_id}.cooldown_seconds": str(cooldown),
+                    }
+                    for key, value in settings.items():
+                        row = await db.get(AppSetting, key)
+                        if row:
+                            row.value = value
+                        else:
+                            db.add(AppSetting(key=key, value=value))
                 await db.commit()
             message = (
-                "Автоответчик включён. Он отвечает только в личных чатах и только при выключенном ИИ аккаунта."
-                if enabled else "Автоответчик выключен."
+                f"Автоответчик включён для {len(account_ids)} аккаунтов. Он отвечает только в личных чатах и только при выключенном ИИ каждого аккаунта."
+                if enabled else f"Автоответчик выключен для {len(account_ids)} аккаунтов."
             )
         elif action and action.startswith("policy-"):
             module = action.removeprefix("policy-")
