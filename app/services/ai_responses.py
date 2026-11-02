@@ -11,12 +11,15 @@ class GeneratedResponse:
 
 
 def resolve_runtime_override(account_override: int | None, agent_override: int | None, global_value: int) -> int:
-    """Resolve runtime configuration from the most specific scope to the global default."""
+    """Resolve account-specific settings such as cooldowns before agent/global defaults."""
     if account_override is not None:
         return int(account_override)
-    if agent_override is not None:
-        return int(agent_override)
-    return int(global_value)
+    return int(agent_override) if agent_override is not None else int(global_value)
+
+
+def resolve_agent_runtime_override(agent_override: int | None, global_value: int) -> int:
+    """Resolve reply probabilities from the assigned AI agent or global default only."""
+    return int(agent_override) if agent_override is not None else int(global_value)
 
 
 def build_reply_style_instructions(
