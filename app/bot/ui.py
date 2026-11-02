@@ -362,6 +362,7 @@ MODULE_ACTIONS = {
         ("🗓 Повторяющаяся отписка", "leaverepeat"),
         ("➕ Вступить по ссылке", "join"),
         ("➖ Выйти из чата", "leave"),
+        ("🗓 Расписания", "schedules"),
         ("📋 Очередь и журнал", "campaigns"),
     ]),
     "reaction": ("❤️ Реакции", [
@@ -961,7 +962,7 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
                 f"#{item['id']} · аккаунт #{account_id} · {item['kind']} · {item['status']}",
                 f"tool:schedule:status:{item['id']}",
             )] for item in items)
-        rows.append([("↩️ К модулю", "tool:module:broadcast")])
+        rows.append([("↩️ К модулю", f"tool:module:{(await state.get_data()).get('module_selection_module') or 'broadcast'}")])
         await edit(c, "🗓 Повторяющиеся расписания\n\nВыберите расписание." if rows[:-1] else "Расписаний пока нет.", kb(rows))
         return
     if action == "campaigns":
