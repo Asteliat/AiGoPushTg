@@ -1560,18 +1560,41 @@ async def management_input_received(m: Message, state: FSMContext):
                     })
             if not contacts or len(contacts) > 1000:
                 raise ValueError("В файле должно быть от 1 до 1000 контактов.")
-            result = await telegram_management.import_contacts(aid, contacts)
-            message = f"Импорт завершён. Добавлено Telegram: {result['imported']} · пользователей найдено: {result['users']} · повторная проверка: {result['retry_contacts']}."
+            account_ids = [int(value) for value in (data.get("management_account_ids") or [aid])]
+            results = []
+            for account_id in account_ids:
+                try:
+                    result = await telegram_management.import_contacts(account_id, contacts)
+                    results.append(
+                        f"✅ #{account_id}: импортировано {result['imported']} · найдено {result['users']} · повторно {result['retry_contacts']}"
+                    )
+                except Exception as exc:
+                    results.append(f"❌ #{account_id}: {type(exc).__name__}: {str(exc)[:120]}")
+            message = "\\n".join(results)
         elif action == "addcontact":
             parts = [x.strip() for x in raw.split("|")]
             if len(parts) not in {2, 3}: raise ValueError("Формат: телефон | имя | фамилия.")
-            count = await telegram_management.add_contact(
-                aid, phone=parts[0], first_name=parts[1], last_name=parts[2] if len(parts) == 3 else ""
-            )
-            message = f"Импорт контакта выполнен. Telegram подтвердил добавление: {count}."
+            account_ids = [int(value) for value in (data.get("management_account_ids") or [aid])]
+            results = []
+            for account_id in account_ids:
+                try:
+                    count = await telegram_management.add_contact(
+                        account_id, phone=parts[0], first_name=parts[1], last_name=parts[2] if len(parts) == 3 else ""
+                    )
+                    results.append(f"✅ #{account_id}: Telegram подтвердил добавление ({count}).")
+                except Exception as exc:
+                    results.append(f"❌ #{account_id}: {type(exc).__name__}: {str(exc)[:120]}")
+            message = "\\n".join(results)
         elif action == "delcontact":
-            await telegram_management.delete_contact(aid, int(raw))
-            message = "Контакт удалён."
+            account_ids = [int(value) for value in (data.get("management_account_ids") or [aid])]
+            results = []
+            for account_id in account_ids:
+                try:
+                    await telegram_management.delete_contact(account_id, int(raw))
+                    results.append(f"✅ #{account_id}: контакт удалён.")
+                except Exception as exc:
+                    results.append(f"❌ #{account_id}: {type(exc).__name__}: {str(exc)[:120]}")
+            message = "\\n".join(results)
         elif action == "parsechats":
             limit = int(raw) if raw else 200
             items = await telegram_management.list_account_dialogs(aid, limit=limit)
