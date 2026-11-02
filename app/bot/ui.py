@@ -316,12 +316,11 @@ async def cancel_cb(c: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "tool:menu")
 async def tools_menu(c: CallbackQuery):
     if not await check_cb(c): return
-    await edit(c, "🧰 Инструменты\n\nВыберите независимый модуль. Настройки лимитов задаются один раз глобально, затем выбираются аккаунты для выполнения операций.", kb([
+    await edit(c, "🧰 Инструменты\n\nВыберите модуль. Его параметры настраиваются внутри самого модуля и не смешиваются с настройками других модулей.", kb([
         [("📩 Инвайтинг", "tool:module:invite"), ("🔍 Парсинг", "tool:module:parser")],
         [("📇 Контакты", "tool:module:contacts"), ("📤 Рассылка", "tool:module:broadcast")],
         [("📢 Подписка и отписка", "tool:module:subscription"), ("❤️ Реакции", "tool:module:reaction")],
         [("✏️ Редактирование профиля", "tool:module:profile")],
-        [("⚙️ Глобальные настройки модулей", "tool:policy:menu")],
         [("🔎 Поиск групп", "tool:groups"), ("📣 Поиск каналов", "tool:channels")],
         [("🎯 Глобальные триггеры", "trigger:global")],
         [("⬅️ Главное меню", "nav:home")],
@@ -397,7 +396,9 @@ async def render_module_account_selection(c: CallbackQuery, state: FSMContext, m
         [("➡️ Продолжить · " + str(len(selected)), f"tool:module:continue:{module}")],
         [("↩️ Инструменты", "tool:menu")],
     ])
-    await edit(c, f"{MODULE_ACTIONS[module][0]}\n\nОтметьте один или несколько аккаунтов. Настройки лимитов будут общими для всего модуля.", kb(rows))
+    if module in {"invite", "broadcast", "subscription", "reaction"}:
+        rows.append([("⚙️ Настройки модуля", f"tool:policy:{module}")])
+    await edit(c, f"{MODULE_ACTIONS[module][0]}\n\nОтметьте один или несколько аккаунтов. Настройки применяются только к этому модулю.", kb(rows))
 
 
 async def render_campaign_kind_selection(c: CallbackQuery, state: FSMContext, module: str, account_ids: list[int]):
@@ -457,7 +458,7 @@ async def render_selected_module_actions(c: CallbackQuery, state: FSMContext, mo
     rows = [[(label, f"tool:mg:{action}:{ids[0]}")] for label, action in actions]
     rows.extend([
         [("⛔ Статус FloodWait", f"tool:quarantine:{module}:{ids[0]}")],
-        [("⚙️ Глобальные настройки", f"tool:policy:{module}")],
+        *([[("⚙️ Настройки модуля", f"tool:policy:{module}")]] if module in {"invite", "broadcast", "subscription", "reaction"} else []),
         [("↩️ Выбрать аккаунты", f"tool:module:{module}")],
     ])
     await edit(
@@ -548,7 +549,7 @@ async def tool_module_accounts(c: CallbackQuery, state: FSMContext):
         rows = [[(label, f"tool:mg:{action}:{aid}")] for label, action in actions]
         rows.extend([
             [("⛔ Статус FloodWait / снять карантин", f"tool:quarantine:{module}:{aid}")],
-            [("⚙️ Глобальные настройки", f"tool:policy:{module}")],
+            *([[("⚙️ Настройки модуля", f"tool:policy:{module}")]] if module in {"invite", "broadcast", "subscription", "reaction"} else []),
             [("↩️ К аккаунтам модуля", f"tool:module:{module}")],
         ])
         await edit(c, f"{title} · {account.display_name} · #{aid}\n\nВыберите действие:", kb(rows))
@@ -568,10 +569,10 @@ async def tool_module_accounts(c: CallbackQuery, state: FSMContext):
         return
     rows = [[(f"👤 {a.display_name[:28]} · #{a.id}", f"tool:module:account:{module}:{a.id}")] for a in accounts]
     rows.extend([
-        [("⚙️ Глобальные настройки модуля", f"tool:policy:{module}")],
+        *([[("⚙️ Настройки модуля", f"tool:policy:{module}")]] if module in {"invite", "broadcast", "subscription", "reaction"} else []),
         [("↩️ Инструменты", "tool:menu")],
     ])
-    await edit(c, f"{title}\n\nВыберите аккаунт. Глобальные лимиты общие для всех выбранных аккаунтов.", kb(rows))
+    await edit(c, f"{title}\n\nВыберите аккаунт для выполнения операций. Параметры этого модуля настраиваются отдельно от остальных.", kb(rows))
 
 
 @router.callback_query(F.data.startswith("tool:module:account:"))
@@ -644,16 +645,37 @@ async def tool_module_quarantine_clear(c: CallbackQuery):
     ]))
 
 
-@router.callback_query(F.data == "tool:policy:menu")
-async def tool_policy_menu(c: CallbackQuery):
+POLICY_FIELDS = {
+    "interval_seconds": ("⏱ Интервал между действиями", "секунд", 1, 9999),
+    "per_account_limit": ("📦 Лимит на аккаунт за задачу", "операций", 1, 9999),
+    "daily_account_limit": ("📅 Лимит на аккаунт за 24 часа", "операций", 1, 9999),
+    "batch_size": ("🧩 Размер пакета", "операций", 1, 9999),
+    "batch_pause_seconds": ("⏸ Пауза между пакетами", "секунд", 1, 9999),
+    "floodwait_wait_seconds": ("🛡 Максимальное ожидание FloodWait", "секунд", 1, 9999),
+    "floodwait_threshold": ("🚧 FloodWait до карантина", "срабатываний", 1, 100),
+}
+
+
+@router.callback_query(F.data.startswith("tool:policy:field:"))
+async def tool_policy_field(c: CallbackQuery, state: FSMContext):
     if not await check_cb(c):
         return
-    rows = [
-        [("📩 Инвайтинг", "tool:policy:invite"), ("📤 Рассылка", "tool:policy:broadcast")],
-        [("📢 Подписка", "tool:policy:subscription"), ("❤️ Реакции", "tool:policy:reaction")],
-        [("↩️ Инструменты", "tool:menu")],
-    ]
-    await edit(c, "⚙️ Глобальные настройки\n\nОдна конфигурация на модуль. Она применяется к каждому выбранному аккаунту; индивидуальных лимитов аккаунтов нет.", kb(rows))
+    _, _, _, module, field = c.data.split(":")
+    if module not in {"invite", "broadcast", "subscription", "reaction"} or field not in POLICY_FIELDS:
+        await c.answer("Неизвестный параметр.", show_alert=True)
+        return
+    label, unit, minimum, maximum = POLICY_FIELDS[field]
+    policy = await telegram_automation.module_policy(module)
+    await state.clear()
+    await state.update_data(
+        management_action=f"policy-field-{module}-{field}",
+        management_account_id=0,
+        ui_chat_id=c.message.chat.id,
+        ui_message_id=c.message.message_id,
+        return_callback=f"tool:policy:{module}",
+    )
+    await state.set_state(Flow.management_input)
+    await edit(c, f"{label}\n\nТекущее значение: {policy[field]} {unit}.\nВведите новое целое число от {minimum} до {maximum}.", CANCEL)
 
 
 @router.callback_query(F.data.startswith("tool:policy:"))
@@ -666,24 +688,14 @@ async def tool_policy_edit(c: CallbackQuery, state: FSMContext):
         return
     policy = await telegram_automation.module_policy(module)
     title = MODULE_ACTIONS[module][0]
-    await state.clear()
-    await state.update_data(
-        management_action=f"policy-{module}", management_account_id=0,
-        ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id,
-        return_callback="tool:policy:menu",
-    )
-    await state.set_state(Flow.management_input)
-    prompt = (
-        f"⚙️ {title} · глобальные параметры\n\n"
-        f"Интервал: {policy['interval_seconds']} сек.\n"
-        f"Лимит на аккаунт за задачу/сутки: {policy['per_account_limit']} / {policy['daily_account_limit']}\n"
-        f"Пакет: {policy['batch_size']} · пауза между пакетами: {policy['batch_pause_seconds']} сек.\n"
-        f"Ожидание FloodWait до: {policy['floodwait_wait_seconds']} сек.\n"
-        f"FloodWait до карантина: {policy['floodwait_threshold']}\n\n"
-        "Отправьте 7 чисел через | в порядке: интервал между действиями | лимит на аккаунт за задачу | лимит за 24 часа на аккаунт | пользователей в пакете | пауза между пакетами | максимум ожидания FloodWait | FloodWait до карантина.\n"
-        "Все значения: 1–9999 (порог FloodWait: 1–100). Пример инвайтинга: 120 | 99 | 25 | 1 | 60 | 9999 | 10."
-    )
-    await edit(c, prompt, CANCEL)
+    rows = []
+    for field, (label, unit, _minimum, _maximum) in POLICY_FIELDS.items():
+        rows.append([(f"{label}: {policy[field]} {unit}", f"tool:policy:field:{module}:{field}")])
+    rows.extend([
+        [("↩️ Назад в модуль", f"tool:module:{module}")],
+        [("🏠 Главное меню", "nav:home")],
+    ])
+    await edit(c, f"⚙️ Настройки модуля · {title}\n\nВыберите параметр, который хотите изменить. Каждое значение настраивается отдельно кнопкой.", kb(rows))
 
 
 @router.callback_query(F.data == "tool:groups")
@@ -1455,22 +1467,15 @@ async def management_input_received(m: Message, state: FSMContext):
                 f"Автоответчик включён для {len(account_ids)} аккаунтов. Он отвечает только в личных чатах и только при выключенном ИИ каждого аккаунта."
                 if enabled else f"Автоответчик выключен для {len(account_ids)} аккаунтов."
             )
-        elif action and action.startswith("policy-"):
-            module = action.removeprefix("policy-")
-            parts = [x.strip() for x in raw.split("|")]
-            if len(parts) != 7 or any(not item.isdigit() for item in parts):
-                raise ValueError("Формат: интервал | лимит на аккаунт | дневной лимит | размер пакета | пауза между пакетами | максимум ожидания FloodWait | FloodWait до карантина.")
-            await telegram_automation.set_module_policy(
-                module,
-                interval_seconds=int(parts[0]),
-                per_account_limit=int(parts[1]),
-                daily_account_limit=int(parts[2]),
-                batch_size=int(parts[3]),
-                batch_pause_seconds=int(parts[4]),
-                floodwait_wait_seconds=int(parts[5]),
-                floodwait_threshold=int(parts[6]),
-            )
-            message = f"Глобальные настройки модуля «{module}» сохранены и будут общими для всех выбранных аккаунтов."
+        elif action and action.startswith("policy-field-"):
+            _, module, field = action.split("-", 3)
+            if field not in POLICY_FIELDS:
+                raise ValueError("Неизвестный параметр настроек.")
+            _label, unit, minimum, maximum = POLICY_FIELDS[field]
+            if not raw.isdigit() or not minimum <= int(raw) <= maximum:
+                raise ValueError(f"Введите целое число от {minimum} до {maximum}.")
+            await telegram_automation.set_module_policy(module, **{field: int(raw)})
+            message = f"Настройка модуля сохранена: {int(raw)} {unit}."
         elif action in {"broadcastlimits", "invitelimits", "subscriptionlimits", "reactionlimits", "global-broadcast", "global-invite", "global-subscription", "global-reaction"}:
             parts = [x.strip() for x in raw.split("|")]
             if len(parts) != 4:
@@ -2109,8 +2114,8 @@ async def management_input_received(m: Message, state: FSMContext):
         else:
             raise ValueError("Неизвестное действие.")
         module = data.get("module_selection_module")
-        if action and action.startswith("policy-"):
-            back_callback, back_label = "tool:policy:menu", "↩️ К глобальным настройкам"
+        if action and action.startswith("policy-field-"):
+            back_callback, back_label = f"tool:policy:{action.split('-', 3)[2]}", "↩️ К настройкам модуля"
         elif module:
             back_callback, back_label = f"tool:module:{module}", "↩️ К модулю"
         else:
