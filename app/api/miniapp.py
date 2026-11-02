@@ -123,6 +123,12 @@ class AgentInput(BaseModel):
     enabled: bool = True
     is_default: bool = False
     api_key: str = ""
+    mention_reply_probability_override: int | None = Field(default=None, ge=0, le=100)
+    dm_reply_probability_override: int | None = Field(default=None, ge=0, le=100)
+    proactive_reply_probability_override: int | None = Field(default=None, ge=0, le=100)
+    reply_cooldown_seconds_override: int | None = Field(default=None, ge=0, le=604800)
+    channel_reply_probability_override: int | None = Field(default=None, ge=0, le=100)
+    channel_reply_cooldown_seconds_override: int | None = Field(default=None, ge=0, le=604800)
 
 
 class PersonaInput(BaseModel):
@@ -151,7 +157,7 @@ class TriggerInput(BaseModel):
 
 
 class SettingsInput(BaseModel):
-    values: dict[str, int | bool]
+    values: dict[str, Any]
 
 
 class SearchInput(BaseModel):
@@ -223,6 +229,8 @@ async def create_agent(payload: AgentInput, actor: int = Depends(require_admin),
     if await db.scalar(select(AIAgent.id).where(AIAgent.name == payload.name)):
         raise HTTPException(409, "Агент с таким названием уже существует.")
     values = payload.model_dump()
+    if row_name := await db.scalar(select(AIAgent.id).where(AIAgent.name == payload.name)):
+        raise HTTPException(409, "ИИ-агент с таким названием уже существует.")
     row = AIAgent(**values)
     if row.is_default:
         for item in (await db.scalars(select(AIAgent))).all():
@@ -241,6 +249,9 @@ async def update_agent(agent_id: int, payload: AgentInput, actor: int = Depends(
     if not row:
         raise HTTPException(404, "ИИ-агент не найден.")
     values = payload.model_dump()
+    duplicate = await db.scalar(select(AIAgent.id).where(AIAgent.name == payload.name, AIAgent.id != agent_id))
+    if duplicate:
+        raise HTTPException(409, "ИИ-агент с таким названием уже существует.")
     if not values["api_key"]:
         values.pop("api_key")
     if row.is_default or values["is_default"]:
@@ -290,6 +301,9 @@ async def update_persona(persona_id: int, payload: PersonaInput, actor: int = De
     row = await db.get(Persona, persona_id)
     if not row:
         raise HTTPException(404, "Персона не найдена.")
+    duplicate = await db.scalar(select(Persona.id).where(Persona.name == payload.name, Persona.id != persona_id))
+    if duplicate:
+        raise HTTPException(409, "Персона с таким названием уже существует.")
     for key, value in payload.model_dump().items():
         setattr(row, key, value)
     await _audit(db, actor, "persona.update", "persona", persona_id)
@@ -369,6 +383,8 @@ async def update_trigger(trigger_id: int, payload: TriggerInput, actor: int = De
     row = await db.get(TriggerRule, trigger_id)
     if not row:
         raise HTTPException(404, "Триггер не найден.")
+    if payload.account_id is not None and not await db.get(Account, payload.account_id):
+        raise HTTPException(400, "Аккаунт не найден.")
     for key, value in payload.model_dump().items():
         setattr(row, key, value)
     await _audit(db, actor, "trigger.update", "trigger", trigger_id)
