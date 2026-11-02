@@ -976,6 +976,88 @@ async def parse_chat_participants(
             }
 
 
+async def preview_message_target(account_id: int, target: str) -> dict:
+    """Resolve one explicitly selected Telegram peer before a manual message is sent."""
+    value = str(target or "").strip()
+    if not value or len(value) > 256:
+        raise ValueError("Укажите @username, ссылку t.me или ID чата.")
+    if value.startswith("https://t.me/"):
+        value = value.rstrip("/")
+        path = value.removeprefix("https://t.me/")
+        if path.startswith(("+", "joinchat/")):
+            raise ValueError("Ссылки-приглашения не подходят. Сначала вступите в чат.")
+        value = "@" + path.split("/", 1)[0].lstrip("@")
+    elif value.startswith("t.me/"):
+        path = value.removeprefix("t.me/").rstrip("/")
+        if path.startswith(("+", "joinchat/")):
+            raise ValueError("Ссылки-приглашения не подходят. Сначала вступите в чат.")
+        value = "@" + path.split("/", 1)[0].lstrip("@")
+    async with _account_lock(account_id):
+        async with isolated_account_client(account_id) as (_account, client):
+            entity = await client.get_entity(value)
+            if bool(getattr(entity, "broadcast", False)) and not bool(getattr(entity, "megagroup", False)):
+                raise ValueError("Это канал для публикаций, а не чат. Выберите группу или личный диалог.")
+            title = (
+                getattr(entity, "title", None)
+                or " ".join(filter(None, [
+                    getattr(entity, "first_name", None),
+                    getattr(entity, "last_name", None),
+                ]))
+                or (f"@{entity.username}" if getattr(entity, "username", None) else str(entity.id))
+            )
+            kind = "группа" if (
+                getattr(entity, "megagroup", False)
+                or getattr(entity, "gigagroup", False)
+                or entity.__class__.__name__ == "Chat"
+            ) else "личный чат"
+            return {
+                "title": str(title)[:200],
+                "peer_id": int(utils.get_peer_id(entity)),
+                "username": str(getattr(entity, "username", None) or ""),
+                "kind": kind,
+            }
+
+
+async def send_message_to_chat(account_id: int, target: str, message: str) -> dict:
+    """Send one operator-authored message to one explicitly resolved Telegram chat."""
+    value = str(message or "").strip()
+    if not value:
+        raise ValueError("Текст сообщения не может быть пустым.")
+    if len(value) > 4096:
+        raise ValueError("Сообщение не должно превышать 4096 символов.")
+    peer = str(target or "").strip()
+    if not peer or len(peer) > 256:
+        raise ValueError("Не указан корректный чат.")
+    if peer.startswith("https://t.me/"):
+        path = peer.rstrip("/").removeprefix("https://t.me/")
+        if path.startswith(("+", "joinchat/")):
+            raise ValueError("Ссылки-приглашения не подходят. Укажите username или ID чата.")
+        peer = "@" + path.split("/", 1)[0].lstrip("@")
+    elif peer.startswith("t.me/"):
+        path = peer.rstrip("/").removeprefix("t.me/")
+        if path.startswith(("+", "joinchat/")):
+            raise ValueError("Ссылки-приглашения не подходят. Укажите username или ID чата.")
+        peer = "@" + path.split("/", 1)[0].lstrip("@")
+    async with _account_lock(account_id):
+        async with isolated_account_client(account_id) as (_account, client):
+            entity = await client.get_entity(peer)
+            if bool(getattr(entity, "broadcast", False)) and not bool(getattr(entity, "megagroup", False)):
+                raise ValueError("Отправка в вещательные каналы отключена. Выберите группу или личный диалог.")
+            sent = await client.send_message(entity, value, parse_mode=None, link_preview=False)
+            return {
+                "message_id": int(sent.id),
+                "peer_id": int(utils.get_peer_id(entity)),
+                "title": str(
+                    getattr(entity, "title", None)
+                    or " ".join(filter(None, [
+                        getattr(entity, "first_name", None),
+                        getattr(entity, "last_name", None),
+                    ]))
+                    or (f"@{entity.username}" if getattr(entity, "username", None) else str(entity.id))
+                )[:200],
+            }
+
+
 async def list_account_dialogs(
     account_id: int, *, limit: int = 200, kind: str = "all"
 ) -> list[dict]:
@@ -1284,7 +1366,7 @@ async def resolve_peers(account_id: int, peer_refs: list[str]) -> list[dict]:
 
 __all__ = [
     "ChatOverview", "FloodWaitError", "add_contact", "delete_contact",
-    "get_chat_overview", "get_profile", "join_chat", "leave_chat",
+    "get_chat_overview", "get_profile", "join_chat", "leave_chat", "preview_message_target", "send_message_to_chat",
     "import_contacts", "list_contacts", "list_account_dialogs", "manage_subscriptions_batch",
     "parse_account_history", "parse_chat_history", "parse_chat_participants", "publish_story_photo", "react_to_message",
     "resolve_peer", "resolve_peers", "resolve_group",
