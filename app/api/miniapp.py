@@ -14,7 +14,7 @@ from sqlalchemy import or_, select, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.settings import get_settings
-from app.storage.db import SessionFactory, get_session
+from app.storage.db import get_session
 from app.storage.models import (
     Account, AIAgent, AppSetting, AuditEvent, ChannelBinding, ChatBinding,
     Example, Persona, TriggerRule, ChannelAnalysis, ContentDraft,
