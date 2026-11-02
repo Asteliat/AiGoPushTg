@@ -837,8 +837,9 @@ async def parser_settings_screen(c: CallbackQuery, account_id: int, kind: str) -
         enabled = bool(values[field])
         rows.append([(( "🟢 " if enabled else "⚪ ") + label, f"tool:parser:toggle:{account_id}:{kind}:{field}")])
     active_days = int(values["active_days"])
+    lines.append(f"Активность: {'без ограничения' if not active_days else f'за последние {active_days} дней'}")
     rows.append([
-        (("☑️ " if active_days == days else "") + ("Без ограничения" if days == 0 else f"За {days} дня"), f"tool:parser:active:{account_id}:{kind}:{days}")
+        (("☑️ " if active_days == days else "") + ("Без ограничения" if days == 0 else f"За {days} дней"), f"tool:parser:active:{account_id}:{kind}:{days}")
         for days in (0, 3, 7, 30)
     ])
     lines.extend([
