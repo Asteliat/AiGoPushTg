@@ -821,7 +821,7 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         "reaction": "Отправьте данные через |\nФормат: @username | ID_публикации | 👍",
         "schedreaction": "Формат: @username | ID_публикации | emoji | now либо YYYY-MM-DD HH:MM UTC. Пример: @mychannel | 123 | 🔥 | 2026-11-03 18:00. Это одна реакция на одну выбранную публикацию, без накрутки.",
 
-        "editprofile": "Отправьте новые поля через |\nФормат: имя | фамилия | BIO | username\nЧтобы оставить поле без изменений, укажите -",
+        "editprofile": "Одинаковые данные всем выбранным аккаунтам: имя | фамилия | BIO | username. Разные данные: отдельная строка для каждого аккаунта в формате ID аккаунта | имя | фамилия | BIO | username. Для пропуска поля укажите -.",
         "autoresponder": "Формат: ВКЛ/ВЫКЛ | ключевые слова через запятую или - для всех сообщений | текст ответа | пауза в секундах.\nПример: ВКЛ | привет, цена, тариф | Привет! Чем помочь? | 60\nРаботает только в личных сообщениях и только пока ИИ выключен именно на этом аккаунте.",
         "campaign": "Формат: broadcast, invite или group_broadcast | now либо YYYY-MM-DD HH:MM UTC | @получатель1,@получатель2. Выберите конкретных получателей; максимум 500 за задачу.",
         "broadcastlimits": "Формат: интервал в секундах | максимум за 24 часа | тихо с HH:MM UTC или - | тихо до HH:MM UTC или -. Пример: 60 | 40 | 23:00 | 08:00.",
@@ -1438,7 +1438,7 @@ async def management_input_received(m: Message, state: FSMContext):
             else:
                 if data.get("campaign_kind") == "direct_invite":
                     await state.update_data(management_action="campaign_target_group")
-                    await prompt_message(m, state, "Шаг 2 из 3 · Целевая группа\n\nУкажите peer ID или @username супергруппы, где аккаунт является администратором.")
+                    await prompt_message(m, state, "Шаг 2 из 3 · Целевая группа\n\nУкажите общую группу через @username/peer ID либо отдельные строки для каждого аккаунта: ID аккаунта | @username группы. Каждый аккаунт должен быть администратором с правом приглашать участников.")
                 else:
                     await state.update_data(management_action="campaign_recipients")
                     await prompt_message(m, state, "Шаг 2 из 3 · Получатели\n\nОтправьте @username или ссылку каждого получателя через запятую или с новой строки. Укажите конкретных получателей через @username. Для публикации в группе укажите группы, где аккаунт администратор (можно peer ID из списка групп).")
@@ -1473,7 +1473,7 @@ async def management_input_received(m: Message, state: FSMContext):
                 management_action="campaign_target_group" if data.get("campaign_kind") == "direct_invite" else "campaign_recipients",
             )
             if data.get("campaign_kind") == "direct_invite":
-                await prompt_message(m, state, "Целевая группа\n\nУкажите peer ID или @username супергруппы, где аккаунт является администратором.")
+                await prompt_message(m, state, "Целевая группа\n\nУкажите общую группу через @username/peer ID либо отдельные строки для каждого аккаунта: ID аккаунта | @username группы. Каждый аккаунт должен быть администратором с правом приглашать участников.")
             else:
                 await prompt_message(m, state, "Получатели\n\nОтправьте @username или ссылку каждого получателя через запятую или с новой строки. Укажите конкретных получателей через @username.")
             return
