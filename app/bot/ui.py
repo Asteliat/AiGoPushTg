@@ -593,7 +593,7 @@ async def tool_module_account_actions(c: CallbackQuery):
     rows = [[(label, f"tool:mg:{action}:{aid}")] for label, action in actions]
     rows.extend([
         [("⛔ Статус FloodWait / снять карантин", f"tool:quarantine:{module}:{aid}")],
-        [("⚙️ Глобальные настройки", f"tool:policy:{module}")],
+        *([[("⚙️ Настройки модуля", f"tool:policy:{module}")]] if module in {"invite", "broadcast", "subscription", "reaction"} else []),
         [("↩️ К аккаунтам модуля", f"tool:module:{module}")],
     ])
     await edit(c, f"{title} · {account.display_name} · #{aid}\n\nВыберите действие:", kb(rows))
@@ -791,7 +791,6 @@ async def management_accounts(c: CallbackQuery):
             select(Account).where(Account.enabled.is_(True)).order_by(Account.id)
         )).all())
     rows = [[(f"👤 {a.display_name[:30]} · #{a.id}", f"tool:management:account:{a.id}")] for a in accounts]
-    rows.append([("⚙️ Глобальные настройки модулей", "tool:policy:menu")])
     rows.append([("⬅️ Инструменты", "tool:menu")])
     await edit(c, "🛠 Управление Telegram-аккаунтами\n\nВыберите аккаунт. Все операции выполняются через изолированную копию сессии.", kb(rows))
 
