@@ -365,6 +365,7 @@ async def tool_module_accounts(c: CallbackQuery):
         title, actions = MODULE_ACTIONS[module]
         rows = [[(label, f"tool:mg:{action}:{aid}")] for label, action in actions]
         rows.extend([
+            [("⛔ Статус FloodWait / снять карантин", f"tool:quarantine:{module}:{aid}")],
             [("⚙️ Глобальные настройки", f"tool:policy:{module}")],
             [("↩️ К аккаунтам модуля", f"tool:module:{module}")],
         ])
@@ -404,10 +405,55 @@ async def tool_module_account_actions(c: CallbackQuery):
     title, actions = MODULE_ACTIONS[module]
     rows = [[(label, f"tool:mg:{action}:{aid}")] for label, action in actions]
     rows.extend([
+        [("⛔ Статус FloodWait / снять карантин", f"tool:quarantine:{module}:{aid}")],
         [("⚙️ Глобальные настройки", f"tool:policy:{module}")],
         [("↩️ К аккаунтам модуля", f"tool:module:{module}")],
     ])
     await edit(c, f"{title} · {account.display_name} · #{aid}\n\nВыберите действие:", kb(rows))
+
+
+@router.callback_query(F.data.startswith("tool:quarantine:"))
+async def tool_module_quarantine(c: CallbackQuery):
+    if not await check_cb(c):
+        return
+    _, _, module, aid_raw = c.data.split(":")
+    aid = int(aid_raw)
+    if module not in {"invite", "broadcast", "subscription", "reaction"}:
+        await c.answer("Неизвестный модуль.", show_alert=True)
+        return
+    status = await telegram_automation.module_quarantine_status(aid, module)
+    if status["quarantined"]:
+        text = (
+            f"⛔ Карантин · {module} · аккаунт #{aid}\\n\\n"
+            f"FloodWait-срабатываний: {status['floodwait_count']}\\n"
+            f"Причина: {status['reason']}\\n\\n"
+            "Остальные модули аккаунта продолжают работать. Снять карантин можно вручную."
+        )
+        rows = [[("♻️ Снять карантин", f"tool:quarantine:clear:{module}:{aid}")]]
+    else:
+        text = (
+            f"✅ Карантина нет · {module} · аккаунт #{aid}\\n\\n"
+            f"Зафиксировано FloodWait: {status['floodwait_count']}."
+        )
+        rows = []
+    rows.extend([
+        [("↩️ К модулю", f"tool:module:account:{module}:{aid}")],
+        [("🏠 Главное меню", "nav:home")],
+    ])
+    await edit(c, text, kb(rows))
+
+
+@router.callback_query(F.data.startswith("tool:quarantine:clear:"))
+async def tool_module_quarantine_clear(c: CallbackQuery):
+    if not await check_cb(c):
+        return
+    _, _, _, module, aid_raw = c.data.split(":")
+    aid = int(aid_raw)
+    await telegram_automation.clear_module_quarantine(aid, module)
+    await edit(c, f"Карантин модуля «{module}» для аккаунта #{aid} снят. Счётчик FloodWait сброшен.", kb([
+        [("↩️ К модулю", f"tool:module:account:{module}:{aid}")],
+        [("🏠 Главное меню", "nav:home")],
+    ]))
 
 
 @router.callback_query(F.data == "tool:policy:menu")
@@ -545,11 +591,7 @@ async def management_accounts(c: CallbackQuery):
             select(Account).where(Account.enabled.is_(True)).order_by(Account.id)
         )).all())
     rows = [[(f"👤 {a.display_name[:30]} · #{a.id}", f"tool:management:account:{a.id}")] for a in accounts]
-    rows.append([("🌐 Общие лимиты", "tool:mg:global-limits:0")])
-    rows.append([("📨 Глобальный лимит рассылок", "tool:mg:global-broadcast:0")])
-    rows.append([("🔗 Глобальный лимит приглашений", "tool:mg:global-invite:0")])
-    rows.append([("➕ Глобальный лимит подписок", "tool:mg:global-subscription:0")])
-    rows.append([("❤️ Глобальный лимит реакций", "tool:mg:global-reaction:0")])
+    rows.append([("⚙️ Глобальные настройки модулей", "tool:policy:menu")])
     rows.append([("⬅️ Инструменты", "tool:menu")])
     await edit(c, "🛠 Управление Telegram-аккаунтами\n\nВыберите аккаунт. Все операции выполняются через изолированную копию сессии.", kb(rows))
 
@@ -579,10 +621,6 @@ async def management_account_menu(c: CallbackQuery):
         [("📨 Разовая рассылка / приглашение", f"tool:mg:campaign:{aid}")],
         [("🗓 Создать расписание", f"tool:mg:schedule:{aid}"), ("📅 Мои расписания", f"tool:mg:schedules:{aid}")],
         [("📋 Очередь и история задач", f"tool:mg:campaigns:{aid}")],
-        [("📨 Лимит рассылок", f"tool:mg:broadcastlimits:{aid}"), ("🔗 Лимит приглашений", f"tool:mg:invitelimits:{aid}")],
-        [("➕ Лимит подписок", f"tool:mg:subscriptionlimits:{aid}"), ("❤️ Лимит реакций", f"tool:mg:reactionlimits:{aid}")],
-        [("⏱ Общие лимиты", f"tool:mg:limits:{aid}")],
-        [("♻️ Сбросить лимиты к глобальным", f"tool:mg:resetlimits:{aid}")],
         [("🎯 Автоответчики и триггеры", f"trigger:account:{aid}")],
         [("⬅️ К аккаунтам", "tool:management")],
     ]))
