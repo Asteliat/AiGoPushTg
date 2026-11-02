@@ -403,7 +403,7 @@ async def render_campaign_kind_selection(c: CallbackQuery, state: FSMContext, mo
         + ", ".join(f"#{aid}" for aid in ids) + "\n\nВыберите тип задачи:", kb(kinds))
 
 
-MULTI_ACCOUNT_MODULES = {"broadcast", "invite", "subscription", "reaction", "profile"}
+MULTI_ACCOUNT_MODULES = {"broadcast", "invite", "subscription", "reaction", "profile", "contacts"}
 
 
 async def render_selected_module_actions(c: CallbackQuery, state: FSMContext, module: str, account_ids: list[int]):
@@ -833,18 +833,22 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         "global-limits": "Глобальные значения по умолчанию для аккаунтов без индивидуального переопределения. Формат: интервал_секунд | максимум_сообщений_за_24ч | тихо_с | тихо_до (UTC). Пример: 30 | 50 | 23:00 | 08:00. Без тихих часов: 30 | 50 | - | -.",
     }
     if action == "exportcontacts":
-        try:
-            items = await telegram_management.list_contacts(aid, limit=500)
-            output = io.StringIO()
-            writer = csv.writer(output)
-            writer.writerow(["telegram_id", "username", "first_name", "last_name", "phone"])
-            for item in items:
-                writer.writerow([item["id"], item["username"] or "", item["first_name"], item["last_name"], item["phone"]])
-            document = BufferedInputFile(output.getvalue().encode("utf-8-sig"), filename=f"contacts-account-{aid}.csv")
-            await c.message.answer_document(document, caption=f"Экспорт контактов аккаунта #{aid}: {len(items)} записей")
-            await c.answer("Файл CSV отправлен.")
-        except Exception as exc:
-            await c.answer(f"Экспорт не удался: {str(exc)[:180]}", show_alert=True)
+        selected_ids = [int(value) for value in (await state.get_data()).get("management_account_ids") or [aid]]
+        sent = 0
+        for account_id in selected_ids:
+            try:
+                items = await telegram_management.list_contacts(account_id, limit=500)
+                output = io.StringIO()
+                writer = csv.writer(output)
+                writer.writerow(["telegram_id", "username", "first_name", "last_name", "phone"])
+                for item in items:
+                    writer.writerow([item["id"], item["username"] or "", item["first_name"], item["last_name"], item["phone"]])
+                document = BufferedInputFile(output.getvalue().encode("utf-8-sig"), filename=f"contacts-account-{account_id}.csv")
+                await c.message.answer_document(document, caption=f"Экспорт контактов аккаунта #{account_id}: {len(items)} записей")
+                sent += 1
+            except Exception as exc:
+                await c.message.answer(f"❌ Аккаунт #{account_id}: {type(exc).__name__}: {str(exc)[:150]}")
+        await c.answer(f"Экспортировано файлов: {sent}/{len(selected_ids)}.")
         return
     if action == "resetlimits":
         try:
@@ -900,17 +904,21 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         await edit(c, "\\n".join(lines)[:3900], kb([[("↩️ К модулю", "tool:module:profile")]]))
         return
     if action == "contacts":
-        try:
-            items = await telegram_management.list_contacts(aid, limit=100)
-            lines = [f"📇 Контакты аккаунта #{aid} · показано {len(items)}"]
-            lines.extend(
-                f"{i}. {item['first_name']} {item['last_name']} · "
-                f"@{item['username'] or '—'} · ID {item['id']}"
-                for i, item in enumerate(items, 1)
-            )
-            await edit(c, "\n".join(lines)[:3900], kb([[("⬅️ К инструментам аккаунта", f"tool:management:account:{aid}")]]))
-        except Exception as exc:
-            await edit(c, f"Не удалось получить контакты: {type(exc).__name__}: {str(exc)[:250]}", back_home())
+        selected_ids = [int(value) for value in (await state.get_data()).get("management_account_ids") or [aid]]
+        lines = ["📇 Контакты выбранных аккаунтов", ""]
+        for account_id in selected_ids:
+            try:
+                items = await telegram_management.list_contacts(account_id, limit=60)
+                lines.append(f"Аккаунт #{account_id} · показано {len(items)}")
+                lines.extend(
+                    f"{i}. {item['first_name']} {item['last_name']} · "
+                    f"@{item['username'] or '—'} · ID {item['id']}"
+                    for i, item in enumerate(items, 1)
+                )
+                lines.append("")
+            except Exception as exc:
+                lines.append(f"❌ #{account_id}: {type(exc).__name__}: {str(exc)[:150]}")
+        await edit(c, "\\n".join(lines)[:3900], kb([[("↩️ К модулю", "tool:module:contacts")]]))
         return
     if action in {"broadcastlimits", "invitelimits", "subscriptionlimits", "reactionlimits", "global-broadcast", "global-invite", "global-subscription", "global-reaction"}:
         await state.clear()
