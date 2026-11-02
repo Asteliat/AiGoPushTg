@@ -10,7 +10,7 @@ from urllib.parse import parse_qsl
 from aiogram import Bot
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, or_, select, desc, func
+from sqlalchemy import or_, select, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.settings import get_settings
