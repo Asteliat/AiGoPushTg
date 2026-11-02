@@ -35,7 +35,7 @@ main{padding:8px 16px 22px}.page-title{font-size:25px;letter-spacing:-.8px;margi
 const tg=window.Telegram?.WebApp; if(tg){tg.ready();tg.expand();try{tg.setHeaderColor('bg_color');tg.setBackgroundColor('bg_color');tg.setBottomBarColor('bottom_bar_bg_color')}catch{}}
 const initData=tg?.initData||'';
 const $=s=>document.querySelector(s), content=$('#content'), dialog=$('#dialog'), modal=$('#modal');
-const state={page:'home',aiTab:'agents',toolTab:'groups',moduleId:'',accounts:[],agents:[],personas:[],examples:[],triggers:[],settings:{},logs:[],logDestinations:{},bindings:{groups:[],channels:[]},channelAssistant:[],channelActivity:[],contentDrafts:[],inboxAccountId:null,inboxDialogs:[],inboxLoadedFor:null,inboxMessages:[],inboxMessagesLoadedFor:null,inboxPeer:null,inboxLoading:false,inboxDraft:'',searchResults:[],searchKind:'groups',busy:false};
+const state={page:'home',aiTab:'agents',toolTab:'groups',moduleId:'',accounts:[],agents:[],personas:[],examples:[],triggers:[],settings:{},logs:[],logDestinations:{},bindings:{groups:[],channels:[]},channelAssistant:[],channelActivity:[],contentDrafts:[],inboxAccountId:null,inboxDialogs:[],inboxLoadedFor:null,inboxMessages:[],inboxMessagesLoadedFor:null,inboxPeer:null,inboxLoading:false,inboxDialogsRequest:0,inboxMessagesRequest:0,inboxDraft:'',searchResults:[],searchKind:'groups',busy:false};
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const toast=msg=>{let n=document.createElement('div');n.className='toast';n.textContent=msg;document.body.append(n);setTimeout(()=>n.remove(),2600)};
 async function api(path,opts={}){const res=await fetch('/v1/miniapp'+path,{...opts,headers:{'Content-Type':'application/json','X-Telegram-Init-Data':initData,...opts.headers}});let data;try{data=await res.json()}catch{data={}}if(!res.ok)throw new Error(data.detail||'Ошибка запроса');return data}
@@ -115,17 +115,17 @@ function renderConversationsModule(){
 }
 
 async function loadInboxDialogs(){
- if(!state.inboxAccountId||state.inboxLoading)return;
- const aid=state.inboxAccountId;state.inboxLoading=true;renderInboxModule();
- try{const d=await api('/inbox/'+aid+'/dialogs');state.inboxDialogs=d.dialogs||[];state.inboxLoadedFor=aid}
- catch(e){toast(e.message);state.inboxLoadedFor=aid;state.inboxDialogs=[]}
- finally{state.inboxLoading=false;renderInboxModule()}
+ if(!state.inboxAccountId)return;
+ const aid=state.inboxAccountId,requestId=++state.inboxDialogsRequest;state.inboxLoading=true;renderInboxModule();
+ try{const d=await api('/inbox/'+aid+'/dialogs');if(requestId!==state.inboxDialogsRequest||aid!==state.inboxAccountId)return;state.inboxDialogs=d.dialogs||[];state.inboxLoadedFor=aid}
+ catch(e){if(requestId!==state.inboxDialogsRequest||aid!==state.inboxAccountId)return;toast(e.message);state.inboxLoadedFor=aid;state.inboxDialogs=[]}
+ finally{if(requestId===state.inboxDialogsRequest){state.inboxLoading=false;renderInboxModule()}}
 }
 async function loadInboxMessages(){
  if(!state.inboxAccountId||!state.inboxPeer)return;
- const aid=state.inboxAccountId,peer=state.inboxPeer;state.inboxMessagesLoadedFor=null;
- try{const d=await api('/inbox/'+aid+'/messages/'+peer.peer_id+'?peer_ref='+encodeURIComponent(peer.peer_ref||''));state.inboxMessages=d.messages||[];state.inboxMessagesLoadedFor=aid+':'+peer.peer_id;state.inboxDraft=''}
- catch(e){toast(e.message);state.inboxMessages=[];state.inboxMessagesLoadedFor=aid+':'+peer.peer_id}
+ const aid=state.inboxAccountId,peer=state.inboxPeer,requestId=++state.inboxMessagesRequest;state.inboxMessagesLoadedFor=null;
+ try{const d=await api('/inbox/'+aid+'/messages/'+peer.peer_id+'?peer_ref='+encodeURIComponent(peer.peer_ref||''));if(requestId!==state.inboxMessagesRequest||aid!==state.inboxAccountId||state.inboxPeer?.peer_id!==peer.peer_id)return;state.inboxMessages=d.messages||[];state.inboxMessagesLoadedFor=aid+':'+peer.peer_id;state.inboxDraft=''}
+ catch(e){if(requestId!==state.inboxMessagesRequest||aid!==state.inboxAccountId||state.inboxPeer?.peer_id!==peer.peer_id)return;toast(e.message);state.inboxMessages=[];state.inboxMessagesLoadedFor=aid+':'+peer.peer_id}
  renderInboxModule();
 }
 function renderInboxModule(){
@@ -237,7 +237,7 @@ if(b.dataset.accountAction){const a=state.accounts.find(x=>x.id===Number(b.datas
 if(b.dataset.saveResult){const r=JSON.parse(decodeURIComponent(b.dataset.saveResult));const aid=Number($('#search-account').value);await api('/bindings',json('POST',{account_id:aid,kind:state.searchKind,peer_id:Number(r.id),title:r.title}));toast('Добавлено в список, пока выключено');return}
 if(b.dataset.copy){await navigator.clipboard.writeText(b.dataset.copy);toast('Ссылка скопирована');return}
 }catch(err){toast(err.message)}});
-content.addEventListener('change',async e=>{const s=e.target;if(s.id==='inbox-account'){state.inboxAccountId=Number(s.value);state.inboxLoadedFor=null;state.inboxPeer=null;state.inboxMessages=[];state.inboxMessagesLoadedFor=null;renderInboxModule();return}if(s.dataset.account){const field=s.dataset.field;let value;if(['reply_mode','channel_reply_mode','channel_post_instructions','channel_comments_instructions','channel_restrictions_instructions'].includes(field))value=s.value;else if(field==='channel_chat_replies_enabled')value=s.value==='true';else value=s.value===''?null:Number(s.value);try{await api('/accounts/'+s.dataset.account,json('PATCH',{[field]:value}));toast('Настройки аккаунта сохранены')}catch(err){toast(err.message)}}});
+content.addEventListener('change',async e=>{const s=e.target;if(s.id==='inbox-account'){state.inboxAccountId=Number(s.value);state.inboxDialogsRequest++;state.inboxMessagesRequest++;state.inboxLoading=false;state.inboxDialogs=[];state.inboxLoadedFor=null;state.inboxPeer=null;state.inboxMessages=[];state.inboxMessagesLoadedFor=null;state.inboxDraft='';renderInboxModule();return}if(s.dataset.account){const field=s.dataset.field;let value;if(['reply_mode','channel_reply_mode','channel_post_instructions','channel_comments_instructions','channel_restrictions_instructions'].includes(field))value=s.value;else if(field==='channel_chat_replies_enabled')value=s.value==='true';else value=s.value===''?null:Number(s.value);try{await api('/accounts/'+s.dataset.account,json('PATCH',{[field]:value}));toast('Настройки аккаунта сохранены')}catch(err){toast(err.message)}}});
 content.addEventListener('input',e=>{const x=e.target;if(x.dataset.setting){const o=$('#v-'+x.dataset.setting);if(o)o.textContent=x.dataset.setting.includes('probability')?x.value+'%':x.value+' сек.'}});
 $('#nav').addEventListener('click',e=>{const b=e.target.closest('button[data-page]');if(!b)return;state.page=b.dataset.page;render()});
 const originalSearch=search;search=async()=>{state.searchKind=state.toolTab;await originalSearch()};
