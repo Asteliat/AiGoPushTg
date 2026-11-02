@@ -325,7 +325,6 @@ MODULE_ACTIONS = {
     "broadcast": ("📤 Рассылка", [
         ("✉️ Создать рассылку", "campaign"),
         ("📋 Очередь и журнал", "campaigns"),
-        ("🗓 Повторяющееся расписание", "schedule"),
         ("📅 Список расписаний", "schedules"),
     ]),
     "subscription": ("📢 Подписка и отписка", [
@@ -872,10 +871,16 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         await edit(c, "📆 Запланированные реакции\n\nВыберите запись." if rows[:-1] else "Запланированных реакций пока нет.", kb(rows))
         return
     if action == "schedules":
-        items = await telegram_automation.list_schedules(aid, limit=20)
-        rows = [[(f"#{item['id']} · {item['kind']} · {item['status']}", f"tool:schedule:status:{item['id']}")] for item in items]
-        rows.append([("↩️ К инструментам аккаунта", f"tool:management:account:{aid}")])
-        await edit(c, "🗓 Повторяющиеся расписания\n\nВыберите расписание." if items else "Расписаний пока нет.", kb(rows))
+        selected_ids = [int(value) for value in (await state.get_data()).get("management_account_ids") or [aid]]
+        rows = []
+        for account_id in selected_ids:
+            items = await telegram_automation.list_schedules(account_id, limit=20)
+            rows.extend([(
+                f"#{item['id']} · аккаунт #{account_id} · {item['kind']} · {item['status']}",
+                f"tool:schedule:status:{item['id']}",
+            )] for item in items)
+        rows.append([("↩️ К модулю", "tool:module:broadcast")])
+        await edit(c, "🗓 Повторяющиеся расписания\n\nВыберите расписание." if rows[:-1] else "Расписаний пока нет.", kb(rows))
         return
     if action == "campaigns":
         selected_ids = [int(value) for value in (await state.get_data()).get("management_account_ids") or [aid]]
