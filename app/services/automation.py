@@ -638,8 +638,10 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                             AutomationTaskRecipient.status == "sent",
                             AutomationTaskRecipient.delivered_at >= now - timedelta(hours=24),
                         )
-                        if kind in {"invite", "direct_invite"}:
-                            sent_query = sent_query.where(AutomationTask.kind.in_(["invite", "direct_invite"]))
+                        if kind == "direct_invite":
+                            sent_query = sent_query.where(AutomationTask.kind == "direct_invite")
+                        elif kind in {"invite", "broadcast", "group_broadcast"}:
+                            sent_query = sent_query.where(AutomationTask.kind.in_(["invite", "broadcast", "group_broadcast"]))
                         elif kind in {"subscription_join", "subscription_leave"}:
                             sent_query = sent_query.where(AutomationTask.kind.in_(["subscription_join", "subscription_leave"]))
                         else:
@@ -791,10 +793,10 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                             current = await db.get(AutomationTask, task_id)
                             if current and current.status == "running":
                                 current.status = "queued"
-                                current.scheduled_at = utcnow() + timedelta(seconds=max(interval, int(policy.get("batch_pause_seconds", interval))))
+                                current.scheduled_at = utcnow() + timedelta(seconds=interval)
                                 current.last_error = (
                                     f"Пакет {processed_in_batch}/{batch_size} обработан; "
-                                    f"следующий пакет через {int(policy.get('batch_pause_seconds', interval))} сек."
+                                    f"следующее приглашение/действие через {interval} сек."
                                 )
                                 current.updated_at = utcnow()
                                 await db.commit()
@@ -849,17 +851,17 @@ __all__ = [
 
 
 MODULE_POLICY_DEFAULTS = {
-    "broadcast": {"interval_seconds": 30, "daily_limit": 50, "batch_size": 10, "batch_pause_seconds": 60, "per_account_limit": 50, "daily_account_limit": 50, "floodwait_wait_seconds": 9999, "floodwait_threshold": 10},
-    "invite": {"interval_seconds": 120, "daily_limit": 25, "batch_size": 1, "batch_pause_seconds": 60, "per_account_limit": 99, "daily_account_limit": 25, "floodwait_wait_seconds": 9999, "floodwait_threshold": 10},
-    "subscription": {"interval_seconds": 10, "daily_limit": 20, "batch_size": 1, "batch_pause_seconds": 60, "per_account_limit": 20, "daily_account_limit": 20, "floodwait_wait_seconds": 9999, "floodwait_threshold": 10},
-    "reaction": {"interval_seconds": 30, "daily_limit": 50, "batch_size": 1, "batch_pause_seconds": 60, "per_account_limit": 50, "daily_account_limit": 50, "floodwait_wait_seconds": 9999, "floodwait_threshold": 10},
+    "broadcast": {"interval_seconds": 30, "daily_limit": 50, "batch_size": 10, "per_account_limit": 50, "daily_account_limit": 50, "floodwait_wait_seconds": 9999, "floodwait_threshold": 10},
+    "invite": {"interval_seconds": 120, "daily_limit": 25, "batch_size": 1, "per_account_limit": 99, "daily_account_limit": 25, "floodwait_wait_seconds": 9999, "floodwait_threshold": 10},
+    "subscription": {"interval_seconds": 10, "daily_limit": 20, "batch_size": 1, "per_account_limit": 20, "daily_account_limit": 20, "floodwait_wait_seconds": 9999, "floodwait_threshold": 10},
+    "reaction": {"interval_seconds": 30, "daily_limit": 50, "batch_size": 1, "per_account_limit": 50, "daily_account_limit": 50, "floodwait_wait_seconds": 9999, "floodwait_threshold": 10},
 }
 
 
 def _module_name_for_kind(kind: str) -> str:
-    if kind in {"invite", "direct_invite"}:
+    if kind == "direct_invite":
         return "invite"
-    if kind in {"broadcast", "group_broadcast"}:
+    if kind in {"invite", "broadcast", "group_broadcast"}:
         return "broadcast"
     if kind in {"subscription", "join", "leave", "subscription_join", "subscription_leave"}:
         return "subscription"
@@ -882,7 +884,7 @@ async def module_policy(module: str) -> dict:
             result[name] = int(values.get(name, default))
         except (TypeError, ValueError):
             result[name] = default
-    for name in ("interval_seconds", "daily_limit", "batch_size", "batch_pause_seconds", "per_account_limit", "daily_account_limit", "floodwait_wait_seconds", "floodwait_threshold"):
+    for name in ("interval_seconds", "daily_limit", "batch_size", "per_account_limit", "daily_account_limit", "floodwait_wait_seconds", "floodwait_threshold"):
         result[name] = max(1, min(9999 if name != "floodwait_threshold" else 100, result[name]))
     return result
 
