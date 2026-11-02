@@ -3571,7 +3571,7 @@ async def runtime_settings_text():
         "Приоритет значений: настройка назначенного ИИ-агента → глобальное значение. Индивидуальные настройки агента можно оставить пустыми, чтобы использовать общий уровень.",
         "При изменении глобального значения бот спросит, перезаписать ли настройки всех агентов или изменить только значение по умолчанию для тех, кто наследует глобальные настройки.",
         "",
-        "Самостоятельные ответы в группах разрешаются только для аккаунтов, публично обозначенных как управляемые ИИ. Вероятность 100% означает проверку каждого нового сообщения, но ИИ может пропустить реплику, если отвечать неуместно.",
+        "Вероятность самостоятельных ответов в группах применяется ко всем новым сообщениям в выбранных чатах: 100% — ответ на каждое сообщение, 1–2% — редкие ответы. Значение агента имеет приоритет над глобальным.",
     ]
     return "\n".join(lines)
 
@@ -4445,13 +4445,12 @@ async def acc_view(c, account_id: int | None = None):
         else:
             learning_text = "контекст сохранён вручную" if a.learning_prompt.strip() else "не запускалось"
     conn_label = {"connected": "подключён", "connecting": "подключается", "paused": "пауза", "disconnected": "отключён", "error": "ошибка подключения", "unauthorized": "сессия не авторизована"}.get(a.connection_status, a.connection_status)
-    txt=f"👤 {a.display_name} (@{a.username or 'нет username'})\nID: #{aid}\nАккаунт: {'включён' if a.enabled else 'выключен'}\nСоединение: {conn_label}\nРабота: {'⏸ на паузе' if a.manual_pause else ('активна' if a.enabled else 'отключена')}\nИИ для аккаунта: {'включён' if a.ai_enabled else 'выключен'}\nАккаунт обозначен как управляемый ИИ: {'да' if a.ai_identity_disclosed else 'нет'}\nРежим ответов: {'автоматический' if a.reply_mode=='automatic' else 'ручной'}\nАгент: {agent.name if agent else 'не назначен'}\nПерсона: {persona.name if persona else 'не назначена'}\nАктивных чатов: {chats}\nОбучение: {learning_text}\nПрокси: {'настроен' if a.proxy_config_encrypted else 'нет'}\nИндивидуальные правила: {'заданы' if a.persona_style_override.strip() else 'нет'}"
+    txt=f"👤 {a.display_name} (@{a.username or 'нет username'})\nID: #{aid}\nАккаунт: {'включён' if a.enabled else 'выключен'}\nСоединение: {conn_label}\nРабота: {'⏸ на паузе' if a.manual_pause else ('активна' if a.enabled else 'отключена')}\nИИ для аккаунта: {'включён' if a.ai_enabled else 'выключен'}\nРежим ответов: {'автоматический' if a.reply_mode=='automatic' else 'ручной'}\nАгент: {agent.name if agent else 'не назначен'}\nПерсона: {persona.name if persona else 'не назначена'}\nАктивных чатов: {chats}\nОбучение: {learning_text}\nПрокси: {'настроен' if a.proxy_config_encrypted else 'нет'}\nИндивидуальные правила: {'заданы' if a.persona_style_override.strip() else 'нет'}"
     buttons=[
         [(("▶️ Возобновить" if a.manual_pause else "⏸ Пауза"),f"acc:pause:{aid}"),
          (("▶️ Включить" if not a.enabled else "⏸ Отключить"),f"acc:toggle:{aid}")],
         [("ИИ 🟢" if a.ai_enabled else "ИИ 🔴",f"acc:ai:{aid}"),
          ("Автомат" if a.reply_mode=="automatic" else "Ручной",f"acc:mode:{aid}")],
-        [("🤖 Аккаунт обозначен как ИИ: " + ("ДА" if a.ai_identity_disclosed else "НЕТ"),f"acc:autonomous:{aid}")],
         [("🧠 ИИ Агент",f"acc:agents:{aid}"),("🎭 Персона",f"acc:personas:{aid}")],
         [("⚙️ Прокси",f"acc:proxysettings:{aid}"),("✏️ Правила",f"acc:personaoverride:{aid}")],
         [("💡 Примеры",f"example:account:{aid}"),("💬 Чаты",f"chat:account:{aid}")],
@@ -4696,26 +4695,6 @@ async def acc_ai(c):
         if not a: await c.answer("Аккаунт не найден",show_alert=True); return
         a.ai_enabled=not a.ai_enabled; await db.commit()
     await acc_view(c)
-@router.callback_query(F.data.startswith("acc:autonomous:"))
-async def acc_autonomous_toggle(c):
-    if not await check_cb(c):
-        return
-    aid = int(c.data.split(":")[2])
-    async with SessionFactory() as db:
-        account = await db.get(Account, aid)
-        if not account:
-            await c.answer("Аккаунт не найден.", show_alert=True)
-            return
-        account.ai_identity_disclosed = not account.ai_identity_disclosed
-        enabled = account.ai_identity_disclosed
-        await db.commit()
-    await c.answer(
-        "Самостоятельные ответы разрешены. Убедитесь, что участники знают об управлении аккаунтом через ИИ." if enabled
-        else "Самостоятельные ответы в группах выключены."
-    )
-    await acc_view(c)
-
-
 @router.callback_query(F.data.startswith("acc:mode:"))
 async def acc_mode(c):
     if not await check_cb(c): return
