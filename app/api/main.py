@@ -30,7 +30,10 @@ app.include_router(miniapp_router)
 
 @app.get("/miniapp", include_in_schema=False)
 async def miniapp():
-    return FileResponse(Path(__file__).parent / "static" / "index.html")
+    return FileResponse(
+        Path(__file__).parent / "static" / "index.html",
+        headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"},
+    )
 
 
 async def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
