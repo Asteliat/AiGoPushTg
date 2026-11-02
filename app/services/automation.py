@@ -6,6 +6,7 @@ requirements, account restrictions and permissions remain authoritative.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -100,6 +101,48 @@ def _validate_payload(kind: str, payload: dict) -> dict:
             raise ValueError("Файл должен находиться в /data/automation_uploads.")
         normalized["file_path"] = str(candidate)
     return normalized
+
+
+async def create_subscription_task(
+    account_id: int, links: list[str], *, action: str,
+    scheduled_at: datetime | None = None,
+) -> int:
+    """Create a durable one-shot join/leave queue from explicitly supplied links."""
+    if action not in {"join", "leave"}:
+        raise ValueError("Действие должно быть join или leave.")
+    normalized = list(dict.fromkeys(str(value).strip() for value in links if str(value).strip()))
+    if not normalized or len(normalized) > MAX_RECIPIENTS:
+        raise ValueError(f"Укажите от 1 до {MAX_RECIPIENTS} ссылок.")
+    due = _aware(scheduled_at or utcnow())
+    if due < utcnow() - timedelta(minutes=1):
+        raise ValueError("Время запуска уже прошло.")
+    policy = await module_policy("subscription")
+    if len(normalized) > policy["per_account_limit"]:
+        raise ValueError(
+            f"Глобальный лимит подписок: не более {policy['per_account_limit']} ссылок "
+            "на один аккаунт в одной задаче."
+        )
+    async with SessionFactory() as db:
+        account = await db.get(Account, account_id)
+        if not account or not account.enabled:
+            raise ValueError("Аккаунт не найден или отключён.")
+        task = AutomationTask(
+            account_id=account_id,
+            kind="subscription_join" if action == "join" else "subscription_leave",
+            payload=json.dumps({"action": action}, ensure_ascii=False),
+            status="queued", scheduled_at=due,
+        )
+        db.add(task)
+        await db.flush()
+        for link in normalized:
+            peer_id = int.from_bytes(hashlib.sha256(link.casefold().encode("utf-8")).digest()[:8], "big")
+            peer_id &= (1 << 63) - 1
+            db.add(AutomationTaskRecipient(
+                task_id=task.id, peer_id=peer_id or 1,
+                peer_ref=link, peer_label=link,
+            ))
+        await db.commit()
+        return int(task.id)
 
 
 async def create_campaign(
@@ -740,7 +783,7 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
 
 
 __all__ = [
-    "campaign_status", "create_campaign", "list_campaigns",
+    "campaign_status", "create_campaign", "create_subscription_task", "list_campaigns",
     "process_due_campaigns", "reset_account_limits", "retry_failed_campaign", "set_account_limits",
     "set_global_automation_limits", "set_operation_limits", "operation_limits",
     "create_schedule", "list_schedules", "set_schedule_status", "dispatch_due_schedules",
@@ -766,7 +809,7 @@ def _module_name_for_kind(kind: str) -> str:
         return "invite"
     if kind in {"broadcast", "group_broadcast"}:
         return "broadcast"
-    if kind in {"subscription", "join", "leave"}:
+    if kind in {"subscription", "join", "leave", "subscription_join", "subscription_leave"}:
         return "subscription"
     if kind == "reaction":
         return "reaction"
