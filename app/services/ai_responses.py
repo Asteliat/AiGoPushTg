@@ -10,8 +10,15 @@ class GeneratedResponse:
     chat_label: str = ""
 
 
-def resolve_runtime_override(agent_override: int | None, global_value: int) -> int:
-    """Resolve runtime configuration from the assigned AI agent to the global default."""
+def resolve_runtime_override(account_override: int | None, agent_override: int | None, global_value: int) -> int:
+    """Resolve account-specific settings such as cooldowns before agent/global defaults."""
+    if account_override is not None:
+        return int(account_override)
+    return int(agent_override) if agent_override is not None else int(global_value)
+
+
+def resolve_agent_runtime_override(agent_override: int | None, global_value: int) -> int:
+    """Resolve reply probabilities from the assigned AI agent or global default only."""
     return int(agent_override) if agent_override is not None else int(global_value)
 
 
