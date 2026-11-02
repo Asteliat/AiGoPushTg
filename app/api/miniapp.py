@@ -127,8 +127,12 @@ class AccountPatch(BaseModel):
     persona_id: int | None = None
     reply_mode: str | None = Field(default=None, pattern="^(manual|automatic)$")
     channel_reply_mode: str | None = Field(default=None, pattern="^(manual|automatic)$")
-    channel_chat_replies_enabled: bool | None = None\n    channel_reply_probability: int | None = Field(default=None, ge=0, le=100)\n    channel_reply_cooldown_seconds: int | None = Field(default=None, ge=0, le=31536000)\n    channel_post_instructions: str | None = Field(default=None, max_length=6000)\n    channel_comments_instructions: str | None = Field(default=None, max_length=6000)\n    channel_restrictions_instructions: str | None = Field(default=None, max_length=6000)
-
+    channel_chat_replies_enabled: bool | None = None
+    channel_reply_probability: int | None = Field(default=None, ge=0, le=100)
+    channel_reply_cooldown_seconds: int | None = Field(default=None, ge=0, le=31536000)
+    channel_post_instructions: str | None = Field(default=None, max_length=6000)
+    channel_comments_instructions: str | None = Field(default=None, max_length=6000)
+    channel_restrictions_instructions: str | None = Field(default=None, max_length=6000)
 
 class AgentInput(BaseModel):
     name: str = Field(min_length=1, max_length=80)
