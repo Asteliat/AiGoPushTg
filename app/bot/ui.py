@@ -388,8 +388,8 @@ async def render_module_account_selection(c: CallbackQuery, state: FSMContext, m
     selected = [int(aid) for aid in selected if any(int(account.id) == int(aid) for account in accounts)]
     await state.update_data(module_selection_module=module, module_selected_accounts=selected)
     rows = [
-        [("☑️ " if int(account.id) in selected else "▫️ ") + f"{account.display_name[:24]} · #{account.id}",
-          f"tool:module:toggle:{module}:{account.id}"]
+        [(("☑️ " if int(account.id) in selected else "▫️ ") + f"{account.display_name[:24]} · #{account.id}",
+          f"tool:module:toggle:{module}:{account.id}")]
         for account in accounts
     ]
     rows.extend([
