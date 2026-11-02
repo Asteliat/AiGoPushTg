@@ -121,7 +121,7 @@ class Flow(StatesGroup):
     runtime_value=State(); channel_setting_value=State(); log_chat_id=State()
     phone_number=State(); phone_code=State(); phone_password=State(); qr_password=State()
     chat_search_query=State(); chat_join_link=State(); channel_search_query=State()
-    trigger_terms=State(); trigger_response=State(); trigger_cooldown=State(); trigger_message_cooldown=State(); trigger_edit_value=State(); management_input=State(); management_campaign_content=State(); management_campaign_confirm=State(); management_photo=State()
+    trigger_terms=State(); trigger_response=State(); trigger_cooldown=State(); trigger_message_cooldown=State(); trigger_edit_value=State(); management_input=State(); management_campaign_content=State(); management_campaign_confirm=State(); management_photo=State(); management_story=State()
 
 def admin(uid): return uid is not None and uid in cfg.admin_id_set
 def kb(rows):
@@ -325,11 +325,219 @@ async def cancel_cb(c: CallbackQuery, state: FSMContext):
 async def tools_menu(c: CallbackQuery):
     if not await check_cb(c): return
     await edit(c, "🧰 Инструменты\n\nПоиск и дополнительные инструменты для Telegram-аккаунтов.", kb([
+        [("🛠 Настройка аккаунтов", "tool:account-settings")],
         [("🔎 Поиск чатов", "tool:groups")],
         [("📣 Поиск каналов", "tool:channels")],
         [("🎯 Глобальные триггеры", "trigger:global")],
         [("⬅️ Главное меню", "nav:home")],
     ]))
+
+
+async def render_account_settings_selection(c: CallbackQuery, state: FSMContext, selected: list[int] | None = None):
+    async with SessionFactory() as db:
+        accounts = list((await db.scalars(
+            select(Account).where(Account.enabled.is_(True)).order_by(Account.id)
+        )).all())
+    valid_ids = {int(account.id) for account in accounts}
+    selected_ids = [int(value) for value in (selected or []) if int(value) in valid_ids]
+    await state.update_data(account_settings_selected_ids=selected_ids)
+    rows = [
+        [(
+            ("☑️ " if int(account.id) in selected_ids else "▫️ ")
+            + f"{account.display_name[:24]} · #{account.id}",
+            f"tool:account-settings:toggle:{account.id}",
+        )]
+        for account in accounts
+    ]
+    rows.extend([
+        [("🌐 Выбрать все", "tool:account-settings:all"), ("✖️ Снять выбор", "tool:account-settings:none")],
+        [("➡️ Продолжить", "tool:account-settings:continue")],
+        [("↩️ Инструменты", "tool:menu")],
+    ])
+    await edit(
+        c,
+        "🛠 Настройка аккаунтов\n\n"
+        "Выберите один или несколько включённых аккаунтов. "
+        "Изменения будут применяться отдельно к каждому аккаунту через его изолированную Telegram-сессию.\n"
+        f"Выбрано: {len(selected_ids)} из {len(accounts)}.",
+        kb(rows),
+    )
+
+
+@router.callback_query(F.data == "tool:account-settings")
+async def account_settings_start(c: CallbackQuery, state: FSMContext):
+    if not await check_cb(c):
+        return
+    await state.clear()
+    await render_account_settings_selection(c, state, [])
+
+
+@router.callback_query(F.data.startswith("tool:account-settings:toggle:"))
+async def account_settings_toggle(c: CallbackQuery, state: FSMContext):
+    if not await check_cb(c):
+        return
+    account_id = int(c.data.rsplit(":", 1)[1])
+    data = await state.get_data()
+    selected = [int(value) for value in data.get("account_settings_selected_ids", [])]
+    if account_id in selected:
+        selected.remove(account_id)
+    else:
+        selected.append(account_id)
+    await render_account_settings_selection(c, state, selected)
+
+
+@router.callback_query(F.data == "tool:account-settings:all")
+async def account_settings_select_all(c: CallbackQuery, state: FSMContext):
+    if not await check_cb(c):
+        return
+    async with SessionFactory() as db:
+        ids = list((await db.scalars(
+            select(Account.id).where(Account.enabled.is_(True)).order_by(Account.id)
+        )).all())
+    await render_account_settings_selection(c, state, [int(value) for value in ids])
+
+
+@router.callback_query(F.data == "tool:account-settings:none")
+async def account_settings_select_none(c: CallbackQuery, state: FSMContext):
+    if not await check_cb(c):
+        return
+    await render_account_settings_selection(c, state, [])
+
+
+async def render_account_settings_menu(c: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    ids = [int(value) for value in data.get("management_account_ids", [])]
+    if not ids:
+        await c.answer("Сначала выберите аккаунты.", show_alert=True)
+        return
+    async with SessionFactory() as db:
+        accounts = list((await db.scalars(
+            select(Account).where(Account.id.in_(ids)).order_by(Account.id)
+        )).all())
+    labels = ", ".join(f"{item.display_name[:20]} · #{item.id}" for item in accounts)
+    rows = [
+        [("👤 Имя", "tool:account-settings:field:first_name"),
+         ("👤 Фамилия", "tool:account-settings:field:last_name")],
+        [("📝 Bio", "tool:account-settings:field:about"),
+         ("🔗 Username", "tool:account-settings:field:username")],
+        [("📷 Изменить фото", "tool:account-settings:photo")],
+        [("⭕ Добавить историю", "tool:account-settings:story")],
+        [("🔄 Выбрать другие аккаунты", "tool:account-settings")],
+        [("↩️ Инструменты", "tool:menu")],
+    ]
+    await edit(
+        c,
+        "🛠 Настройка профиля\n\n"
+        f"Выбрано аккаунтов: {len(ids)}\n{labels}\n\n"
+        "Нажмите поле, которое хотите изменить. После успешного изменения Telegram "
+        "имя, фамилия и username автоматически синхронизируются с названием аккаунта в боте.",
+        kb(rows),
+    )
+
+
+@router.callback_query(F.data == "tool:account-settings:continue")
+async def account_settings_continue(c: CallbackQuery, state: FSMContext):
+    if not await check_cb(c):
+        return
+    data = await state.get_data()
+    ids = [int(value) for value in data.get("account_settings_selected_ids", [])]
+    if not ids:
+        await c.answer("Отметьте хотя бы один аккаунт.", show_alert=True)
+        return
+    async with SessionFactory() as db:
+        valid = list((await db.scalars(
+            select(Account.id).where(Account.id.in_(ids), Account.enabled.is_(True)).order_by(Account.id)
+        )).all())
+    ids = [int(value) for value in valid]
+    if not ids:
+        await c.answer("Выбранные аккаунты отключены или удалены.", show_alert=True)
+        return
+    await state.update_data(
+        management_account_ids=ids,
+        management_account_id=ids[0],
+        module_selection_module=None,
+        module_return_callback="tool:account-settings:menu",
+        return_callback="tool:account-settings",
+    )
+    await render_account_settings_menu(c, state)
+
+
+@router.callback_query(F.data == "tool:account-settings:menu")
+async def account_settings_menu_callback(c: CallbackQuery, state: FSMContext):
+    if not await check_cb(c):
+        return
+    await render_account_settings_menu(c, state)
+
+
+@router.callback_query(F.data.startswith("tool:account-settings:field:"))
+async def account_settings_field(c: CallbackQuery, state: FSMContext):
+    if not await check_cb(c):
+        return
+    field = c.data.rsplit(":", 1)[1]
+    prompts = {
+        "first_name": "Отправьте новое имя для всех выбранных аккаунтов (до 64 символов).",
+        "last_name": "Отправьте новую фамилию для всех выбранных аккаунтов. Отправьте «-», чтобы очистить фамилию.",
+        "about": "Отправьте новый Bio для всех выбранных аккаунтов (до 70 символов). Отправьте «-», чтобы очистить Bio.",
+        "username": "Отправьте новый username без @. Отправьте «-», чтобы удалить username. Username должен быть свободен в Telegram.",
+    }
+    if field not in prompts:
+        await c.answer("Неизвестное поле профиля.", show_alert=True)
+        return
+    data = await state.get_data()
+    ids = [int(value) for value in data.get("management_account_ids", [])]
+    if not ids:
+        await c.answer("Сначала выберите аккаунты.", show_alert=True)
+        return
+    await management_prompt(c, state, f"profilefield_{field}", ids[0], prompts[field])
+
+
+@router.callback_query(F.data == "tool:account-settings:photo")
+async def account_settings_photo(c: CallbackQuery, state: FSMContext):
+    if not await check_cb(c):
+        return
+    data = await state.get_data()
+    ids = [int(value) for value in data.get("management_account_ids", [])]
+    if not ids:
+        await c.answer("Сначала выберите аккаунты.", show_alert=True)
+        return
+    await state.update_data(
+        management_action="photo",
+        management_account_id=ids[0],
+        photo_per_account=False,
+        module_selection_module=None,
+        module_return_callback="tool:account-settings:menu",
+        ui_chat_id=c.message.chat.id,
+        ui_message_id=c.message.message_id,
+    )
+    await state.set_state(Flow.management_photo)
+    await edit(c, "Отправьте одно фото, которое нужно установить на все выбранные аккаунты. Максимум 10 МБ.", CANCEL)
+
+
+@router.callback_query(F.data == "tool:account-settings:story")
+async def account_settings_story(c: CallbackQuery, state: FSMContext):
+    if not await check_cb(c):
+        return
+    data = await state.get_data()
+    ids = [int(value) for value in data.get("management_account_ids", [])]
+    if not ids:
+        await c.answer("Сначала выберите аккаунты.", show_alert=True)
+        return
+    await state.update_data(
+        management_action="story",
+        management_account_id=ids[0],
+        module_selection_module=None,
+        module_return_callback="tool:account-settings:menu",
+        ui_chat_id=c.message.chat.id,
+        ui_message_id=c.message.message_id,
+    )
+    await state.set_state(Flow.management_story)
+    await edit(
+        c,
+        "Отправьте вертикальное фото для истории. Можно добавить подпись к фото. "
+        "История будет опубликована от каждого выбранного аккаунта и доступна его контактам. "
+        "Telegram сам проверит Premium, лимиты и возможность публикации.",
+        CANCEL,
+    )
 
 
 MODULE_ACTIONS = {
@@ -2373,6 +2581,30 @@ async def management_input_received(m: Message, state: FSMContext):
                 except Exception as exc:
                     results.append(f"❌ #{account_id}: {type(exc).__name__}: {str(exc)[:120]}")
             message = "\n".join(results)
+        elif action and action.startswith("profilefield_"):
+            field = action.removeprefix("profilefield_")
+            field_map = {
+                "first_name": "first_name",
+                "last_name": "last_name",
+                "about": "about",
+                "username": "username",
+            }
+            if field not in field_map:
+                raise ValueError("Неизвестное поле профиля.")
+            value = "" if raw.strip() == "-" else raw.strip()
+            if field == "first_name" and not value:
+                raise ValueError("Имя не может быть пустым.")
+            account_ids = [int(item) for item in (data.get("management_account_ids") or [aid])]
+            results = []
+            for account_id in account_ids:
+                try:
+                    await telegram_management.update_profile(
+                        account_id, **{field_map[field]: value}
+                    )
+                    results.append(f"✅ #{account_id}: поле «{field}» обновлено")
+                except Exception as exc:
+                    results.append(f"❌ #{account_id}: {type(exc).__name__}: {str(exc)[:140]}")
+            message = "\n".join(results)
         elif action == "editprofile":
             account_ids = [int(value) for value in (data.get("management_account_ids") or [aid])]
             results = []
@@ -2499,6 +2731,54 @@ async def management_photo_received(m: Message, state: FSMContext):
                 os.remove(path)
         except OSError:
             logging.exception("Could not remove temporary profile photo %s", path)
+
+
+@router.message(Flow.management_story)
+async def management_story_received(m: Message, state: FSMContext):
+    if not await check_msg(m) or not await private(m):
+        return
+    media = m.photo[-1] if m.photo else None
+    if not media and m.document and (m.document.mime_type or "").startswith("image/"):
+        media = m.document
+    if not media:
+        await prompt_message(m, state, "Отправьте вертикальное фото как фото или изображение-файл.")
+        return
+    if int(getattr(media, "file_size", 0) or 0) > 30 * 1024 * 1024:
+        await prompt_message(m, state, "Фото для истории превышает лимит 30 МБ.")
+        return
+    data = await state.get_data()
+    aid = int(data.get("management_account_id") or 0)
+    account_ids = [int(value) for value in (data.get("management_account_ids") or [aid])]
+    original_name = getattr(media, "file_name", None) or "story.jpg"
+    extension = os.path.splitext(original_name)[1].lower()
+    if extension not in {".jpg", ".jpeg", ".png", ".webp"}:
+        extension = ".jpg"
+    path = os.path.join(
+        tempfile.gettempdir(), f"atciv-story-{aid}-{secrets.token_hex(8)}{extension}"
+    )
+    try:
+        await m.bot.download(media, destination=path)
+        results = []
+        for account_id in account_ids:
+            try:
+                await telegram_management.publish_story_photo(
+                    account_id, path, caption=(m.caption or "").strip()
+                )
+                results.append(f"✅ #{account_id}: история опубликована для контактов")
+            except Exception as exc:
+                results.append(f"❌ #{account_id}: {type(exc).__name__}: {str(exc)[:180]}")
+        await finish_prompt(m, state, "\n".join(results), kb([
+            [("↩️ К настройке аккаунтов", "tool:account-settings:menu")],
+            [("🏠 Главное меню", "nav:home")],
+        ]))
+    except Exception as exc:
+        await prompt_message(m, state, f"Не удалось обработать историю: {type(exc).__name__}: {str(exc)[:300]}")
+    finally:
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except OSError:
+            logging.exception("Could not remove temporary story image %s", path)
 
 
 @router.message(Flow.management_campaign_content)
