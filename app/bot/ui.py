@@ -613,15 +613,15 @@ async def tool_module_quarantine(c: CallbackQuery):
     status = await telegram_automation.module_quarantine_status(aid, module)
     if status["quarantined"]:
         text = (
-            f"⛔ Карантин · {module} · аккаунт #{aid}\\n\\n"
-            f"FloodWait-срабатываний: {status['floodwait_count']}\\n"
-            f"Причина: {status['reason']}\\n\\n"
+            f"⛔ Карантин · {module} · аккаунт #{aid}\n\n"
+            f"FloodWait-срабатываний: {status['floodwait_count']}\n"
+            f"Причина: {status['reason']}\n\n"
             "Остальные модули аккаунта продолжают работать. Снять карантин можно вручную."
         )
         rows = [[("♻️ Снять карантин", f"tool:quarantine:clear:{module}:{aid}")]]
     else:
         text = (
-            f"✅ Карантина нет · {module} · аккаунт #{aid}\\n\\n"
+            f"✅ Карантина нет · {module} · аккаунт #{aid}\n\n"
             f"Зафиксировано FloodWait: {status['floodwait_count']}."
         )
         rows = []
@@ -867,17 +867,7 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         "editprofile": "Одинаковые данные всем выбранным аккаунтам: имя | фамилия | BIO | username. Разные данные: отдельная строка для каждого аккаунта в формате ID аккаунта | имя | фамилия | BIO | username. Для пропуска поля укажите -.",
         "autoresponder": "Формат: ВКЛ/ВЫКЛ | ключевые слова через запятую или - для всех сообщений | текст ответа | пауза в секундах.\nПример: ВКЛ | привет, цена, тариф | Привет! Чем помочь? | 60\nРаботает только в личных сообщениях и только пока ИИ выключен именно на этом аккаунте.",
         "campaign": "Формат: broadcast, invite или group_broadcast | now либо YYYY-MM-DD HH:MM UTC | @получатель1,@получатель2. Выберите конкретных получателей; максимум 500 за задачу.",
-        "broadcastlimits": "Формат: интервал в секундах | максимум за 24 часа | тихо с HH:MM UTC или - | тихо до HH:MM UTC или -. Пример: 60 | 40 | 23:00 | 08:00.",
-        "invitelimits": "Формат: интервал в секундах | максимум за 24 часа | тихо с HH:MM UTC или - | тихо до HH:MM UTC или -. Пример: 120 | 15 | 22:00 | 07:00.",
-        "global-broadcast": "Глобальные значения для рассылок: интервал | максимум за 24 часа | тихо с | тихо до (UTC). Пример: 60 | 40 | 23:00 | 08:00.",
-        "global-invite": "Глобальные значения для приглашений: интервал | максимум за 24 часа | тихо с | тихо до (UTC). Пример: 120 | 15 | 22:00 | 07:00.",
-        "subscriptionlimits": "Лимиты вступления/выхода: интервал в секундах | максимум операций за 24 часа | тихо с | тихо до (UTC). Пример: 10 | 20 | 23:00 | 07:00.",
-        "reactionlimits": "Лимиты реакций: интервал в секундах | максимум за 24 часа | тихо с | тихо до (UTC). Пример: 30 | 50 | - | -.",
-        "global-subscription": "Глобальные лимиты подписок: интервал | максимум за 24 часа | тихо с | тихо до (UTC). Пример: 10 | 20 | 23:00 | 07:00.",
-        "global-reaction": "Глобальные лимиты реакций: интервал | максимум за 24 часа | тихо с | тихо до (UTC). Пример: 30 | 50 | - | -.",
         "schedule": "Создание повторяющейся кампании. Формат: broadcast, invite или group_broadcast | старт now либо YYYY-MM-DD HH:MM UTC | интервал в часах (не менее 24) | число запусков (1–365) | @user1,@user2. Каждый запуск повторно проверяет доступность получателей в Telegram.",
-        "limits": "Формат: интервал_секунд | максимум_сообщений_за_24ч | тихо_с | тихо_до (UTC). Пример: 30 | 50 | 23:00 | 08:00. Без тихих часов: 30 | 50 | - | -.",
-        "global-limits": "Глобальные значения по умолчанию для аккаунтов без индивидуального переопределения. Формат: интервал_секунд | максимум_сообщений_за_24ч | тихо_с | тихо_до (UTC). Пример: 30 | 50 | 23:00 | 08:00. Без тихих часов: 30 | 50 | - | -.",
     }
     if action == "contactlog":
         selected_ids = [int(value) for value in (await state.get_data()).get("management_account_ids") or [aid]]
@@ -895,7 +885,7 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
                 if not entries:
                     lines.append("Операций пока нет.")
                 lines.append("")
-        await edit(c, "\\n".join(lines)[:3900], kb([[("↩️ К модулю", "tool:module:contacts")]]))
+        await edit(c, "\n".join(lines)[:3900], kb([[("↩️ К модулю", "tool:module:contacts")]]))
         return
     if action == "dedupecontacts":
         selected_ids = [int(value) for value in (await state.get_data()).get("management_account_ids") or [aid]]
@@ -920,7 +910,7 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
                 results.append(f"✅ #{account_id}: {details}. Ничего не удалялось.")
             except Exception as exc:
                 results.append(f"❌ #{account_id}: {type(exc).__name__}: {str(exc)[:140]}")
-        await edit(c, "\\n".join(results)[:3900], kb([[("↩️ К модулю", "tool:module:contacts")]]))
+        await edit(c, "\n".join(results)[:3900], kb([[("↩️ К модулю", "tool:module:contacts")]]))
         return
     if action == "exportcontacts":
         selected_ids = [int(value) for value in (await state.get_data()).get("management_account_ids") or [aid]]
@@ -998,7 +988,7 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
                 ])
             except Exception as exc:
                 lines.append(f"❌ #{account_id}: {type(exc).__name__}: {str(exc)[:180]}")
-        await edit(c, "\\n".join(lines)[:3900], kb([[("↩️ К модулю", "tool:module:profile")]]))
+        await edit(c, "\n".join(lines)[:3900], kb([[("↩️ К модулю", "tool:module:profile")]]))
         return
     if action == "contacts":
         selected_ids = [int(value) for value in (await state.get_data()).get("management_account_ids") or [aid]]
@@ -1015,27 +1005,7 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
                 lines.append("")
             except Exception as exc:
                 lines.append(f"❌ #{account_id}: {type(exc).__name__}: {str(exc)[:150]}")
-        await edit(c, "\\n".join(lines)[:3900], kb([[("↩️ К модулю", "tool:module:contacts")]]))
-        return
-    if action in {"broadcastlimits", "invitelimits", "subscriptionlimits", "reactionlimits", "global-broadcast", "global-invite", "global-subscription", "global-reaction"}:
-        await state.clear()
-        await state.update_data(
-            management_action=action, management_account_id=aid,
-            ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id,
-            return_callback="tool:management" if action.startswith("global-") else f"tool:management:account:{aid}",
-        )
-        await state.set_state(Flow.management_input)
-        await edit(c, prompts[action], CANCEL)
-        return
-    if action == "global-limits":
-        await state.clear()
-        await state.update_data(
-            management_action="global-limits", management_account_id=0,
-            ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id,
-            return_callback="tool:management",
-        )
-        await state.set_state(Flow.management_input)
-        await edit(c, prompts[action], CANCEL)
+        await edit(c, "\n".join(lines)[:3900], kb([[("↩️ К модулю", "tool:module:contacts")]]))
         return
     if action in {"photo", "photosequential"}:
         previous = await state.get_data()
@@ -1410,7 +1380,7 @@ async def management_input_document_received(m: Message, state: FSMContext):
             column = header.index(column_name) if column_name else 0
             if column_name:
                 rows = rows[1:]
-            content = "\\n".join(
+            content = "\n".join(
                 str(row[column]).strip() for row in rows
                 if len(row) > column and str(row[column]).strip()
             )
@@ -1475,40 +1445,6 @@ async def management_input_received(m: Message, state: FSMContext):
                 raise ValueError(f"Введите целое число от {minimum} до {maximum}.")
             await telegram_automation.set_module_policy(module, **{field: int(raw)})
             message = f"Настройка модуля сохранена: {int(raw)} {unit}."
-        elif action in {"broadcastlimits", "invitelimits", "subscriptionlimits", "reactionlimits", "global-broadcast", "global-invite", "global-subscription", "global-reaction"}:
-            parts = [x.strip() for x in raw.split("|")]
-            if len(parts) != 4:
-                raise ValueError("Формат: интервал | максимум за 24 часа | тихо с | тихо до. Для отключения тихих часов укажите - в обоих последних полях.")
-            operation = (
-                "invite" if "invite" in action else
-                "subscription" if "subscription" in action else
-                "reaction" if "reaction" in action else "broadcast"
-            )
-            scoped_account = None if action.startswith("global-") else aid
-            await telegram_automation.set_operation_limits(
-                operation, interval_seconds=int(parts[0]), daily_limit=int(parts[1]),
-                account_id=scoped_account, quiet_start_utc=parts[2], quiet_end_utc=parts[3],
-            )
-            operation_label = {"invite": "приглашений", "broadcast": "рассылок", "subscription": "подписок", "reaction": "реакций"}[operation]
-            message = f"Отдельные лимиты {'глобально' if scoped_account is None else f'аккаунта #{aid}'} для {operation_label} сохранены."
-        elif action == "global-limits":
-            parts = [x.strip() for x in raw.split("|")]
-            if len(parts) != 4:
-                raise ValueError("Формат: интервал | лимит за 24 часа | тихо с | тихо до.")
-            await telegram_automation.set_global_automation_limits(
-                interval_seconds=int(parts[0]), daily_limit=int(parts[1]),
-                quiet_start_utc=parts[2], quiet_end_utc=parts[3],
-            )
-            message = "Глобальные лимиты и тихие часы по умолчанию сохранены. Индивидуальные настройки аккаунтов не изменены."
-        elif action == "limits":
-            parts = [x.strip() for x in raw.split("|")]
-            if len(parts) != 4:
-                raise ValueError("Формат: интервал | лимит за 24 часа | тихо с | тихо до.")
-            await telegram_automation.set_account_limits(
-                aid, interval_seconds=int(parts[0]), daily_limit=int(parts[1]),
-                quiet_start_utc=parts[2], quiet_end_utc=parts[3],
-            )
-            message = "Лимиты и тихие часы аккаунта сохранены."
         elif action == "campaign_time":
             scheduled = datetime.now(timezone.utc)
             if raw.lower() != "now":
@@ -1757,7 +1693,7 @@ async def management_input_received(m: Message, state: FSMContext):
                     results.append(f"✅ #{account_id}: {details}.")
                 except Exception as exc:
                     results.append(f"❌ #{account_id}: {type(exc).__name__}: {str(exc)[:120]}")
-            message = "\\n".join(results)
+            message = "\n".join(results)
         elif action == "addcontact":
             parts = [x.strip() for x in raw.split("|")]
             if len(parts) not in {2, 3}: raise ValueError("Формат: телефон | имя | фамилия.")
@@ -1772,7 +1708,7 @@ async def management_input_received(m: Message, state: FSMContext):
                     results.append(f"✅ #{account_id}: Telegram подтвердил добавление ({count}).")
                 except Exception as exc:
                     results.append(f"❌ #{account_id}: {type(exc).__name__}: {str(exc)[:120]}")
-            message = "\\n".join(results)
+            message = "\n".join(results)
         elif action == "delcontact":
             account_ids = [int(value) for value in (data.get("management_account_ids") or [aid])]
             results = []
@@ -1783,7 +1719,7 @@ async def management_input_received(m: Message, state: FSMContext):
                     results.append(f"✅ #{account_id}: контакт удалён.")
                 except Exception as exc:
                     results.append(f"❌ #{account_id}: {type(exc).__name__}: {str(exc)[:120]}")
-            message = "\\n".join(results)
+            message = "\n".join(results)
         elif action == "parsechats":
             parts = [item.strip().lower() for item in raw.split("|") if item.strip()]
             kind = "all"
@@ -1860,7 +1796,7 @@ async def management_input_received(m: Message, state: FSMContext):
                         created.append((account_id, task_id))
                     except Exception as exc:
                         failed.append((account_id, f"{type(exc).__name__}: {str(exc)[:160]}"))
-                message = "\\n".join(
+                message = "\n".join(
                     [f"✅ Аккаунт #{account_id}: расписание #{task_id}, ссылок: {len(links)}" for account_id, task_id in created]
                     + [f"❌ Аккаунт #{account_id}: {error}" for account_id, error in failed]
                     + [f"Старт UTC: {starts_at.isoformat()} · интервал: {interval_seconds // 3600} ч. · запусков: {max_runs}."]
@@ -1876,7 +1812,7 @@ async def management_input_received(m: Message, state: FSMContext):
                             schedule_at = datetime.strptime(time_part, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
                         except ValueError as exc:
                             raise ValueError("Время должно быть now или YYYY-MM-DD HH:MM UTC.") from exc
-                links = [line.strip() for line in link_block.replace(",", "\\n").splitlines() if line.strip()]
+                links = [line.strip() for line in link_block.replace(",", "\n").splitlines() if line.strip()]
                 created, failed = [], []
                 for account_id in account_ids:
                     try:
@@ -1886,7 +1822,7 @@ async def management_input_received(m: Message, state: FSMContext):
                         created.append((account_id, task_id))
                     except Exception as exc:
                         failed.append((account_id, f"{type(exc).__name__}: {str(exc)[:160]}"))
-                message = "\\n".join(
+                message = "\n".join(
                     [f"✅ Аккаунт #{account_id}: задача #{task_id}, ссылок: {len(set(links))}" for account_id, task_id in created]
                     + [f"❌ Аккаунт #{account_id}: {error}" for account_id, error in failed]
                     + [f"Старт UTC: {schedule_at.isoformat()}. Очередь и журнал — в этом же модуле."]
@@ -2042,7 +1978,7 @@ async def management_input_received(m: Message, state: FSMContext):
                         results.append(f"✅ #{account_id}: вышел из чата.")
                 except Exception as exc:
                     results.append(f"❌ #{account_id}: {type(exc).__name__}: {str(exc)[:120]}")
-            message = "\\n".join(results)
+            message = "\n".join(results)
         elif action == "schedreaction":
             parts = [x.strip() for x in raw.split("|")]
             if len(parts) != 4:
@@ -2063,7 +1999,7 @@ async def management_input_received(m: Message, state: FSMContext):
                     results.append(f"✅ #{account_id}: реакция #{reaction_id}")
                 except Exception as exc:
                     results.append(f"❌ #{account_id}: {type(exc).__name__}: {str(exc)[:120]}")
-            message = "\\n".join(results) + f"\\nВремя UTC: {run_at.isoformat()}."
+            message = "\n".join(results) + f"\nВремя UTC: {run_at.isoformat()}."
         elif action == "reaction":
             parts = [x.strip() for x in raw.split("|")]
             if len(parts) != 3: raise ValueError("Формат: чат | ID публикации | emoji.")
@@ -2077,7 +2013,7 @@ async def management_input_received(m: Message, state: FSMContext):
                     results.append(f"✅ #{account_id}: реакция отправлена")
                 except Exception as exc:
                     results.append(f"❌ #{account_id}: {type(exc).__name__}: {str(exc)[:120]}")
-            message = "\\n".join(results)
+            message = "\n".join(results)
         elif action == "editprofile":
             account_ids = [int(value) for value in (data.get("management_account_ids") or [aid])]
             results = []
@@ -2109,7 +2045,7 @@ async def management_input_received(m: Message, state: FSMContext):
                     results.append(f"✅ #{account_id}: профиль обновлён")
                 except Exception as exc:
                     results.append(f"❌ #{account_id}: {type(exc).__name__}: {str(exc)[:120]}")
-            message = "\\n".join(results)
+            message = "\n".join(results)
         else:
             raise ValueError("Неизвестное действие.")
         module = data.get("module_selection_module")
@@ -2118,8 +2054,8 @@ async def management_input_received(m: Message, state: FSMContext):
         elif module:
             back_callback, back_label = f"tool:module:{module}", "↩️ К модулю"
         else:
-            back_callback = "tool:management" if action == "global-limits" or action.startswith("global-") else f"tool:management:account:{aid}"
-            back_label = "↩️ К управлению аккаунтами" if action == "global-limits" or action.startswith("global-") else "↩️ К инструментам аккаунта"
+            back_callback = f"tool:management:account:{aid}"
+            back_label = "↩️ К инструментам аккаунта"
         await finish_prompt(m, state, message, kb([
             [(back_label, back_callback)],
             [("🏠 Главное меню", "nav:home")],
@@ -2185,7 +2121,7 @@ async def management_photo_received(m: Message, state: FSMContext):
                     results.append(f"✅ #{account_id}: фото обновлено")
                 except Exception as exc:
                     results.append(f"❌ #{account_id}: {type(exc).__name__}: {str(exc)[:120]}")
-        await finish_prompt(m, state, "\\n".join(results), kb([
+        await finish_prompt(m, state, "\n".join(results), kb([
             [("↩️ К модулю", f"tool:module:{module}")],
             [("🏠 Главное меню", "nav:home")],
         ]))
