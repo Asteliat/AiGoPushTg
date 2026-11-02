@@ -1462,6 +1462,7 @@ async def create_automation_campaign(payload: CampaignInput, actor: int = Depend
             payload={"text": payload.text}, scheduled_at=scheduled,
             recipient_refs={item.peer_id: item.peer_ref.lstrip("@") for item in payload.recipients},
             recipient_labels={item.peer_id: item.peer_label for item in payload.recipients},
+            consent_verified=True,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc

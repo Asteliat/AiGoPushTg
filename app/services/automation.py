@@ -21,6 +21,7 @@ from app.storage.db import SessionFactory
 from app.storage.models import (
     Account,
     AppSetting,
+    ChatBinding,
     AutomationConsent,
     AutomationSchedule,
     ScheduledReaction,
@@ -161,8 +162,11 @@ async def create_campaign(
     payload: dict, scheduled_at: datetime | None = None,
     recipient_refs: dict[int, str] | None = None,
     recipient_labels: dict[int, str] | None = None,
+    consent_verified: bool = False,
 ) -> int:
     normalized = _validate_payload(kind, payload)
+    if consent_verified:
+        normalized["consent_verified"] = True
     unique_ids = list(dict.fromkeys(int(peer_id) for peer_id in recipients))
     if not unique_ids or len(unique_ids) > MAX_RECIPIENTS:
         raise ValueError(f"Выберите от 1 до {MAX_RECIPIENTS} получателей.")
@@ -506,7 +510,7 @@ async def _maintain_campaign_lease(task_id: int) -> None:
             logging.exception("Could not refresh automation task lease: task=%s", task_id)
 
 
-async def process_due_campaigns(*, max_tasks: int = 1) -> int:
+async def process_due_campaigns(*, max_tasks: int = 1, safe_only: bool = False) -> int:
     """Process due campaigns. Called repeatedly by the dedicated worker loop."""
     from telethon.errors import FloodWaitError
     from app.telegram_gateway.management import isolated_account_client
@@ -515,17 +519,22 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
     for _ in range(max(1, min(max_tasks, 5))):
         async with SessionFactory() as db:
             now = utcnow()
-            candidates = list((await db.scalars(
-                select(AutomationTask)
-                .where(
-                    or_(
-                        (AutomationTask.status == "queued") & (AutomationTask.scheduled_at <= now),
-                        (AutomationTask.status == "running") & (
-                            AutomationTask.started_at.is_(None)
-                            | (AutomationTask.started_at <= now - timedelta(minutes=10))
-                        ),
+            candidate_query = select(AutomationTask).where(
+                or_(
+                    (AutomationTask.status == "queued") & (AutomationTask.scheduled_at <= now),
+                    (AutomationTask.status == "running") & (
+                        AutomationTask.started_at.is_(None)
+                        | (AutomationTask.started_at <= now - timedelta(minutes=10))
                     ),
+                ),
+            )
+            if safe_only:
+                candidate_query = candidate_query.where(
+                    AutomationTask.kind.in_({"broadcast", "group_broadcast"}),
+                    AutomationTask.payload.contains('"consent_verified": true'),
                 )
+            candidates = list((await db.scalars(
+                candidate_query
                 .order_by(AutomationTask.scheduled_at, AutomationTask.id)
                 .with_for_update(skip_locked=True)
                 .limit(50)
@@ -623,6 +632,31 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                             current.updated_at = utcnow()
                             await db.commit()
                             break
+                        if safe_only:
+                            if kind == "broadcast":
+                                consent = await db.scalar(select(AutomationConsent.id).where(
+                                    AutomationConsent.account_id == account_id,
+                                    AutomationConsent.peer_id == recipient.peer_id,
+                                    AutomationConsent.peer_ref == recipient.peer_ref,
+                                    AutomationConsent.scope == "broadcast",
+                                    AutomationConsent.revoked_at.is_(None),
+                                ))
+                                if not consent:
+                                    recipient.status = "failed"
+                                    recipient.last_error = "Согласие на сообщения отозвано или username изменён."
+                                    await db.commit()
+                                    continue
+                            elif kind == "group_broadcast":
+                                binding = await db.scalar(select(ChatBinding.id).where(
+                                    ChatBinding.account_id == account_id,
+                                    ChatBinding.chat_id == recipient.peer_id,
+                                    ChatBinding.enabled.is_(True),
+                                ))
+                                if not binding:
+                                    recipient.status = "failed"
+                                    recipient.last_error = "Группа отключена или удалена из списка аккаунта."
+                                    await db.commit()
+                                    continue
                         quiet_until = _quiet_until(utcnow(), quiet_start, quiet_end)
                         if quiet_until:
                             current.status = "queued"
