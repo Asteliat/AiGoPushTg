@@ -365,10 +365,18 @@ async def get_chat_overview(account_id: int, link: str) -> ChatOverview:
 
 
 async def parse_chat_history(
-    account_id: int, channel: str, *, limit: int = 20
+    account_id: int, channel: str, *, limit: int = 20, days: int = 0,
+    keywords: list[str] | None = None, include_comments: bool = False,
+    comment_limit: int = 20,
 ) -> dict:
-    """Parse recent messages from an accessible channel/group, never participant lists."""
-    limit = max(1, min(int(limit), 100))
+    """Parse accessible message history with optional date/keyword filters and comments."""
+    from datetime import datetime, timedelta, timezone
+
+    limit = max(1, min(int(limit), 500))
+    days = max(0, min(int(days), 365))
+    comment_limit = max(1, min(int(comment_limit), 100))
+    terms = [str(term).strip().casefold() for term in (keywords or []) if str(term).strip()]
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days) if days else None
     async with _account_lock(account_id):
         async with isolated_account_client(account_id) as (_account, client):
             entity = await client.get_entity(channel.strip())
@@ -379,8 +387,18 @@ async def parse_chat_history(
             ):
                 raise ValueError("Укажите канал или группу, историю которой аккаунт имеет право просматривать.")
             posts = []
+            scanned = 0
             async for message in client.iter_messages(entity, limit=limit):
                 if not message or getattr(message, "action", None):
+                    continue
+                scanned += 1
+                message_date = message.date
+                if message_date and message_date.tzinfo is None:
+                    message_date = message_date.replace(tzinfo=timezone.utc)
+                if cutoff and (not message_date or message_date < cutoff):
+                    continue
+                body = (message.message or "").strip()
+                if terms and not any(term in body.casefold() for term in terms):
                     continue
                 reaction_items = []
                 reactions = getattr(message, "reactions", None)
@@ -390,21 +408,43 @@ async def parse_chat_history(
                         "emoji": getattr(reaction, "emoticon", None) or getattr(reaction, "document_id", None),
                         "count": int(getattr(item, "count", 0) or 0),
                     })
+                comments = []
+                if include_comments and int(getattr(getattr(message, "replies", None), "replies", 0) or 0):
+                    try:
+                        async for comment in client.iter_messages(
+                            entity, reply_to=int(message.id), limit=comment_limit
+                        ):
+                            if not comment or getattr(comment, "action", None):
+                                continue
+                            comments.append({
+                                "id": int(comment.id),
+                                "date": comment.date.isoformat() if comment.date else "",
+                                "sender_id": int(comment.sender_id or 0),
+                                "text": (comment.message or "")[:2000],
+                            })
+                    except Exception as exc:
+                        logging.info(
+                            "Could not read comments for account=%s chat=%s post=%s: %s",
+                            account_id, getattr(entity, "id", None), message.id, type(exc).__name__,
+                        )
                 posts.append({
                     "id": int(message.id),
                     "date": message.date.isoformat() if message.date else "",
-                    "text": (message.message or "")[:3000],
+                    "text": body[:3000],
                     "views": int(message.views or 0),
                     "forwards": int(message.forwards or 0),
                     "replies": int(getattr(getattr(message, "replies", None), "replies", 0) or 0),
                     "reactions": reaction_items,
                     "has_media": bool(message.media),
+                    "comments": comments,
                 })
             return {
                 "channel_id": int(entity.id),
                 "title": str(getattr(entity, "title", "") or getattr(entity, "username", "") or channel),
                 "username": getattr(entity, "username", None),
                 "posts": posts,
+                "scanned": scanned,
+                "filters": {"days": days, "keywords": terms, "comments": include_comments},
             }
 
 
