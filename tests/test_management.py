@@ -111,7 +111,11 @@ async def test_batch_subscription_stops_on_floodwait(monkeypatch):
     async def no_rate_limit(_account_id, _operation):
         return None
 
+    async def no_floodwait_record(_account_id, _module, _seconds):
+        return {"count": 1, "threshold": 10, "quarantined": False}
+
     monkeypatch.setattr(automation, "reserve_operation_slot", no_rate_limit)
+    monkeypatch.setattr(automation, "record_module_floodwait", no_floodwait_record)
     monkeypatch.setattr(management, "isolated_account_client", fake_client)
     result = await management.manage_subscriptions_batch(1, ["first", "second", "third"], action="join")
     assert result["flood_wait_seconds"] == 17
