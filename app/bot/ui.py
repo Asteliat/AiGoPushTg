@@ -835,7 +835,6 @@ async def parser_settings_screen(c: CallbackQuery, account_id: int, kind: str) -
         enabled = bool(values[field])
         rows.append([(( "🟢 " if enabled else "⚪ ") + label, f"tool:parser:toggle:{account_id}:{kind}:{field}")])
     active_days = int(values["active_days"])
-    rows.append([(f"🕒 Активность: {'любая' if not active_days else f'за {active_days} дней'}", f"tool:parser:active:{account_id}:{kind}:0")])
     rows.append([
         (("☑️ " if active_days == days else "") + ("Без ограничения" if days == 0 else f"За {days} дня"), f"tool:parser:active:{account_id}:{kind}:{days}")
         for days in (0, 3, 7, 30)
@@ -1268,24 +1267,38 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
             await edit(c, "Отправьте одно фото, которое нужно установить на все выбранные аккаунты. Поддерживается фото или изображение-документ до 10 МБ.", CANCEL)
         return
     if action in {"campaign", "schedule"}:
+        previous = await state.get_data()
+        module = previous.get("module_selection_module")
+        module_return = previous.get("module_return_callback") or f"tool:management:account:{aid}"
         mode = "once" if action == "campaign" else "recurring"
         await state.clear()
         await state.update_data(
             campaign_mode=mode, management_account_id=aid,
+            module_selection_module=module,
+            module_return_callback=module_return if module else None,
             ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id,
-            return_callback=f"tool:management:account:{aid}",
+            return_callback=module_return,
         )
         title = "Выберите тип задачи" if mode == "once" else "Выберите тип повторяющейся задачи"
-        type_rows = [
-            [("📨 Личное сообщение", f"tool:campaign:start:{aid}:broadcast:{mode}")],
-            [("🔗 Отправить ссылку-приглашение", f"tool:campaign:start:{aid}:invite:{mode}")],
-        ]
-        if mode == "once":
-            type_rows.append([("👥 Добавить выбранных пользователей в группу", f"tool:campaign:start:{aid}:direct_invite:{mode}")])
-        type_rows.extend([
-            [("📣 Опубликовать в своей группе", f"tool:campaign:start:{aid}:group_broadcast:{mode}")],
-            [("↩️ Назад", f"tool:management:account:{aid}")],
-        ])
+        if module == "invite":
+            type_rows = [
+                [("👥 Пригласить выбранных пользователей в группу", f"tool:campaign:start:{aid}:direct_invite:once")],
+            ]
+        elif module == "broadcast":
+            type_rows = [
+                [("📨 Личные сообщения выбранным получателям", f"tool:campaign:start:{aid}:broadcast:{mode}")],
+                [("🔗 Отправить ссылку-приглашение", f"tool:campaign:start:{aid}:invite:{mode}")],
+                [("📣 Публикация в своих группах", f"tool:campaign:start:{aid}:group_broadcast:{mode}")],
+            ]
+        else:
+            type_rows = [
+                [("📨 Личное сообщение", f"tool:campaign:start:{aid}:broadcast:{mode}")],
+                [("🔗 Отправить ссылку-приглашение", f"tool:campaign:start:{aid}:invite:{mode}")],
+            ]
+            if mode == "once":
+                type_rows.append([("👥 Добавить выбранных пользователей в группу", f"tool:campaign:start:{aid}:direct_invite:once")])
+            type_rows.append([("📣 Опубликовать в своей группе", f"tool:campaign:start:{aid}:group_broadcast:{mode}")])
+        type_rows.append([("↩️ Назад", module_return)])
         await edit(c, title + "\n\nВыберите конкретных получателей. Доступность личных сообщений и требования Stars определяются самим Telegram; прямое добавление дополнительно проверяет приватность и право invite_users.",
             kb(type_rows))
         return
@@ -2402,11 +2415,12 @@ async def management_input_received(m: Message, state: FSMContext):
             [("🏠 Главное меню", "nav:home")],
         ]))
     except telegram_management.FloodWaitError as exc:
+        back_callback = data.get("module_return_callback") or f"tool:management:account:{aid}"
         await finish_prompt(
             m, state,
             f"⏳ Telegram установил FloodWait: {int(exc.seconds)} сек.\n"
             "Операция не повторялась автоматически. Повторите её после указанного времени.",
-            kb([[("↩️ К инструментам аккаунта", f"tool:management:account:{aid}")]]),
+            kb([[("↩️ Назад", back_callback)]]),
         )
     except Exception as exc:
         await prompt_message(m, state, f"❌ {type(exc).__name__}: {str(exc)[:500]}\n\nПроверьте ввод и попробуйте ещё раз.")
@@ -2467,8 +2481,9 @@ async def management_photo_received(m: Message, state: FSMContext):
             [("🏠 Главное меню", "nav:home")],
         ]))
     except telegram_management.FloodWaitError as exc:
+        back_callback = data.get("module_return_callback") or f"tool:management:account:{aid}"
         await finish_prompt(m, state, f"Telegram установил FloodWait: {int(exc.seconds)} сек. Фото не загружено.", kb([
-            [("↩️ К инструментам аккаунта", f"tool:management:account:{aid}")],
+            [("↩️ Назад", back_callback)],
         ]))
     except Exception as exc:
         await prompt_message(m, state, f"Не удалось обновить фото: {type(exc).__name__}: {str(exc)[:350]}")
