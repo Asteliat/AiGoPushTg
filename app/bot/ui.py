@@ -5896,6 +5896,29 @@ async def chat_join_confirm(c):
         else:
             await edit(c, f"Не удалось вступить: {type(exc).__name__}. Проверьте срок действия ссылки, лимиты Telegram и доступность группы.", kb([[("🔗 Другая ссылка", f"chat:joinlink:{aid}")], [("⬅️ К аккаунту", f"acc:view:{aid}")]]))
             return
+    if entity is None:
+        await edit(c, "Telegram не подтвердил вступление: чат не определён. Запись не создана.", kb([
+            [("🔗 Проверить ссылку ещё раз", f"chat:joinlink:{aid}")],
+            [("⬅️ К аккаунту", f"acc:view:{aid}")],
+        ]))
+        return
+    try:
+        async with isolated_account_client(aid) as (_account, client):
+            is_member = await telegram_management.verify_chat_membership(client, entity)
+    except Exception as verify_error:
+        await edit(
+            c,
+            f"Не удалось проверить членство в группе: {type(verify_error).__name__}: {str(verify_error)[:180]}. Запись в список чатов не создана.",
+            kb([[("🔁 Проверить ещё раз", f"chat:joinlink:{aid}")], [("⬅️ К аккаунту", f"acc:view:{aid}")]]),
+        )
+        return
+    if not is_member:
+        await edit(
+            c,
+            "Telegram не подтвердил, что аккаунт состоит в этой группе. Возможно, отправлен запрос на вступление или вступление ещё не завершено. Чат не добавлен в список.",
+            kb([[("🔁 Проверить после одобрения", f"chat:joinlink:{aid}")], [("⬅️ К аккаунту", f"acc:view:{aid}")]]),
+        )
+        return
     async with SessionFactory() as db:
         binding = await db.scalar(select(ChatBinding).where(ChatBinding.account_id == aid, ChatBinding.chat_id == chat_id))
         if binding:
