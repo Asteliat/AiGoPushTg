@@ -508,7 +508,20 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
         heartbeat_task = asyncio.create_task(_maintain_campaign_lease(task_id))
         try:
             payload = json.loads(payload_raw)
-            interval, daily_limit, quiet_start, quiet_end = await _account_limits(account_id, "invite" if kind in {"invite", "direct_invite"} else "broadcast")
+            module = _module_name_for_kind(kind)
+            policy = await module_policy(module)
+            interval, daily_limit = policy["interval_seconds"], policy["daily_account_limit"]
+            _, _, quiet_start, quiet_end = await _account_limits(account_id, module)
+            quarantine = await module_quarantine_status(account_id, module)
+            if quarantine["quarantined"]:
+                async with SessionFactory() as db:
+                    current = await db.get(AutomationTask, task_id)
+                    if current and current.status == "running":
+                        current.status = "paused"
+                        current.last_error = f"Карантин модуля {module}: {quarantine['reason']}"
+                        current.updated_at = utcnow()
+                        await db.commit()
+                continue
             async with isolated_account_client(account_id) as (_account, client):
                 while True:
                     async with SessionFactory() as db:
@@ -613,6 +626,7 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                                 await client.send_message(entity, payload["text"])
                     except FloodWaitError as exc:
                         seconds = max(1, int(exc.seconds))
+                        flood_state = await record_module_floodwait(account_id, module, seconds)
                         async with SessionFactory() as db:
                             current = await db.get(AutomationTask, task_id)
                             item = await db.scalar(select(AutomationTaskRecipient).where(
@@ -623,9 +637,13 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                                 item.status = "pending"
                                 item.last_error = f"FloodWait: {seconds}s"
                             if current and current.status == "running":
-                                current.status = "queued"
+                                current.status = "paused" if flood_state["quarantined"] else "queued"
                                 current.scheduled_at = utcnow() + timedelta(seconds=seconds)
-                                current.last_error = f"Telegram FloodWait: {seconds}s"
+                                current.last_error = (
+                                    f"Карантин {module}: FloodWait {seconds}s "
+                                    f"({flood_state['count']}/{flood_state['threshold']})"
+                                    if flood_state["quarantined"] else f"Telegram FloodWait: {seconds}s"
+                                )
                             await db.commit()
                         break
                     except Exception as exc:
@@ -714,10 +732,122 @@ __all__ = [
     "create_schedule", "list_schedules", "set_schedule_status", "dispatch_due_schedules",
     "resolve_uncertain_recipient", "schedule_reaction", "list_scheduled_reactions",
     "cancel_scheduled_reaction", "resolve_scheduled_reaction", "process_due_reactions", "reserve_operation_slot",
-    "OperationRateLimitError",
+    "OperationRateLimitError", "module_policy", "set_module_policy", "record_module_floodwait",
+    "module_quarantine_status", "clear_module_quarantine",
     "set_campaign_status",
 ]
 
+
+
+MODULE_POLICY_DEFAULTS = {
+    "broadcast": {"interval_seconds": 30, "daily_limit": 50, "batch_size": 10, "per_account_limit": 50, "daily_account_limit": 50, "floodwait_wait_seconds": 9999, "floodwait_threshold": 10},
+    "invite": {"interval_seconds": 120, "daily_limit": 25, "batch_size": 1, "per_account_limit": 99, "daily_account_limit": 25, "floodwait_wait_seconds": 9999, "floodwait_threshold": 10},
+    "subscription": {"interval_seconds": 10, "daily_limit": 20, "batch_size": 1, "per_account_limit": 20, "daily_account_limit": 20, "floodwait_wait_seconds": 9999, "floodwait_threshold": 10},
+    "reaction": {"interval_seconds": 30, "daily_limit": 50, "batch_size": 1, "per_account_limit": 50, "daily_account_limit": 50, "floodwait_wait_seconds": 9999, "floodwait_threshold": 10},
+}
+
+
+def _module_name_for_kind(kind: str) -> str:
+    if kind in {"invite", "direct_invite"}:
+        return "invite"
+    if kind in {"broadcast", "group_broadcast"}:
+        return "broadcast"
+    if kind in {"subscription", "join", "leave"}:
+        return "subscription"
+    if kind == "reaction":
+        return "reaction"
+    raise ValueError("Неизвестный модуль автоматизации.")
+
+
+async def module_policy(module: str) -> dict:
+    if module not in MODULE_POLICY_DEFAULTS:
+        raise ValueError("Неизвестный модуль.")
+    defaults = MODULE_POLICY_DEFAULTS[module]
+    keys = [f"automation.policy.{module}.{name}" for name in defaults]
+    async with SessionFactory() as db:
+        rows = (await db.scalars(select(AppSetting).where(AppSetting.key.in_(keys)))).all()
+    values = {row.key.rsplit(".", 1)[-1]: row.value for row in rows}
+    result = dict(defaults)
+    for name, default in defaults.items():
+        try:
+            result[name] = int(values.get(name, default))
+        except (TypeError, ValueError):
+            result[name] = default
+    for name in ("interval_seconds", "daily_limit", "batch_size", "per_account_limit", "daily_account_limit", "floodwait_wait_seconds", "floodwait_threshold"):
+        result[name] = max(1, min(9999 if name != "floodwait_threshold" else 100, result[name]))
+    return result
+
+
+async def set_module_policy(module: str, **values: int) -> dict:
+    if module not in MODULE_POLICY_DEFAULTS:
+        raise ValueError("Неизвестный модуль.")
+    allowed = set(MODULE_POLICY_DEFAULTS[module])
+    if not values or set(values) - allowed:
+        raise ValueError("Переданы неизвестные параметры настройки.")
+    current = await module_policy(module)
+    for name, raw in values.items():
+        value = int(raw)
+        upper = 100 if name == "floodwait_threshold" else 9999
+        if not 1 <= value <= upper:
+            raise ValueError(f"{name}: значение должно быть от 1 до {upper}.")
+        current[name] = value
+    async with SessionFactory() as db:
+        for name in values:
+            key = f"automation.policy.{module}.{name}"
+            row = await db.get(AppSetting, key)
+            if row:
+                row.value = str(current[name])
+            else:
+                db.add(AppSetting(key=key, value=str(current[name])))
+        await db.commit()
+    return current
+
+
+async def module_quarantine_status(account_id: int, module: str) -> dict:
+    async with SessionFactory() as db:
+        row = await db.get(AppSetting, f"automation.quarantine.{account_id}.{module}")
+        count = await db.get(AppSetting, f"automation.floodwait_count.{account_id}.{module}")
+    return {
+        "quarantined": bool(row and row.value),
+        "reason": row.value if row else "",
+        "floodwait_count": int(count.value) if count and count.value.isdigit() else 0,
+    }
+
+
+async def record_module_floodwait(account_id: int, module: str, seconds: int) -> dict:
+    policy = await module_policy(module)
+    async with SessionFactory() as db:
+        account = await db.scalar(select(Account).where(Account.id == account_id).with_for_update())
+        if not account:
+            raise ValueError("Аккаунт не найден.")
+        count_key = f"automation.floodwait_count.{account_id}.{module}"
+        quarantine_key = f"automation.quarantine.{account_id}.{module}"
+        row = await db.get(AppSetting, count_key)
+        count = int(row.value) if row and row.value.isdigit() else 0
+        count += 1
+        if row:
+            row.value = str(count)
+        else:
+            db.add(AppSetting(key=count_key, value=str(count)))
+        quarantined = count >= policy["floodwait_threshold"] or int(seconds) > policy["floodwait_wait_seconds"]
+        if quarantined:
+            reason = f"FloodWait {int(seconds)} сек.; срабатываний {count}. Карантин до ручного снятия."
+            quarantine = await db.get(AppSetting, quarantine_key)
+            if quarantine:
+                quarantine.value = reason
+            else:
+                db.add(AppSetting(key=quarantine_key, value=reason))
+        await db.commit()
+    return {"count": count, "threshold": policy["floodwait_threshold"], "quarantined": quarantined}
+
+
+async def clear_module_quarantine(account_id: int, module: str) -> None:
+    async with SessionFactory() as db:
+        for key in (f"automation.quarantine.{account_id}.{module}", f"automation.floodwait_count.{account_id}.{module}"):
+            row = await db.get(AppSetting, key)
+            if row:
+                await db.delete(row)
+        await db.commit()
 
 
 async def set_operation_limits(
@@ -725,25 +855,14 @@ async def set_operation_limits(
     account_id: int | None = None,
     quiet_start_utc: str | None = None, quiet_end_utc: str | None = None,
 ) -> None:
-    """Set independent cadence, daily caps and quiet hours, globally or per account."""
-    if operation not in {"broadcast", "invite", "subscription", "reaction"}:
-        raise ValueError("Операция должна быть broadcast, invite, subscription или reaction.")
-    if not 1 <= int(interval_seconds) <= 3600:
-        raise ValueError("Интервал должен быть от 1 до 3600 секунд.")
-    if not 1 <= int(daily_limit) <= 500:
-        raise ValueError("Дневной лимит должен быть от 1 до 500.")
+    """Compatibility API; all module limits are global and shared by selected accounts."""
+    if account_id is not None:
+        raise ValueError("Индивидуальные лимиты отключены. Настройки задаются глобально.")
+    await set_module_policy(operation, interval_seconds=interval_seconds, daily_limit=daily_limit)
     quiet_start, quiet_end = _normalize_quiet_hours(quiet_start_utc, quiet_end_utc)
-    prefix = f"automation.{account_id}" if account_id is not None else "automation.default"
     async with SessionFactory() as db:
-        if account_id is not None and not await db.get(Account, account_id):
-            raise ValueError("Аккаунт не найден.")
-        for suffix, value in (
-            (f"{operation}.interval_seconds", str(int(interval_seconds))),
-            (f"{operation}.daily_limit", str(int(daily_limit))),
-            (f"{operation}.quiet_start_utc", quiet_start),
-            (f"{operation}.quiet_end_utc", quiet_end),
-        ):
-            key = f"{prefix}.{suffix}"
+        for suffix, value in (("quiet_start_utc", quiet_start), ("quiet_end_utc", quiet_end)):
+            key = f"automation.default.{operation}.{suffix}"
             row = await db.get(AppSetting, key)
             if row:
                 row.value = value
@@ -753,13 +872,17 @@ async def set_operation_limits(
 
 
 async def operation_limits(account_id: int, operation: str) -> dict:
-    if operation not in {"broadcast", "invite", "subscription", "reaction"}:
-        raise ValueError("Неизвестный тип операции.")
-    interval, daily, quiet_start, quiet_end = await _account_limits(account_id, operation)
+    policy = await module_policy(operation)
+    keys = [f"automation.default.{operation}.quiet_start_utc", f"automation.default.{operation}.quiet_end_utc"]
+    async with SessionFactory() as db:
+        rows = (await db.scalars(select(AppSetting).where(AppSetting.key.in_(keys)))).all()
+    values = {row.key: row.value for row in rows}
     return {
-        "operation": operation, "interval_seconds": interval, "daily_limit": daily,
-        "quiet_start_utc": quiet_start or "", "quiet_end_utc": quiet_end or "",
+        "operation": operation, **policy,
+        "quiet_start_utc": values.get(keys[0], ""),
+        "quiet_end_utc": values.get(keys[1], ""),
     }
+
 
 
 def _validate_schedule_interval(interval_seconds: int) -> int:
