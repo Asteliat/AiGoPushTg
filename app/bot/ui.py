@@ -1478,13 +1478,39 @@ async def management_input_received(m: Message, state: FSMContext):
                 await prompt_message(m, state, "Получатели\n\nОтправьте @username или ссылку каждого получателя через запятую или с новой строки. Укажите конкретных получателей через @username.")
             return
         elif action == "campaign_target_group":
-            group = await telegram_management.resolve_group_for_direct_invite(aid, raw)
-            if not group.get("is_megagroup"):
-                raise ValueError("Прямые приглашения доступны только в супергруппы.")
+            selected_ids = [int(value) for value in (data.get("campaign_account_ids") or [aid])]
+            group_inputs = {}
+            lines = [line.strip() for line in raw.splitlines() if line.strip()]
+            if len(lines) > 1 or (lines and "|" in lines[0]):
+                for line in lines:
+                    fields = [value.strip() for value in line.split("|", 1)]
+                    if len(fields) != 2 or not fields[0].isdigit() or not fields[1]:
+                        raise ValueError("Для разных групп используйте строки: ID аккаунта | @username группы.")
+                    account_id = int(fields[0])
+                    if account_id not in selected_ids or account_id in group_inputs:
+                        raise ValueError("Укажите каждый выбранный аккаунт один раз.")
+                    group_inputs[account_id] = fields[1]
+                if set(group_inputs) != set(selected_ids):
+                    raise ValueError("Укажите целевую группу для каждого выбранного аккаунта.")
+            else:
+                if not raw:
+                    raise ValueError("Укажите @username группы или peer ID.")
+                group_inputs = {account_id: raw for account_id in selected_ids}
+            target_groups = {}
+            for account_id in selected_ids:
+                group = await telegram_management.resolve_group_for_direct_invite(account_id, group_inputs[account_id])
+                if not group.get("is_megagroup"):
+                    raise ValueError(f"Аккаунт #{account_id}: прямые приглашения доступны только в супергруппы.")
+                target_groups[str(account_id)] = {
+                    "target_group_id": int(group["peer_id"]),
+                    "target_group_ref": str(group["peer_ref"]),
+                    "target_group_label": str(group["peer_label"]),
+                }
             await state.update_data(
-                campaign_target_group_id=group["peer_id"],
-                campaign_target_group_ref=group["peer_ref"],
-                campaign_target_group_label=group["peer_label"],
+                campaign_target_groups=target_groups,
+                campaign_target_group_id=target_groups[str(aid)]["target_group_id"],
+                campaign_target_group_ref=target_groups[str(aid)]["target_group_ref"],
+                campaign_target_group_label=target_groups[str(aid)]["target_group_label"],
                 management_action="campaign_recipients",
             )
             step = "5 из 5" if data.get("campaign_mode") == "recurring" else "3 из 3"
@@ -2070,10 +2096,13 @@ async def management_campaign_confirm(c: CallbackQuery, state: FSMContext):
     try:
         for account_id in account_ids:
             try:
+                account_payload = dict(data["campaign_payload"])
+                if data.get("campaign_kind") == "direct_invite":
+                    account_payload.update((data.get("campaign_target_groups") or {}).get(str(account_id), {}))
                 if int(data.get("campaign_schedule_interval_seconds") or 0):
                     task_id = await telegram_automation.create_schedule(
                         account_id, kind=data["campaign_kind"],
-                        recipients=data["campaign_recipients"], payload=data["campaign_payload"],
+                        recipients=data["campaign_recipients"], payload=account_payload,
                         starts_at=datetime.fromisoformat(data["campaign_scheduled_at"]),
                         ends_at=datetime.fromisoformat(data["campaign_schedule_ends_at"]) if data.get("campaign_schedule_ends_at") else None,
                         interval_seconds=int(data["campaign_schedule_interval_seconds"]),
@@ -2084,7 +2113,7 @@ async def management_campaign_confirm(c: CallbackQuery, state: FSMContext):
                 else:
                     task_id = await telegram_automation.create_campaign(
                         account_id, kind=data["campaign_kind"],
-                        recipients=data["campaign_recipients"], payload=data["campaign_payload"],
+                        recipients=data["campaign_recipients"], payload=account_payload,
                         scheduled_at=datetime.fromisoformat(data["campaign_scheduled_at"]),
                         recipient_refs=recipient_refs, recipient_labels=recipient_labels,
                     )
