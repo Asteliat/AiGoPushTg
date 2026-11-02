@@ -390,7 +390,7 @@ async def create_trigger(payload: TriggerInput, actor: int = Depends(require_adm
     if not parsed_terms or len(parsed_terms) > 30:
         raise HTTPException(400, "Добавьте от 1 до 30 слов или фраз для триггера.")
     values = payload.model_dump()
-    values["terms"] = "\\n".join(parsed_terms)
+    values["terms"] = "\n".join(parsed_terms)
     if values["account_id"] is not None:
         values["apply_mode"] = "account"
     row = TriggerRule(**values)
@@ -820,7 +820,7 @@ async def run_parser(account_id: int, kind: str, payload: ParserRunInput,
         raise HTTPException(404, "Аккаунт не найден.")
     settings = await _parser_settings(db, account_id, kind)
     import re
-    keywords = [part.strip() for part in re.split(r"[,;\\n]", settings.get("keywords", "")) if part.strip()]
+    keywords = [part.strip() for part in re.split(r"[,;\n]", settings.get("keywords", "")) if part.strip()]
     filters = {key: settings[key] for key in (
         "exclude_bots", "exclude_deleted", "exclude_scam", "exclude_blocked",
         "username_only", "photo_only", "premium_only", "active_days",
