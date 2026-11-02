@@ -287,8 +287,8 @@ async def publish_story_photo(account_id: int, photo_path: str, *, caption: str 
     """
     if not os.path.isfile(photo_path):
         raise ValueError("Файл истории не найден.")
-    if os.path.getsize(photo_path) > 30 * 1024 * 1024:
-        raise ValueError("Фото для истории не должно превышать 30 МБ.")
+    if os.path.getsize(photo_path) > 20 * 1024 * 1024:
+        raise ValueError("Фото для истории не должно превышать 20 МБ.")
     if len(caption) > 2048:
         raise ValueError("Подпись к истории не должна превышать 2048 символов.")
 
