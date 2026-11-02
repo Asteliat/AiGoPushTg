@@ -423,7 +423,7 @@ async def delete_contact(account_id: int, user_id: int) -> None:
 
 
 async def join_chat(account_id: int, link: str) -> None:
-    """Join one explicit public chat or invite link, respecting global subscription policy."""
+    """Join one explicit public chat or invite link and verify actual membership."""
     value = link.strip()
     if not value:
         raise ValueError("Укажите ссылку или @username.")
@@ -433,32 +433,53 @@ async def join_chat(account_id: int, link: str) -> None:
         async with _account_lock(account_id):
             async with isolated_account_client(account_id) as (_account, client):
                 lowered = value.lower().rstrip("/")
+                entity = None
                 if "t.me/+" in lowered or "t.me/joinchat/" in lowered:
                     invite_hash = value.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1].lstrip("+")
                     if not invite_hash:
                         raise ValueError("Некорректная приватная ссылка-приглашение.")
                     invite = await client(CheckChatInviteRequest(hash=invite_hash))
                     if isinstance(invite, ChatInviteAlready):
-                        return
-                    await client(ImportChatInviteRequest(hash=invite_hash))
-                    return
-                target = value
-                if "t.me/" in lowered:
-                    target = value.rstrip("/").rsplit("/", 1)[-1]
-                entity = await client.get_entity(target)
-                await client(JoinChannelRequest(entity))
+                        entity = invite.chat
+                    else:
+                        joined = await client(ImportChatInviteRequest(hash=invite_hash))
+                        entity = next(iter(getattr(joined, "chats", []) or []), None)
+                else:
+                    target = value
+                    if "t.me/" in lowered:
+                        target = value.rstrip("/").rsplit("/", 1)[-1]
+                    entity = await client.get_entity(target)
+                    await client(JoinChannelRequest(entity))
+
+                if entity is None:
+                    raise RuntimeError("Telegram не вернул объект группы после вступления.")
+                is_member = False
+                for attempt in range(3):
+                    is_member = await verify_chat_membership(client, entity)
+                    if is_member:
+                        break
+                    if attempt < 2:
+                        await asyncio.sleep(1)
+                if not is_member:
+                    raise RuntimeError(
+                        "Telegram не подтвердил членство аккаунта. Возможно, требуется одобрение администратора."
+                    )
     except FloodWaitError as exc:
         await record_module_floodwait(account_id, "subscription", max(1, int(exc.seconds)))
         raise
 
 
 async def verify_chat_membership(client, entity) -> bool:
-    """Ask Telegram for the current account's membership before recording a joined chat."""
+    """Verify the authenticated Telegram user is an actual participant."""
+    me = await client.get_me()
+    if me is None or not getattr(me, "id", None):
+        raise RuntimeError("Telegram не вернул текущий аккаунт для проверки членства.")
     try:
-        await client.get_permissions(entity, "me")
+        # Resolve the current account explicitly instead of relying on the magic "me" string.
+        await client.get_permissions(entity, me)
         return True
     except Exception as exc:
-        if "UserNotParticipant" in type(exc).__name__ or "ParticipantIdInvalid" in type(exc).__name__:
+        if type(exc).__name__ in {"UserNotParticipantError", "ParticipantIdInvalidError"}:
             return False
         raise
 
@@ -1188,19 +1209,32 @@ async def manage_subscriptions_batch(
                             raise
                     if action == "join":
                         lowered = value.lower().rstrip("/")
+                        entity = None
                         if "t.me/+" in lowered or "t.me/joinchat/" in lowered:
                             invite_hash = value.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1].lstrip("+")
                             if not invite_hash:
                                 raise ValueError("Некорректная приватная ссылка.")
                             invite = await client(CheckChatInviteRequest(hash=invite_hash))
                             if isinstance(invite, ChatInviteAlready):
-                                results.append({"link": value, "status": "already_member", "error": ""})
-                                continue
-                            await client(ImportChatInviteRequest(hash=invite_hash))
+                                entity = invite.chat
+                            else:
+                                joined = await client(ImportChatInviteRequest(hash=invite_hash))
+                                entity = next(iter(getattr(joined, "chats", []) or []), None)
                         else:
                             target = value.split("t.me/", 1)[1].split("/", 1)[0].split("?", 1)[0] if "t.me/" in lowered else value
                             entity = await client.get_entity(target)
                             await client(JoinChannelRequest(entity))
+                        if entity is None:
+                            raise RuntimeError("Telegram не вернул объект группы после вступления.")
+                        is_member = False
+                        for attempt in range(3):
+                            is_member = await verify_chat_membership(client, entity)
+                            if is_member:
+                                break
+                            if attempt < 2:
+                                await asyncio.sleep(1)
+                        if not is_member:
+                            raise RuntimeError("Telegram не подтвердил членство аккаунта в группе.")
                     else:
                         target = value.split("t.me/", 1)[1].split("/", 1)[0].split("?", 1)[0] if "t.me/" in value.lower() else value
                         entity = await client.get_entity(target)

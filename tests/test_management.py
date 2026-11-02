@@ -674,9 +674,12 @@ async def test_verify_chat_membership_requires_telegram_confirmation():
     from app.telegram_gateway import management
 
     class FakeClient:
+        async def get_me(self):
+            return type("User", (), {"id": 456})()
+
         async def get_permissions(self, entity, user):
             assert entity.id == 123
-            assert user == "me"
+            assert user.id == 456
             return object()
 
     assert await management.verify_chat_membership(
@@ -692,7 +695,11 @@ async def test_verify_chat_membership_returns_false_for_non_member():
         pass
 
     class FakeClient:
-        async def get_permissions(self, _entity, _user):
+        async def get_me(self):
+            return type("User", (), {"id": 456})()
+
+        async def get_permissions(self, _entity, user):
+            assert user.id == 456
             raise UserNotParticipantError()
 
     assert await management.verify_chat_membership(

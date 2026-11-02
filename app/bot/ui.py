@@ -5845,6 +5845,8 @@ async def chat_join_confirm(c):
                 entity = await client.get_entity(pending["entity_id"])
             elif pending["kind"] == "public":
                 entity = await client.get_entity(pending["target"])
+                if not _group_entity(entity):
+                    raise ValueError("Ссылка ведёт не на группу.")
                 async def report_floodwait(seconds):
                     await edit(c,
                         f"⏳ Telegram временно ограничил вступления. Жду {seconds} сек., затем повторю вступление в группу «{pending['title']}»…",
@@ -5869,6 +5871,22 @@ async def chat_join_confirm(c):
                 raise ValueError("Ссылка не ведёт на группу.")
             chat_id = int(utils.get_peer_id(entity))
             title = (getattr(entity, "title", None) or pending["title"] or "Группа")[:255]
+            # Verify membership on the SAME Telegram client/session that executed the join.
+            # A second isolated snapshot can carry stale peer state and must not decide success.
+            is_member = False
+            for attempt in range(3):
+                is_member = await telegram_management.verify_chat_membership(client, entity)
+                if is_member:
+                    break
+                if attempt < 2:
+                    await asyncio.sleep(1)
+            if not is_member:
+                await edit(
+                    c,
+                    "Telegram не подтвердил членство аккаунта в группе. Возможно, вступление ожидает одобрения или Telegram отклонил его. Группа не добавлена в список чатов.",
+                    kb([[("🔁 Проверить после одобрения", f"chat:joinlink:{aid}")], [("⬅️ К аккаунту", f"acc:view:{aid}")]]),
+                )
+                return
     except Exception as exc:
         # Approval-only invite links are not equivalent to membership; explain that no binding was created.
         if isinstance(exc, FloodWaitError):
@@ -5890,6 +5908,8 @@ async def chat_join_confirm(c):
                         raise RuntimeError("Не удалось определить уже доступную группу.")
                     chat_id = int(utils.get_peer_id(entity))
                     title = (getattr(entity, "title", None) or pending["title"] or "Группа")[:255]
+                    if not await telegram_management.verify_chat_membership(client, entity):
+                        raise RuntimeError("Telegram не подтвердил членство аккаунта в группе.")
             except Exception as nested:
                 await edit(c, f"Аккаунт уже состоит в группе, но не удалось обновить её в списке: {type(nested).__name__}.", kb([[("⬅️ К аккаунту", f"acc:view:{aid}")]]))
                 return
@@ -5901,23 +5921,6 @@ async def chat_join_confirm(c):
             [("🔗 Проверить ссылку ещё раз", f"chat:joinlink:{aid}")],
             [("⬅️ К аккаунту", f"acc:view:{aid}")],
         ]))
-        return
-    try:
-        async with isolated_account_client(aid) as (_account, client):
-            is_member = await telegram_management.verify_chat_membership(client, entity)
-    except Exception as verify_error:
-        await edit(
-            c,
-            f"Не удалось проверить членство в группе: {type(verify_error).__name__}: {str(verify_error)[:180]}. Запись в список чатов не создана.",
-            kb([[("🔁 Проверить ещё раз", f"chat:joinlink:{aid}")], [("⬅️ К аккаунту", f"acc:view:{aid}")]]),
-        )
-        return
-    if not is_member:
-        await edit(
-            c,
-            "Telegram не подтвердил, что аккаунт состоит в этой группе. Возможно, отправлен запрос на вступление или вступление ещё не завершено. Чат не добавлен в список.",
-            kb([[("🔁 Проверить после одобрения", f"chat:joinlink:{aid}")], [("⬅️ К аккаунту", f"acc:view:{aid}")]]),
-        )
         return
     async with SessionFactory() as db:
         binding = await db.scalar(select(ChatBinding).where(ChatBinding.account_id == aid, ChatBinding.chat_id == chat_id))
