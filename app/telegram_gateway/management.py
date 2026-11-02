@@ -11,6 +11,7 @@ import asyncio
 import logging
 import os
 import re
+import secrets
 import sqlite3
 import tempfile
 import time
@@ -276,6 +277,56 @@ async def set_profile_photo(account_id: int, photo_path: str) -> None:
                 uploaded = await client.get_profile_photos("me", limit=1)
                 if not uploaded:
                     raise RuntimeError("Telegram не подтвердил наличие фотографии профиля.")
+
+
+async def publish_story_photo(account_id: int, photo_path: str, *, caption: str = "") -> None:
+    """Publish one operator-supplied photo as a 24-hour Telegram story for contacts only.
+
+    Eligibility is checked with stories.canSendStory before upload. Telegram remains
+    authoritative for Premium requirements, active-story limits and weekly/monthly caps.
+    """
+    if not os.path.isfile(photo_path):
+        raise ValueError("Файл истории не найден.")
+    if os.path.getsize(photo_path) > 30 * 1024 * 1024:
+        raise ValueError("Фото для истории не должно превышать 30 МБ.")
+    if len(caption) > 200:
+        raise ValueError("Подпись к истории не должна превышать 200 символов.")
+
+    from PIL import Image
+    try:
+        with Image.open(photo_path) as image:
+            if image.width > image.height:
+                raise ValueError("Для истории отправьте вертикальное изображение.")
+            if image.format not in {"JPEG", "PNG", "WEBP"}:
+                raise ValueError("Поддерживаются JPG, PNG и WEBP.")
+            image.verify()
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError(f"Не удалось прочитать изображение истории: {type(exc).__name__}: {exc}") from exc
+
+    # Imported lazily so accounts remain manageable on Telethon builds without Stories TL.
+    try:
+        from telethon.tl.functions.stories import CanSendStoryRequest, SendStoryRequest
+        from telethon.tl.types import InputMediaUploadedPhoto, InputPrivacyValueAllowContacts
+    except ImportError as exc:
+        raise RuntimeError("Установленная версия Telethon не поддерживает публикацию историй.") from exc
+
+    async with _account_lock(account_id):
+        async with isolated_account_client(account_id) as (_account, client):
+            peer = await client.get_input_entity("me")
+            availability = await client(CanSendStoryRequest(peer=peer))
+            if int(getattr(availability, "count", 0) or 0) < 1:
+                raise RuntimeError("Telegram не разрешает добавить историю: нет доступных слотов.")
+            uploaded = await client.upload_file(photo_path)
+            await client(SendStoryRequest(
+                peer=peer,
+                media=InputMediaUploadedPhoto(file=uploaded),
+                caption=caption or None,
+                privacy_rules=[InputPrivacyValueAllowContacts()],
+                random_id=secrets.randbits(63),
+                period=86400,
+            ))
 
 
 async def list_contacts(account_id: int, *, limit: int = 100) -> list[dict]:
@@ -1211,7 +1262,7 @@ __all__ = [
     "ChatOverview", "FloodWaitError", "add_contact", "delete_contact",
     "get_chat_overview", "get_profile", "join_chat", "leave_chat",
     "import_contacts", "list_contacts", "list_account_dialogs", "manage_subscriptions_batch",
-    "parse_account_history", "parse_chat_history", "parse_chat_participants", "react_to_message",
+    "parse_account_history", "parse_chat_history", "parse_chat_participants", "publish_story_photo", "react_to_message",
     "resolve_peer", "resolve_peers", "resolve_group",
     "resolve_groups", "resolve_group_reference", "set_profile_photo",
     "update_profile",
