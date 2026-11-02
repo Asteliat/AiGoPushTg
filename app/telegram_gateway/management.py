@@ -988,7 +988,7 @@ def _normalize_manual_message_target(target: str):
         if path.startswith("c/"):
             raise ValueError("Для приватной ссылки t.me/c укажите ID чата из списка диалогов.")
         value = "@" + path.split("/", 1)[0].lstrip("@")
-    if re.fullmatch(r"-?\\d+", value):
+    if re.fullmatch(r"-?\d+", value):
         return int(value)
     return value
 
