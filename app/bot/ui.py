@@ -5921,11 +5921,20 @@ async def chat_join_confirm(c):
         return
     async with SessionFactory() as db:
         binding = await db.scalar(select(ChatBinding).where(ChatBinding.account_id == aid, ChatBinding.chat_id == chat_id))
+        access_hash = getattr(entity, "access_hash", None)
+        peer_type = "channel" if access_hash is not None or entity.__class__.__name__.startswith("Channel") else "chat"
         if binding:
             binding.title = title
             binding.enabled = True
+            binding.access_hash = int(access_hash) if access_hash is not None else None
+            binding.peer_type = peer_type
         else:
-            db.add(ChatBinding(account_id=aid, chat_id=chat_id, title=title, enabled=True, auto_discovered=False))
+            db.add(ChatBinding(
+                account_id=aid, chat_id=chat_id, title=title, enabled=True,
+                auto_discovered=False,
+                access_hash=int(access_hash) if access_hash is not None else None,
+                peer_type=peer_type,
+            ))
         await db.commit()
     CHAT_PENDING_JOIN.pop((c.from_user.id, aid), None)
     await edit(c, f"✅ Группа «{title}» добавлена в чаты аккаунта #{aid}.\n\nЧат включён для работы и обучения. Если нужно, его можно выключить в разделе «Чаты аккаунта».", kb([[("💬 Чаты аккаунта", f"chat:account:{aid}:0")], [("👤 К аккаунту", f"acc:view:{aid}")], [("🏠 Главное меню", "nav:home")]]))

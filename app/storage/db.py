@@ -49,6 +49,8 @@ async def init_db() -> None:
             "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS persona_style_override TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE examples ADD COLUMN IF NOT EXISTS account_id INTEGER NULL REFERENCES accounts(id) ON DELETE CASCADE",
             "ALTER TABLE chat_bindings ADD COLUMN IF NOT EXISTS auto_discovered BOOLEAN NOT NULL DEFAULT FALSE",
+            "ALTER TABLE chat_bindings ADD COLUMN IF NOT EXISTS access_hash BIGINT NULL",
+            "ALTER TABLE chat_bindings ADD COLUMN IF NOT EXISTS peer_type VARCHAR(16) NOT NULL DEFAULT 'channel'",
             "ALTER TABLE channel_bindings ADD COLUMN IF NOT EXISTS comment_wait_seconds INTEGER NOT NULL DEFAULT 300",
             "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS channel_post_instructions TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS channel_comments_instructions TEXT NOT NULL DEFAULT ''",
