@@ -466,10 +466,10 @@ async def parse_account_history(
     account_id: int, *, limit_per_chat: int = 100, days: int = 0,
     keywords: list[str] | None = None, include_comments: bool = False,
     comment_limit: int = 20, message_delay_seconds: int = 0,
-    chat_delay_seconds: int = 0, max_chats: int = 200,
+    chat_delay_seconds: int = 0, max_chats: int = 500,
 ) -> dict:
     """Parse visible history across this account's own dialogs, isolating each chat."""
-    max_chats = max(1, min(int(max_chats), 200))
+    max_chats = max(1, min(int(max_chats), 500))
     chat_delay_seconds = max(0, min(int(chat_delay_seconds), 9999))
     dialogs = await list_account_dialogs(account_id, limit=500, kind="all")
     selected = dialogs[:max_chats]
@@ -922,7 +922,7 @@ __all__ = [
     "ChatOverview", "FloodWaitError", "add_contact", "delete_contact",
     "get_chat_overview", "get_profile", "join_chat", "leave_chat",
     "import_contacts", "list_contacts", "list_account_dialogs", "manage_subscriptions_batch",
-    "parse_chat_history", "parse_chat_participants", "react_to_message",
+    "parse_account_history", "parse_chat_history", "parse_chat_participants", "react_to_message",
     "resolve_peer", "resolve_peers", "resolve_group",
     "resolve_groups", "resolve_group_reference", "set_profile_photo",
     "update_profile",
