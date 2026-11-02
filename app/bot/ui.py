@@ -753,7 +753,7 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
     aid = int(aid_raw)
     prompts = {
         "addcontact": "Отправьте номер телефона, имя и фамилию через |\nПример: +79990000000 | Иван | Иванов",
-        "importcontacts": "Отправьте до 100 контактов, каждый с новой строки. Формат: телефон | имя | фамилия.\nПример:\n+79990000000 | Иван | Иванов\n+79991112233 | Анна | Петрова",
+        "importcontacts": "Отправьте TXT или CSV (до 1000 контактов) либо вставьте строки формата: телефон | имя | фамилия. Для CSV используйте столбцы phone, first_name, last_name.",
         "delcontact": "Отправьте Telegram user ID контакта, которого нужно удалить.",
         "chatinfo": "Отправьте @username или публичную ссылку t.me/…",
         "parsechats": "Будет сформирован CSV со списком групп и каналов, в которых состоит аккаунт. Отправьте максимум диалогов (1–500), либо оставьте пустым для 200.",
@@ -1178,6 +1178,39 @@ async def management_campaigns_render(c: CallbackQuery, aid: int):
     await edit(c, "📋 Очередь и история задач\n\nВыберите задачу.", kb(rows))
 
 
+@router.message(Flow.management_input, F.document)
+async def management_input_document_received(m: Message, state: FSMContext):
+    if not await check_msg(m) or not await private(m):
+        return
+    data = await state.get_data()
+    action = data.get("management_action")
+    if action not in {"campaign_recipients", "importcontacts"}:
+        await m.answer("В этом шаге нужен текстовый ввод. TXT/CSV принимаются для получателей рассылки и импорта контактов.")
+        return
+    document = m.document
+    if not document or document.file_size and document.file_size > 1_000_000:
+        await m.answer("Файл не должен превышать 1 МБ.")
+        return
+    filename = (document.file_name or "").lower()
+    if not filename.endswith((".txt", ".csv")):
+        await m.answer("Поддерживаются только TXT и CSV.")
+        return
+    try:
+        remote = await m.bot.get_file(document.file_id)
+        stream = await m.bot.download_file(remote.file_path)
+        raw_bytes = stream.read()
+        content = raw_bytes.decode("utf-8-sig")
+        if not content.strip():
+            raise ValueError("Файл пуст.")
+        copied = m.model_copy(update={"text": content, "document": None})
+        await management_input_received(copied, state)
+    except UnicodeDecodeError:
+        await m.answer("Не удалось прочитать файл. Сохраните TXT/CSV в UTF-8 и отправьте повторно.")
+    except Exception as exc:
+        logging.exception("Could not process management input file")
+        await m.answer(f"Не удалось обработать файл: {type(exc).__name__}: {str(exc)[:180]}")
+
+
 @router.message(Flow.management_input)
 async def management_input_received(m: Message, state: FSMContext):
     if not await check_msg(m) or not await private(m): return
@@ -1419,16 +1452,29 @@ async def management_input_received(m: Message, state: FSMContext):
             return
         if action == "importcontacts":
             contacts = []
-            for index, line in enumerate(raw.splitlines(), 1):
-                if not line.strip():
-                    continue
-                parts = [item.strip() for item in line.split("|", 2)]
-                if len(parts) not in {2, 3}:
-                    raise ValueError(f"Строка {index}: формат телефон | имя | фамилия.")
-                contacts.append({
-                    "phone": parts[0], "first_name": parts[1],
-                    "last_name": parts[2] if len(parts) == 3 else "",
-                })
+            if "," in raw.splitlines()[0] and "|" not in raw:
+                reader = csv.DictReader(io.StringIO(raw))
+                for index, row in enumerate(reader, 2):
+                    normalized = {str(key or "").strip().lower(): str(value or "").strip() for key, value in row.items()}
+                    phone = normalized.get("phone") or normalized.get("phone_number") or normalized.get("номер")
+                    first_name = normalized.get("first_name") or normalized.get("firstname") or normalized.get("имя")
+                    last_name = normalized.get("last_name") or normalized.get("lastname") or normalized.get("фамилия") or ""
+                    if not phone or not first_name:
+                        raise ValueError(f"Строка {index}: CSV должен содержать phone и first_name.")
+                    contacts.append({"phone": phone, "first_name": first_name, "last_name": last_name})
+            else:
+                for index, line in enumerate(raw.splitlines(), 1):
+                    if not line.strip():
+                        continue
+                    parts = [item.strip() for item in line.split("|", 2)]
+                    if len(parts) not in {2, 3}:
+                        raise ValueError(f"Строка {index}: формат телефон | имя | фамилия.")
+                    contacts.append({
+                        "phone": parts[0], "first_name": parts[1],
+                        "last_name": parts[2] if len(parts) == 3 else "",
+                    })
+            if not contacts or len(contacts) > 1000:
+                raise ValueError("В файле должно быть от 1 до 1000 контактов.")
             result = await telegram_management.import_contacts(aid, contacts)
             message = f"Импорт завершён. Добавлено Telegram: {result['imported']} · пользователей найдено: {result['users']} · повторная проверка: {result['retry_contacts']}."
         elif action == "addcontact":
