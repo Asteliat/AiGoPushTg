@@ -2,7 +2,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.api import miniapp
-from app.api.miniapp import ChannelAssistantPatch, ContentGenerateInput, ContentDraftPatch
+from app.api.miniapp import ChannelAssistantPatch, ContentGenerateInput, ContentDraftPatch, InboxReplyInput
 from app.storage.models import ContentDraft
 
 
@@ -41,6 +41,10 @@ def test_retired_bulk_automation_is_disabled_by_default():
 
 def test_new_workspace_routes_exist_and_legacy_module_routes_are_retired():
     paths = {route.path for route in miniapp.router.routes}
+    assert "/v1/miniapp/inbox/{account_id}/dialogs" in paths
+    assert "/v1/miniapp/inbox/{account_id}/messages/{peer_id}" in paths
+    assert "/v1/miniapp/inbox/draft" in paths
+    assert "/v1/miniapp/inbox/reply" in paths
     assert "/v1/miniapp/channel-assistant" in paths
     assert "/v1/miniapp/channel-assistant/{binding_id}" in paths
     assert "/v1/miniapp/channel-activity" in paths
@@ -53,3 +57,13 @@ def test_new_workspace_routes_exist_and_legacy_module_routes_are_retired():
         for path in paths
         for marker in ("/parser", "/campaigns", "/schedules", "/reactions", "/module-policies")
     )
+
+
+def test_inbox_reply_requires_an_existing_message_reference():
+    with pytest.raises(ValidationError):
+        InboxReplyInput(account_id=1, peer_id=2, text="Hello")
+    payload = InboxReplyInput(
+        account_id=1, peer_id=2, peer_ref="@example",
+        reply_to_message_id=10, text="Hello",
+    )
+    assert payload.reply_to_message_id == 10
