@@ -1264,46 +1264,27 @@ async def reserve_operation_slot(account_id: int, operation: str) -> None:
     """Atomically reserve one local operation slot before touching Telegram."""
     if operation not in {"subscription", "reaction"}:
         raise ValueError("Для прямого резервирования поддерживаются subscription и reaction.")
-    defaults = {"subscription": (5, 20), "reaction": (30, 50)}
-    default_interval, default_daily = defaults[operation]
+    policy = await module_policy(operation)
     async with SessionFactory() as db:
         account = await db.scalar(select(Account).where(Account.id == account_id).with_for_update())
         if not account or not account.enabled:
             raise ValueError("Аккаунт не найден или отключён.")
         keys = [
-            f"automation.default.{operation}.interval_seconds",
-            f"automation.default.{operation}.daily_limit",
-            f"automation.{account_id}.{operation}.interval_seconds",
-            f"automation.{account_id}.{operation}.daily_limit",
             f"automation.default.{operation}.quiet_start_utc",
             f"automation.default.{operation}.quiet_end_utc",
-            f"automation.{account_id}.{operation}.quiet_start_utc",
-            f"automation.{account_id}.{operation}.quiet_end_utc",
         ]
         values = {row.key: row.value for row in (await db.scalars(
             select(AppSetting).where(AppSetting.key.in_(keys))
         )).all()}
-        interval = max(1, min(3600, int(values.get(
-            f"automation.{account_id}.{operation}.interval_seconds",
-            values.get(f"automation.default.{operation}.interval_seconds", str(default_interval)),
-        ))))
-        daily = max(1, min(500, int(values.get(
-            f"automation.{account_id}.{operation}.daily_limit",
-            values.get(f"automation.default.{operation}.daily_limit", str(default_daily)),
-        ))))
+        interval = policy["interval_seconds"]
+        daily = policy["daily_account_limit"]
         now = utcnow()
         await db.execute(delete(AutomationOperationEvent).where(
             AutomationOperationEvent.account_id == account_id,
             AutomationOperationEvent.occurred_at < now - timedelta(days=7),
         ))
-        quiet_start = values.get(
-            f"automation.{account_id}.{operation}.quiet_start_utc",
-            values.get(f"automation.default.{operation}.quiet_start_utc", ""),
-        ) or None
-        quiet_end = values.get(
-            f"automation.{account_id}.{operation}.quiet_end_utc",
-            values.get(f"automation.default.{operation}.quiet_end_utc", ""),
-        ) or None
+        quiet_start = values.get(f"automation.default.{operation}.quiet_start_utc", "") or None
+        quiet_end = values.get(f"automation.default.{operation}.quiet_end_utc", "") or None
         quiet_until = _quiet_until(now, quiet_start, quiet_end)
         if quiet_until:
             wait_seconds = int((quiet_until - now).total_seconds())
