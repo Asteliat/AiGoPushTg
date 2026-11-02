@@ -279,7 +279,7 @@ class ConsentInput(BaseModel):
     peer_ref: str = Field(min_length=3, max_length=255)
     peer_label: str = Field(default="", max_length=255)
     consent_source: str = Field(min_length=4, max_length=255)
-    consent_confirmed: bool
+    consent_confirmed: Literal[True]
 
 
 class ModuleSettingsInput(BaseModel):
