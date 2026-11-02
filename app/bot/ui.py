@@ -240,12 +240,16 @@ def cancel_return_for(callback_data: str) -> str:
     return callback_data
 
 
-async def restore_previous_screen(c, callback_data):
+async def restore_previous_screen(c, callback_data, state: FSMContext | None = None):
     if not callback_data:
         await edit(c, await home_text(), MAIN)
         return
     parts = callback_data.split(":")
     if callback_data == "tool:menu": await tools_menu(c)
+    elif callback_data.startswith("tool:module:") and state is not None:
+        await tool_module_accounts(c, state)
+    elif callback_data.startswith("tool:policy:") and state is not None:
+        await tool_policy_edit(c, state)
     elif callback_data == "trigger:global": await trigger_screen(c, "global")
     elif callback_data.startswith("trigger:account:"): await trigger_screen(c, "account", int(parts[2]))
     elif callback_data.startswith("acc:view:"): await acc_view(c, int(parts[2]))
@@ -310,7 +314,7 @@ async def cancel_cb(c: CallbackQuery, state: FSMContext):
     if task and not task.done(): task.cancel()
     await cleanup_phone_login(c.from_user.id)
     await cleanup_qr_login(c.from_user.id)
-    await restore_previous_screen(c, previous)
+    await restore_previous_screen(c, previous, state)
 
 
 @router.callback_query(F.data == "tool:menu")
@@ -330,14 +334,14 @@ async def tools_menu(c: CallbackQuery):
 MODULE_ACTIONS = {
     "invite": ("📩 Инвайтинг", [
         ("➕ Пригласить выбранных пользователей", "campaign"),
-        ("👥 Парсинг участников своей группы", "parseparticipants"),
         ("📋 Очередь и журнал", "campaigns"),
     ]),
     "parser": ("🔍 Парсинг", [
         ("🗂 Мои группы и каналы", "parsechats"),
+        ("👥 Парсер участников", "parseparticipants"),
+        ("📝 Парсер по сообщениям", "parsechannel"),
+        ("💬 Парсер по комментариям", "parsecomments"),
         ("ℹ️ Публичная информация о чате", "chatinfo"),
-        ("📝 История сообщений, ссылки и комментарии", "parsechannel"),
-        ("👥 Участники собственной группы", "parseparticipants"),
     ]),
     "contacts": ("📇 Контакты", [
         ("📇 Просмотреть контакты", "contacts"),
@@ -419,14 +423,13 @@ async def render_campaign_kind_selection(c: CallbackQuery, state: FSMContext, mo
     )
     if module == "invite":
         kinds = [
-            [("🔗 Отправить ссылку-приглашение", f"tool:campaign:start:{ids[0]}:invite:once")],
-            [("🗓 Повторять отправку ссылки", f"tool:campaign:start:{ids[0]}:invite:recurring")],
             [("👥 Пригласить выбранных пользователей в группу", f"tool:campaign:start:{ids[0]}:direct_invite:once")],
-            [("🗓 Повторять прямые приглашения", f"tool:campaign:start:{ids[0]}:direct_invite:recurring")],
         ]
     else:
         kinds = [
             [("📨 Личные сообщения выбранным получателям", f"tool:campaign:start:{ids[0]}:broadcast:once")],
+            [("🔗 Отправить ссылку-приглашение", f"tool:campaign:start:{ids[0]}:invite:once")],
+            [("🗓 Повторять отправку ссылки", f"tool:campaign:start:{ids[0]}:invite:recurring")],
             [("📣 Публикация в своих группах", f"tool:campaign:start:{ids[0]}:group_broadcast:once")],
             [("🗓 Повторяющаяся рассылка", f"tool:campaign:start:{ids[0]}:broadcast:recurring")],
         ]
@@ -537,6 +540,13 @@ async def tool_module_accounts(c: CallbackQuery, state: FSMContext):
         if not account or not account.enabled:
             await c.answer("Аккаунт не найден или выключен.", show_alert=True)
             return
+        await state.update_data(
+            module_selection_module=module,
+            module_selection_account_id=aid,
+            management_account_id=aid,
+            management_account_ids=[aid],
+            module_return_callback=f"tool:module:account:{module}:{aid}",
+        )
         if module in {"broadcast", "invite"}:
             await state.clear()
             await render_campaign_kind_selection(c, state, module, [aid])
@@ -646,13 +656,12 @@ async def tool_module_quarantine_clear(c: CallbackQuery):
 
 
 POLICY_FIELDS = {
-    "interval_seconds": ("⏱ Интервал между действиями", "секунд", 1, 9999),
-    "per_account_limit": ("📦 Лимит на аккаунт за задачу", "операций", 1, 9999),
-    "daily_account_limit": ("📅 Лимит на аккаунт за 24 часа", "операций", 1, 9999),
-    "batch_size": ("🧩 Размер пакета", "операций", 1, 9999),
-    "batch_pause_seconds": ("⏸ Пауза между пакетами", "секунд", 1, 9999),
-    "floodwait_wait_seconds": ("🛡 Максимальное ожидание FloodWait", "секунд", 1, 9999),
-    "floodwait_threshold": ("🚧 FloodWait до карантина", "срабатываний", 1, 100),
+    "interval_seconds": ("⏱ Ждать между приглашениями", "секунд", 1, 9999),
+    "per_account_limit": ("📦 Лимит на аккаунт", "человек", 1, 9999),
+    "daily_account_limit": ("📅 Лимит в сутки на аккаунт", "человек", 1, 9999),
+    "batch_size": ("👥 Человек за приглашение", "человек", 1, 9999),
+    "floodwait_wait_seconds": ("🛡 Ждать при Floodlimit", "секунд", 1, 9999),
+    "floodwait_threshold": ("🚧 Floodlimit до карантина", "срабатываний", 1, 100),
 }
 
 
@@ -836,7 +845,11 @@ async def management_prompt(c: CallbackQuery, state: FSMContext, action: str, ai
         management_account_ids=[int(value) for value in selected_ids],
         module_selection_module=module,
         ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id,
-        return_callback=f"tool:module:{module}" if module else f"tool:management:account:{aid}",
+        module_return_callback=previous.get("module_return_callback"),
+        return_callback=(
+            previous.get("module_return_callback")
+            or (f"tool:module:{module}" if module else f"tool:management:account:{aid}")
+        ),
     )
     await state.set_state(Flow.management_input)
     await edit(c, prompt + "\n\nОтмена — кнопкой ниже.", CANCEL)
@@ -1010,7 +1023,11 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
             photo_account_index=0, photo_results=[],
             module_selection_module=module,
             ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id,
-            return_callback=f"tool:module:{module}" if module else f"tool:management:account:{aid}",
+            module_return_callback=previous.get("module_return_callback"),
+            return_callback=(
+                previous.get("module_return_callback")
+                or (f"tool:module:{module}" if module else f"tool:management:account:{aid}")
+            ),
         )
         await state.set_state(Flow.management_photo)
         if action == "photosequential":
@@ -2043,7 +2060,8 @@ async def management_input_received(m: Message, state: FSMContext):
         if action and action.startswith("policy-field-"):
             back_callback, back_label = f"tool:policy:{action.split('-', 3)[2]}", "↩️ К настройкам модуля"
         elif module:
-            back_callback, back_label = f"tool:module:{module}", "↩️ К модулю"
+            back_callback = data.get("module_return_callback") or f"tool:module:{module}"
+            back_label = "↩️ К аккаунту модуля" if data.get("module_return_callback") else "↩️ К модулю"
         else:
             back_callback = f"tool:management:account:{aid}"
             back_label = "↩️ К инструментам аккаунта"
@@ -2113,7 +2131,7 @@ async def management_photo_received(m: Message, state: FSMContext):
                 except Exception as exc:
                     results.append(f"❌ #{account_id}: {type(exc).__name__}: {str(exc)[:120]}")
         await finish_prompt(m, state, "\n".join(results), kb([
-            [("↩️ К модулю", f"tool:module:{module}")],
+            [("↩️ К модулю", data.get("module_return_callback") or f"tool:module:{module}")],
             [("🏠 Главное меню", "nav:home")],
         ]))
     except telegram_management.FloodWaitError as exc:
