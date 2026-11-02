@@ -1202,6 +1202,19 @@ async def management_input_document_received(m: Message, state: FSMContext):
         content = raw_bytes.decode("utf-8-sig")
         if not content.strip():
             raise ValueError("Файл пуст.")
+        if action == "campaign_recipients" and filename.endswith(".csv"):
+            rows = list(csv.reader(io.StringIO(content)))
+            if not rows:
+                raise ValueError("CSV не содержит получателей.")
+            header = [str(value).strip().lower() for value in rows[0]]
+            column_name = next((name for name in ("username", "user", "peer_ref", "recipient") if name in header), "")
+            column = header.index(column_name) if column_name else 0
+            if column_name:
+                rows = rows[1:]
+            content = "\\n".join(
+                str(row[column]).strip() for row in rows
+                if len(row) > column and str(row[column]).strip()
+            )
         copied = m.model_copy(update={"text": content, "document": None})
         await management_input_received(copied, state)
     except UnicodeDecodeError:
