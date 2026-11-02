@@ -1,13 +1,16 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 import hmac
 
 from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.settings import get_settings
 from app.storage.db import engine, get_session
 from app.storage.models import Account, AIAgent, Persona
+from app.api.miniapp import router as miniapp_router
 
 settings = get_settings()
 
@@ -21,7 +24,16 @@ async def lifespan(_: FastAPI):
     await engine.dispose()
 
 
-app = FastAPI(title="AtcivPerson API", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="AtcivPerson API", version="0.3.0", lifespan=lifespan)
+app.include_router(miniapp_router)
+
+
+@app.get("/miniapp", include_in_schema=False)
+async def miniapp():
+    return FileResponse(
+        Path(__file__).parent / "static" / "index.html",
+        headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"},
+    )
 
 
 async def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
@@ -84,5 +96,3 @@ async def list_personas(session: AsyncSession = Depends(get_session)) -> list[di
         {"id": r.id, "name": r.name, "description": r.description, "style_instructions": r.style_instructions}
         for r in rows
     ]
-
-
