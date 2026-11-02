@@ -10,6 +10,15 @@ class GeneratedResponse:
     chat_label: str = ""
 
 
+def resolve_runtime_override(account_override: int | None, agent_override: int | None, global_value: int) -> int:
+    """Resolve runtime configuration from the most specific scope to the global default."""
+    if account_override is not None:
+        return int(account_override)
+    if agent_override is not None:
+        return int(agent_override)
+    return int(global_value)
+
+
 def build_reply_style_instructions(
     *,
     persona_style: str,

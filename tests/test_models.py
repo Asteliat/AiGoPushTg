@@ -132,3 +132,13 @@ def test_direct_invite_consent_is_group_specific():
     assert {column.name for column in constraints[0].columns} == {
         "account_id", "peer_id", "target_group_id"
     }
+
+
+def test_accounts_have_independent_reply_runtime_overrides() -> None:
+    columns = set(Account.__table__.columns.keys())
+    assert {
+        "mention_reply_probability_override",
+        "dm_reply_probability_override",
+        "proactive_reply_probability_override",
+        "reply_cooldown_seconds_override",
+    } <= columns

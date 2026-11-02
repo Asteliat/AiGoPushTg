@@ -16,7 +16,7 @@ from telethon.tl.functions.messages import GetDiscussionMessageRequest
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from app.ai.provider import AIUnavailableError, NoReplyNeeded, summarize_chat_context
-from app.services.ai_responses import generate_response, global_ai_enabled
+from app.services.ai_responses import generate_response, resolve_runtime_override, global_ai_enabled
 from app.workers.channel_monitor import has_channel_post_content, install_channel_monitor
 from app.settings import get_settings
 from app.storage.db import SessionFactory
@@ -486,16 +486,22 @@ async def main():
 
             setting = await db.get(AppSetting, probability_key)
             global_probability = int(setting.value) if setting and setting.value.isdigit() else (0 if probability_key == "proactive_reply_probability" else 100)
-            override = getattr(agent, probability_key + "_override")
-            probability = override if override is not None else global_probability
+            probability = resolve_runtime_override(
+                getattr(current, probability_key + "_override"),
+                getattr(agent, probability_key + "_override"),
+                global_probability,
+            )
             if probability <= 0 or random.randint(1, 100) > min(probability, 100):
                 logging.info("Reply skipped by %s probability (%s%%) for account %s in chat %s", probability_key, probability, aid, event.chat_id)
                 return
 
             cooldown_setting = await db.get(AppSetting, "reply_cooldown_seconds")
             global_cooldown = int(cooldown_setting.value) if cooldown_setting and cooldown_setting.value.isdigit() else 0
-            cooldown_override = agent.reply_cooldown_seconds_override
-            cooldown_seconds = cooldown_override if cooldown_override is not None else global_cooldown
+            cooldown_seconds = resolve_runtime_override(
+                current.reply_cooldown_seconds_override,
+                agent.reply_cooldown_seconds_override,
+                global_cooldown,
+            )
             if cooldown_seconds > 0:
                 allowed = await redis.set(
                     f"atcivperson:reply-cooldown:{aid}:{event.chat_id}", "1",
