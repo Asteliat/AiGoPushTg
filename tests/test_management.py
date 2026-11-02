@@ -1,7 +1,4 @@
-    with pytest.raises(ValueError, match="идентификатор"):
-        await simulate_post_activity(
-            post_key=" ", requested_views=10, requested_reactions=1
-        )
+import pytest
 
 
 @pytest.mark.asyncio
