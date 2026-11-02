@@ -74,7 +74,13 @@ def _account(row: Account) -> dict:
         "connection_status": row.connection_status, "ai_enabled": row.ai_enabled,
         "ai_agent_id": row.ai_agent_id, "persona_id": row.persona_id,
         "reply_mode": row.reply_mode, "channel_reply_mode": row.channel_reply_mode,
-        "channel_chat_replies_enabled": row.channel_chat_replies_enabled, "learning_status": row.learning_status,
+        "channel_chat_replies_enabled": row.channel_chat_replies_enabled,
+        "channel_reply_probability": row.channel_reply_probability,
+        "channel_reply_cooldown_seconds": row.channel_reply_cooldown_seconds,
+        "channel_post_instructions": row.channel_post_instructions,
+        "channel_comments_instructions": row.channel_comments_instructions,
+        "channel_restrictions_instructions": row.channel_restrictions_instructions,
+        "learning_status": row.learning_status,
         "learning_completed_at": row.learning_completed_at.isoformat() if row.learning_completed_at else None,
         "learning_limit": row.learning_limit,
     }
@@ -121,7 +127,7 @@ class AccountPatch(BaseModel):
     persona_id: int | None = None
     reply_mode: str | None = Field(default=None, pattern="^(manual|automatic)$")
     channel_reply_mode: str | None = Field(default=None, pattern="^(manual|automatic)$")
-    channel_chat_replies_enabled: bool | None = None
+    channel_chat_replies_enabled: bool | None = None\n    channel_reply_probability: int | None = Field(default=None, ge=0, le=100)\n    channel_reply_cooldown_seconds: int | None = Field(default=None, ge=0, le=31536000)\n    channel_post_instructions: str | None = Field(default=None, max_length=6000)\n    channel_comments_instructions: str | None = Field(default=None, max_length=6000)\n    channel_restrictions_instructions: str | None = Field(default=None, max_length=6000)
 
 
 class AgentInput(BaseModel):
