@@ -1762,7 +1762,7 @@ async def management_input_received(m: Message, state: FSMContext):
                 scanned_chats = 1
             output = io.StringIO()
             writer = csv.writer(output)
-            writer.writerow(["chat_title", "chat_id", "message_id", "date", "views", "forwards", "replies", "reactions", "has_media", "text", "comments"])
+            writer.writerow(["chat_title", "chat_id", "message_id", "date", "views", "forwards", "replies", "reactions", "has_media", "text", "links", "comments"])
             txt_lines = [
                 f"ИСТОРИЯ АККАУНТА #{aid}",
                 f"Чатов обработано: {len(results)} из {scanned_chats}",
@@ -1784,13 +1784,14 @@ async def management_input_received(m: Message, state: FSMContext):
                     writer.writerow([
                         result["title"], result["channel_id"], post["id"], post["date"],
                         post["views"], post["forwards"], post["replies"], reactions,
-                        post["has_media"], post["text"], comments,
+                        post["has_media"], post["text"], " ".join(post.get("links", [])), comments,
                     ])
                     txt_lines.extend([
                         f"Публикация #{post['id']}", f"Дата: {post['date'] or '—'}",
                         f"Просмотры: {post['views']} · Пересылки: {post['forwards']} · Ответы: {post['replies']}",
                         f"Реакции: {reactions or 'нет'}",
                         f"Медиа: {'да' if post['has_media'] else 'нет'}",
+                        f"Ссылки: {', '.join(post.get('links', [])) or 'нет'}",
                         "Текст:", post["text"] or "[без текста]",
                     ])
                     if post.get("comments"):
