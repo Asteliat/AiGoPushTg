@@ -355,3 +355,8 @@ The new product deliberately does not implement fake views/reactions, coordinate
 ### Content Studio storage
 
 The `content_drafts` table is created by the existing `Base.metadata.create_all` migration step. Drafts reference the selected account, agent, persona and optional channel binding; deleting a draft does not send or publish anything. No existing account, session, agent, persona, example, trigger or channel-binding rows are removed.
+
+
+### Retirement safety switch
+
+The legacy invite/broadcast/subscription/reaction dispatcher is disabled by default in the refreshed product through `LEGACY_AUTOMATION_ENABLED=false`. Historical task, schedule and consent rows are retained; they are not deleted. Setting the variable to `true` is an explicit rollback switch and should only be used if the operator intentionally restores the legacy tools.
