@@ -192,7 +192,7 @@ async def test_parse_chat_history_applies_message_delay(monkeypatch):
             for message_id in (1, 2):
                 yield SimpleNamespace(
                     id=message_id, action=None, date=datetime.now(timezone.utc),
-                    message=f"message {message_id}", reactions=None, replies=None,
+                    message=("See https://t.me/example and https://example.org/path " if message_id == 1 else f"message {message_id}"), reactions=None, replies=None,
                     views=0, forwards=0, media=None, sender_id=10,
                 )
 
@@ -213,6 +213,8 @@ async def test_parse_chat_history_applies_message_delay(monkeypatch):
     )
 
     assert len(result["posts"]) == 2
+    assert result["posts"][0]["links"] == ["https://t.me/example", "https://example.org/path"]
+    assert result["posts"][1]["links"] == []
     assert result["filters"]["message_delay_seconds"] == 3
     assert sleeps == [3, 3]
 
