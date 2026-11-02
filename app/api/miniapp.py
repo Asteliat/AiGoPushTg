@@ -840,6 +840,21 @@ async def inbox_ai_draft(payload: InboxPeerInput, _: int = Depends(require_admin
     if account.learning_prompt.strip():
         style += "\n\nКонтекст стиля аккаунта:\n" + account.learning_prompt[:6000]
     style += "\n\nЕсли собеседник спрашивает, является ли ответ автоматическим, отвечай честно."
+
+    # Rollback releases the request's DB transaction before Telegram/AI network calls.
+    # AsyncSession.rollback() expires ORM instances, so copy every value used below
+    # into plain Python data before releasing the session.
+    agent_config = type("AgentConfig", (), {
+        "enabled": bool(agent.enabled),
+        "api_key": str(agent.api_key),
+        "base_url": str(agent.base_url),
+        "model": str(agent.model),
+        "timeout_seconds": int(agent.timeout_seconds),
+    })()
+    approved_examples = [
+        (str(item.incoming_text), str(item.preferred_reply))
+        for item in examples
+    ]
     await db.rollback()
     try:
         async with isolated_account_client(payload.account_id) as (_, client):
@@ -867,14 +882,14 @@ async def inbox_ai_draft(payload: InboxPeerInput, _: int = Depends(require_admin
                 for item in raw
             )
             draft = await generate_reply(
-                agent=agent,
+                agent=agent_config,
                 incoming_text=(inbound.message or "Собеседник отправил медиа или вложение."),
                 style_instructions=(
                     "Подготовь уместный ответ на последнее входящее сообщение в реальном диалоге. "
                     "Учитывай всю историю, не выдумывай факты и не отправляй сообщение самостоятельно. "
                     "Не используй навязчивые продажи. " + style
                 ),
-                examples=[(item.incoming_text, item.preferred_reply) for item in examples],
+                examples=approved_examples,
                 conversation_context=context,
             )
             return {"draft": draft, "reply_to_message_id": int(inbound.id)}
