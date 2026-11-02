@@ -1012,7 +1012,7 @@ async def preview_message_target(account_id: int, target: str) -> dict:
             ) else "личный чат"
             return {
                 "title": str(title)[:200],
-                "peer_id": int(utils.get_peer_id(entity)),
+                "peer_id": int(entity.id),
                 "username": str(getattr(entity, "username", None) or ""),
                 "kind": kind,
             }
