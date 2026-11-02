@@ -7,6 +7,7 @@ import time
 from typing import Any, Literal
 from urllib.parse import parse_qsl
 
+from aiogram import Bot
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select, desc, func
@@ -172,6 +173,11 @@ class BindingInput(BaseModel):
     kind: str = Field(pattern="^(group|channel)$")
     peer_id: int
     title: str = Field(default="", max_length=255)
+
+
+class LogDestinationInput(BaseModel):
+    chat_id: int
+    thread_id: int | None = Field(default=None, gt=0)
 
 
 @router.get("/overview")
@@ -474,6 +480,113 @@ async def update_global_settings(payload: SettingsInput, actor: int = Depends(re
     await _audit(db, actor, "settings.update", "settings", "global")
     await db.commit()
     return await _read_settings(db)
+
+
+
+LOG_CATEGORIES = {
+    "main": "Основные логи",
+    "replies": "Ответы ИИ",
+    "errors": "Ошибки",
+    "learning": "Обучение",
+    "channels": "Каналы и обсуждения",
+}
+
+
+def _parse_log_destinations(value: str | None) -> list[tuple[int, int | None]]:
+    result: list[tuple[int, int | None]] = []
+    for raw in (value or "").replace(";", ",").split(","):
+        parts = raw.strip().split(":")
+        try:
+            chat_id = int(parts[0])
+            thread_id = int(parts[1]) if len(parts) == 2 else None
+        except (TypeError, ValueError):
+            continue
+        if len(parts) > 2 or chat_id == 0 or (thread_id is not None and thread_id <= 0):
+            continue
+        item = (chat_id, thread_id)
+        if item not in result:
+            result.append(item)
+    return result
+
+
+def _format_log_destinations(items: list[tuple[int, int | None]]) -> str:
+    return ",".join(f"{chat_id}:{thread_id}" if thread_id is not None else str(chat_id)
+                    for chat_id, thread_id in items)
+
+
+@router.get("/logs/destinations")
+async def get_log_destinations(_: int = Depends(require_admin), db: AsyncSession = Depends(get_session)):
+    result = {}
+    for category, label in LOG_CATEGORIES.items():
+        row = await db.get(AppSetting, f"log_chat_ids_{category}")
+        destinations = _parse_log_destinations(row.value if row else "")
+        if category == "main" and row is None and get_settings().log_chat_id:
+            destinations = [(get_settings().log_chat_id, None)]
+        result[category] = {
+            "label": label,
+            "destinations": [{"chat_id": chat_id, "thread_id": thread_id}
+                             for chat_id, thread_id in destinations],
+        }
+    return result
+
+
+@router.post("/logs/destinations/{category}")
+async def add_log_destination(category: str, payload: LogDestinationInput,
+                               actor: int = Depends(require_admin),
+                               db: AsyncSession = Depends(get_session)):
+    if category not in LOG_CATEGORIES:
+        raise HTTPException(404, "Категория логов не найдена.")
+    cfg = get_settings()
+    if not cfg.bot_token:
+        raise HTTPException(503, "BOT_TOKEN не настроен.")
+    bot = Bot(token=cfg.bot_token)
+    try:
+        kwargs = {"message_thread_id": payload.thread_id} if payload.thread_id is not None else {}
+        await bot.send_message(payload.chat_id,
+                               "Проверка связи: этот получатель добавлен для логов AtcivPerson.",
+                               **kwargs)
+    except Exception as exc:
+        raise HTTPException(400, f"Не удалось отправить тестовое сообщение: {type(exc).__name__}: {str(exc)[:180]}") from None
+    finally:
+        await bot.session.close()
+    key = f"log_chat_ids_{category}"
+    row = await db.get(AppSetting, key)
+    destinations = _parse_log_destinations(row.value if row else "")
+    if category == "main" and row is None and cfg.log_chat_id:
+        destinations = [(cfg.log_chat_id, None)]
+    destination = (payload.chat_id, payload.thread_id)
+    if destination not in destinations:
+        destinations.append(destination)
+    value = _format_log_destinations(destinations)
+    if row:
+        row.value = value
+    else:
+        db.add(AppSetting(key=key, value=value))
+    await _audit(db, actor, "logs.destination.add", "logs", f"{category}:{payload.chat_id}:{payload.thread_id or 0}")
+    await db.commit()
+    return {"ok": True, "destinations": [{"chat_id": chat_id, "thread_id": thread_id}
+                                          for chat_id, thread_id in destinations]}
+
+
+@router.delete("/logs/destinations/{category}")
+async def remove_log_destination(category: str, chat_id: int, thread_id: int | None = None,
+                                 actor: int = Depends(require_admin),
+                                 db: AsyncSession = Depends(get_session)):
+    if category not in LOG_CATEGORIES:
+        raise HTTPException(404, "Категория логов не найдена.")
+    key = f"log_chat_ids_{category}"
+    row = await db.get(AppSetting, key)
+    destinations = _parse_log_destinations(row.value if row else "")
+    destinations = [item for item in destinations if item != (chat_id, thread_id)]
+    value = _format_log_destinations(destinations)
+    if row:
+        row.value = value
+    else:
+        db.add(AppSetting(key=key, value=value))
+    await _audit(db, actor, "logs.destination.remove", "logs", f"{category}:{chat_id}:{thread_id or 0}")
+    await db.commit()
+    return {"ok": True, "destinations": [{"chat_id": target, "thread_id": thread}
+                                          for target, thread in destinations]}
 
 
 @router.get("/logs")
