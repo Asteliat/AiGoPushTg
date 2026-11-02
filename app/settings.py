@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     bot_token: str = ""
     api_secret_key: str = ""
     mini_app_url: str = ""
+    legacy_automation_enabled: bool = False
     admin_ids: str = ""
     telegram_api_id: int = 0
     telegram_api_hash: str = ""
