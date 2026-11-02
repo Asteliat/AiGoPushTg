@@ -292,13 +292,145 @@ async def cancel_cb(c: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "tool:menu")
 async def tools_menu(c: CallbackQuery):
     if not await check_cb(c): return
-    await edit(c, "🧰 Инструменты\n\nПоиск, управление аккаунтами и дополнительные инструменты Telegram.", kb([
-        [("🔎 Поиск групп", "tool:groups")],
-        [("📣 Поиск каналов", "tool:channels")],
-        [("🛠 Управление аккаунтами", "tool:management")],
+    await edit(c, "🧰 Инструменты\n\nВыберите независимый модуль. Настройки лимитов задаются один раз глобально, затем выбираются аккаунты для выполнения операций.", kb([
+        [("📩 Инвайтинг", "tool:module:invite"), ("🔍 Парсинг", "tool:module:parser")],
+        [("📇 Контакты", "tool:module:contacts"), ("📤 Рассылка", "tool:module:broadcast")],
+        [("📢 Подписка и отписка", "tool:module:subscription"), ("❤️ Реакции", "tool:module:reaction")],
+        [("✏️ Редактирование профиля", "tool:module:profile")],
+        [("⚙️ Глобальные настройки модулей", "tool:policy:menu")],
+        [("🔎 Поиск групп", "tool:groups"), ("📣 Поиск каналов", "tool:channels")],
         [("🎯 Глобальные триггеры", "trigger:global")],
         [("⬅️ Главное меню", "nav:home")],
     ]))
+
+
+MODULE_ACTIONS = {
+    "invite": ("📩 Инвайтинг", [
+        ("➕ Пригласить выбранных пользователей", "campaign"),
+        ("👥 Парсинг участников своей группы", "parseparticipants"),
+        ("📋 Очередь и журнал", "campaigns"),
+    ]),
+    "parser": ("🔍 Парсинг", [
+        ("🗂 Мои группы и каналы", "parsechats"),
+        ("📝 История сообщений / публикаций", "parsechannel"),
+        ("👥 Участники собственной группы", "parseparticipants"),
+    ]),
+    "contacts": ("📇 Контакты", [
+        ("📇 Просмотреть контакты", "contacts"),
+        ("➕ Добавить контакт", "addcontact"),
+        ("🗑 Удалить контакт", "delcontact"),
+        ("📥 Импорт TXT", "importcontacts"),
+        ("📤 Экспорт CSV", "exportcontacts"),
+    ]),
+    "broadcast": ("📤 Рассылка", [
+        ("✉️ Создать рассылку", "campaign"),
+        ("📋 Очередь и журнал", "campaigns"),
+        ("🗓 Повторяющееся расписание", "schedule"),
+        ("📅 Список расписаний", "schedules"),
+    ]),
+    "subscription": ("📢 Подписка и отписка", [
+        ("➕ Пакетная подписка", "joinbatch"),
+        ("➖ Пакетная отписка", "leavebatch"),
+        ("➕ Вступить по ссылке", "join"),
+        ("➖ Выйти из чата", "leave"),
+    ]),
+    "reaction": ("❤️ Реакции", [
+        ("❤️ Реакция на публикацию", "reaction"),
+        ("🕒 Запланировать реакцию", "schedreaction"),
+        ("📆 Очередь реакций", "reactions"),
+    ]),
+    "profile": ("✏️ Редактирование профиля", [
+        ("👤 Посмотреть профиль", "profile"),
+        ("✏️ Изменить имя, BIO и username", "editprofile"),
+        ("📷 Изменить фотографию", "photo"),
+    ]),
+}
+
+
+@router.callback_query(F.data.startswith("tool:module:"))
+async def tool_module_accounts(c: CallbackQuery):
+    if not await check_cb(c):
+        return
+    module = c.data.rsplit(":", 1)[-1]
+    if module not in MODULE_ACTIONS:
+        await c.answer("Неизвестный модуль.", show_alert=True)
+        return
+    async with SessionFactory() as db:
+        accounts = list((await db.scalars(
+            select(Account).where(Account.enabled.is_(True)).order_by(Account.id)
+        )).all())
+    title = MODULE_ACTIONS[module][0]
+    rows = [[(f"👤 {a.display_name[:28]} · #{a.id}", f"tool:module:account:{module}:{a.id}")] for a in accounts]
+    rows.extend([
+        [("⚙️ Глобальные настройки модуля", f"tool:policy:{module}")],
+        [("↩️ Инструменты", "tool:menu")],
+    ])
+    await edit(c, f"{title}\n\nВыберите аккаунт. Глобальные лимиты общие для всех выбранных аккаунтов.", kb(rows))
+
+
+@router.callback_query(F.data.startswith("tool:module:account:"))
+async def tool_module_account_actions(c: CallbackQuery):
+    if not await check_cb(c):
+        return
+    _, _, _, module, aid_raw = c.data.split(":")
+    aid = int(aid_raw)
+    if module not in MODULE_ACTIONS:
+        await c.answer("Неизвестный модуль.", show_alert=True)
+        return
+    async with SessionFactory() as db:
+        account = await db.get(Account, aid)
+    if not account or not account.enabled:
+        await c.answer("Аккаунт не найден или выключен.", show_alert=True)
+        return
+    title, actions = MODULE_ACTIONS[module]
+    rows = [[(label, f"tool:mg:{action}:{aid}")] for label, action in actions]
+    rows.extend([
+        [("⚙️ Глобальные настройки", f"tool:policy:{module}")],
+        [("↩️ К аккаунтам модуля", f"tool:module:{module}")],
+    ])
+    await edit(c, f"{title} · {account.display_name} · #{aid}\n\nВыберите действие:", kb(rows))
+
+
+@router.callback_query(F.data == "tool:policy:menu")
+async def tool_policy_menu(c: CallbackQuery):
+    if not await check_cb(c):
+        return
+    rows = [
+        [("📩 Инвайтинг", "tool:policy:invite"), ("📤 Рассылка", "tool:policy:broadcast")],
+        [("📢 Подписка", "tool:policy:subscription"), ("❤️ Реакции", "tool:policy:reaction")],
+        [("↩️ Инструменты", "tool:menu")],
+    ]
+    await edit(c, "⚙️ Глобальные настройки\n\nОдна конфигурация на модуль. Она применяется к каждому выбранному аккаунту; индивидуальных лимитов аккаунтов нет.", kb(rows))
+
+
+@router.callback_query(F.data.startswith("tool:policy:"))
+async def tool_policy_edit(c: CallbackQuery, state: FSMContext):
+    if not await check_cb(c):
+        return
+    module = c.data.rsplit(":", 1)[-1]
+    if module not in {"invite", "broadcast", "subscription", "reaction"}:
+        await c.answer("Неизвестный модуль.", show_alert=True)
+        return
+    policy = await telegram_automation.module_policy(module)
+    title = MODULE_ACTIONS[module][0]
+    await state.clear()
+    await state.update_data(
+        management_action=f"policy-{module}", management_account_id=0,
+        ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id,
+        return_callback="tool:policy:menu",
+    )
+    await state.set_state(Flow.management_input)
+    prompt = (
+        f"⚙️ {title} · глобальные параметры\n\n"
+        f"Интервал: {policy['interval_seconds']} сек.\n"
+        f"Лимит на аккаунт за задачу/сутки: {policy['per_account_limit']} / {policy['daily_account_limit']}\n"
+        f"Пакет: {policy['batch_size']}\n"
+        f"Ожидание FloodWait до: {policy['floodwait_wait_seconds']} сек.\n"
+        f"FloodWait до карантина: {policy['floodwait_threshold']}\n\n"
+        "Отправьте 6 чисел через | в порядке: интервал | лимит на аккаунт | дневной лимит аккаунта | размер пакета | максимум ожидания FloodWait | FloodWait до карантина.\n"
+        "Все значения: 1–9999 (порог FloodWait: 1–100)."
+    )
+    await edit(c, prompt, CANCEL)
 
 
 @router.callback_query(F.data == "tool:groups")
