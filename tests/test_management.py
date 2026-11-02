@@ -560,3 +560,110 @@ async def test_update_profile_bio_fails_when_telegram_does_not_save_it(monkeypat
 
     assert fake_client.full_user_reads > 2
 
+
+
+@pytest.mark.asyncio
+async def test_preview_manual_message_target_resolves_one_group(monkeypatch):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from app.telegram_gateway import management
+
+    entity = SimpleNamespace(
+        id=77, title="Test group", username="testgroup",
+        megagroup=True, gigagroup=False, broadcast=False,
+    )
+
+    class FakeClient:
+        async def get_entity(self, target):
+            assert target == "@testgroup"
+            return entity
+
+    @asynccontextmanager
+    async def fake_client(_account_id):
+        yield SimpleNamespace(id=1), FakeClient()
+
+    monkeypatch.setattr(management, "_account_lock", lambda _aid: _AsyncNullLock())
+    monkeypatch.setattr(management, "isolated_account_client", fake_client)
+
+    result = await management.preview_message_target(1, "https://t.me/testgroup")
+    assert result["title"] == "Test group"
+    assert result["peer_id"] == 77
+    assert result["kind"] == "группа"
+
+
+@pytest.mark.asyncio
+async def test_send_manual_message_uses_plain_text_and_one_explicit_peer(monkeypatch):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from app.telegram_gateway import management
+
+    entity = SimpleNamespace(
+        id=88, title="Private group", username="privategroup",
+        megagroup=True, gigagroup=False, broadcast=False,
+    )
+    sent = {}
+
+    class FakeClient:
+        async def get_entity(self, target):
+            assert target == "@privategroup"
+            return entity
+
+        async def send_message(self, peer, message, **kwargs):
+            sent.update(peer=peer, message=message, kwargs=kwargs)
+            return SimpleNamespace(id=1234)
+
+    @asynccontextmanager
+    async def fake_client(_account_id):
+        yield SimpleNamespace(id=1), FakeClient()
+
+    monkeypatch.setattr(management, "_account_lock", lambda _aid: _AsyncNullLock())
+    monkeypatch.setattr(management, "isolated_account_client", fake_client)
+
+    result = await management.send_message_to_chat(
+        1, "https://t.me/privategroup", "Текст без форматирования <b>тег</b>"
+    )
+    assert result["message_id"] == 1234
+    assert result["peer_id"] == 88
+    assert sent["peer"] is entity
+    assert sent["message"] == "Текст без форматирования <b>тег</b>"
+    assert sent["kwargs"] == {"parse_mode": None, "link_preview": False}
+
+
+@pytest.mark.asyncio
+async def test_send_manual_message_rejects_broadcast_channel(monkeypatch):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from app.telegram_gateway import management
+
+    entity = SimpleNamespace(
+        id=99, title="Broadcast channel", username="broadcast",
+        megagroup=False, broadcast=True,
+    )
+
+    class FakeClient:
+        async def get_entity(self, _target):
+            return entity
+
+        async def send_message(self, *_args, **_kwargs):
+            raise AssertionError("A broadcast channel must never receive a manual chat message.")
+
+    @asynccontextmanager
+    async def fake_client(_account_id):
+        yield SimpleNamespace(id=1), FakeClient()
+
+    monkeypatch.setattr(management, "_account_lock", lambda _aid: _AsyncNullLock())
+    monkeypatch.setattr(management, "isolated_account_client", fake_client)
+
+    with pytest.raises(ValueError, match="вещательных каналов"):
+        await management.send_message_to_chat(1, "@broadcast", "hello")
+
+
+class _AsyncNullLock:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return False
