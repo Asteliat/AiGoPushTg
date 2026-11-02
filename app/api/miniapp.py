@@ -72,7 +72,7 @@ def _account(row: Account) -> dict:
         "enabled": row.enabled, "manual_pause": row.manual_pause,
         "connection_status": row.connection_status, "ai_enabled": row.ai_enabled,
         "ai_agent_id": row.ai_agent_id, "persona_id": row.persona_id,
-        "reply_mode": row.reply_mode, "learning_status": row.learning_status,
+        "reply_mode": row.reply_mode, "channel_reply_mode": row.channel_reply_mode,\n        "channel_chat_replies_enabled": row.channel_chat_replies_enabled, "learning_status": row.learning_status,
         "learning_completed_at": row.learning_completed_at.isoformat() if row.learning_completed_at else None,
         "learning_limit": row.learning_limit,
     }
@@ -117,7 +117,7 @@ class AccountPatch(BaseModel):
     ai_enabled: bool | None = None
     ai_agent_id: int | None = None
     persona_id: int | None = None
-    reply_mode: str | None = Field(default=None, pattern="^(manual|automatic)$")
+    reply_mode: str | None = Field(default=None, pattern="^(manual|automatic)$")\n    channel_reply_mode: str | None = Field(default=None, pattern="^(manual|automatic)$")\n    channel_chat_replies_enabled: bool | None = None
 
 
 class AgentInput(BaseModel):
