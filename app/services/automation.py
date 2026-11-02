@@ -559,6 +559,8 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
             module = _module_name_for_kind(kind)
             policy = await module_policy(module)
             interval, daily_limit = policy["interval_seconds"], policy["daily_account_limit"]
+            batch_size = policy["batch_size"]
+            processed_in_batch = 0
             quiet_keys = [
                 f"automation.default.{module}.quiet_start_utc",
                 f"automation.default.{module}.quiet_end_utc",
@@ -774,6 +776,20 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                                 item.delivered_at = utcnow()
                                 item.last_error = ""
                             await db.commit()
+                        processed_in_batch += 1
+                    if processed_in_batch >= batch_size:
+                        async with SessionFactory() as db:
+                            current = await db.get(AutomationTask, task_id)
+                            if current and current.status == "running":
+                                current.status = "queued"
+                                current.scheduled_at = utcnow() + timedelta(seconds=interval)
+                                current.last_error = (
+                                    f"Пакет {processed_in_batch}/{batch_size} обработан; "
+                                    "продолжение запланировано с учётом интервала."
+                                )
+                                current.updated_at = utcnow()
+                                await db.commit()
+                        break
                     await _sleep_with_task_heartbeat(task_id, interval)
         except Exception as exc:
             async with SessionFactory() as db:
