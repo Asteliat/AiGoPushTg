@@ -807,7 +807,7 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         "importcontacts": "Отправьте TXT или CSV (до 1000 контактов) либо вставьте строки формата: телефон | имя | фамилия. Для CSV используйте столбцы phone, first_name, last_name.",
         "delcontact": "Отправьте Telegram user ID контакта, которого нужно удалить.",
         "chatinfo": "Отправьте @username или публичную ссылку t.me/…",
-        "parsechats": "Будет сформирован CSV со списком групп и каналов, в которых состоит аккаунт. Отправьте максимум диалогов (1–500), либо оставьте пустым для 200.",
+        "parsechats": "Формат: all | 200, groups | 200 или channels | 200. Можно отправить только тип (all/groups/channels) или число. Результат будет отправлен в TXT и CSV.",
         "joinbatch": "Создание задачи подписки. Отправьте now | ссылки или дату YYYY-MM-DD HH:MM UTC | ссылки, по одной на строку. Можно загрузить TXT/CSV. Максимум 500 ссылок; задача попадёт в очередь, её можно приостановить или отменить.",
         "leavebatch": "Создание задачи отписки. Отправьте now | ссылки или дату YYYY-MM-DD HH:MM UTC | ссылки, по одной на строку. Можно загрузить TXT/CSV. Максимум 500 ссылок; задача попадёт в очередь, её можно приостановить или отменить.",
         "parsechannel": "Формат: @канал | сообщений (1–500) | за сколько дней (0 = без ограничения) | ключевые слова через запятую или - | комментарии да/нет.\nПример: @telegram | 100 | 7 | впн, VPN, випиэн | да. Выгрузка будет в TXT и CSV.",
@@ -1632,8 +1632,22 @@ async def management_input_received(m: Message, state: FSMContext):
                     results.append(f"❌ #{account_id}: {type(exc).__name__}: {str(exc)[:120]}")
             message = "\\n".join(results)
         elif action == "parsechats":
-            limit = int(raw) if raw else 200
-            items = await telegram_management.list_account_dialogs(aid, limit=limit)
+            parts = [item.strip().lower() for item in raw.split("|") if item.strip()]
+            kind = "all"
+            limit = 200
+            if len(parts) == 1:
+                if parts[0] in {"all", "groups", "channels"}:
+                    kind = parts[0]
+                else:
+                    limit = int(parts[0])
+            elif len(parts) == 2:
+                kind = parts[0]
+                limit = int(parts[1])
+            else:
+                raise ValueError("Формат: all/groups/channels | лимит.")
+            if kind not in {"all", "groups", "channels"}:
+                raise ValueError("Тип должен быть all, groups или channels.")
+            items = await telegram_management.list_account_dialogs(aid, limit=limit, kind=kind)
             output = io.StringIO()
             writer = csv.writer(output)
             writer.writerow(["telegram_peer_id", "entity_id", "type", "title", "username", "participants_count", "unread_count"])
