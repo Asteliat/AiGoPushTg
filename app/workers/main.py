@@ -486,16 +486,26 @@ async def main():
 
             setting = await db.get(AppSetting, probability_key)
             global_probability = int(setting.value) if setting and setting.value.isdigit() else (0 if probability_key == "proactive_reply_probability" else 100)
-            override = getattr(agent, probability_key + "_override")
-            probability = override if override is not None else global_probability
+            account_override = getattr(current, probability_key + "_override")
+            agent_override = getattr(agent, probability_key + "_override")
+            probability = (
+                account_override if account_override is not None
+                else agent_override if agent_override is not None
+                else global_probability
+            )
             if probability <= 0 or random.randint(1, 100) > min(probability, 100):
                 logging.info("Reply skipped by %s probability (%s%%) for account %s in chat %s", probability_key, probability, aid, event.chat_id)
                 return
 
             cooldown_setting = await db.get(AppSetting, "reply_cooldown_seconds")
             global_cooldown = int(cooldown_setting.value) if cooldown_setting and cooldown_setting.value.isdigit() else 0
-            cooldown_override = agent.reply_cooldown_seconds_override
-            cooldown_seconds = cooldown_override if cooldown_override is not None else global_cooldown
+            account_cooldown_override = current.reply_cooldown_seconds_override
+            agent_cooldown_override = agent.reply_cooldown_seconds_override
+            cooldown_seconds = (
+                account_cooldown_override if account_cooldown_override is not None
+                else agent_cooldown_override if agent_cooldown_override is not None
+                else global_cooldown
+            )
             if cooldown_seconds > 0:
                 allowed = await redis.set(
                     f"atcivperson:reply-cooldown:{aid}:{event.chat_id}", "1",
