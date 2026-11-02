@@ -461,7 +461,7 @@ async def parse_chat_participants(
     account_id: int, chat: str, *, limit: int = 200,
     exclude_bots: bool = False, exclude_deleted: bool = False,
     username_only: bool = False, photo_only: bool = False,
-    premium_only: bool = False, active_days: int = 0,
+    premium_only: bool = False, active_days: int = 0, exclude_scam: bool = False,
 ) -> dict:
     """Export visible participant metadata with opt-in filters; never infer personal attributes."""
     from datetime import datetime, timedelta, timezone
@@ -497,10 +497,13 @@ async def parse_chat_participants(
                 scanned += 1
                 is_bot = bool(getattr(user, "bot", False))
                 is_deleted = bool(getattr(user, "deleted", False))
+                is_scam = bool(getattr(user, "scam", False))
                 username = getattr(user, "username", None) or ""
                 if exclude_bots and is_bot:
                     continue
                 if exclude_deleted and is_deleted:
+                    continue
+                if exclude_scam and is_scam:
                     continue
                 if username_only and not username:
                     continue
@@ -527,6 +530,7 @@ async def parse_chat_participants(
                     "last_name": getattr(user, "last_name", None) or "",
                     "is_bot": is_bot,
                     "is_deleted": is_deleted,
+                    "is_scam": is_scam,
                     "has_photo": bool(getattr(user, "photo", None)),
                     "is_premium": bool(getattr(user, "premium", False)),
                     "last_seen": last_seen.isoformat() if last_seen else "",
@@ -541,6 +545,7 @@ async def parse_chat_participants(
                 "requested_limit": limit,
                 "filters": {
                     "exclude_bots": exclude_bots, "exclude_deleted": exclude_deleted,
+                    "exclude_scam": exclude_scam,
                     "username_only": username_only, "photo_only": photo_only,
                     "premium_only": premium_only, "active_days": active_days,
                 },
