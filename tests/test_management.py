@@ -35,6 +35,7 @@ async def test_parse_chat_participants_returns_only_public_fields(monkeypatch):
     assert result["participants"][0]["username"] == "one"
     assert "phone" not in result["participants"][0]
     assert result["participants"][0]["is_scam"] is False
+    assert result["participants"][0]["is_blocked"] is False
 
 
 @pytest.mark.asyncio
@@ -258,3 +259,42 @@ async def test_parse_account_history_uses_each_dialog_and_isolates_chat_errors(m
     assert [item[0] for item in parsed] == ["-1001", "-1002", "-1003"]
     assert sleeps == [4, 4]
     assert all(item[1]["message_delay_seconds"] == 2 for item in parsed)
+
+@pytest.mark.asyncio
+async def test_parse_chat_participants_can_exclude_account_blocklist(monkeypatch):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from app.telegram_gateway import management
+
+    class FakeClient:
+        async def get_entity(self, _target):
+            return SimpleNamespace(id=42, title="Test group", megagroup=True)
+
+        async def get_permissions(self, _entity, _user):
+            return SimpleNamespace(is_admin=True, is_creator=False)
+
+        async def __call__(self, request):
+            assert request.limit == 100
+            return SimpleNamespace(
+                blocked=[SimpleNamespace(peer=SimpleNamespace(user_id=1))]
+            )
+
+        async def iter_participants(self, _entity, limit):
+            for user_id in (1, 2):
+                yield SimpleNamespace(
+                    id=user_id, username=f"user{user_id}", first_name="User",
+                    last_name="", bot=False, deleted=False, scam=False,
+                )
+
+    @asynccontextmanager
+    async def fake_client(_account_id):
+        yield SimpleNamespace(id=1), FakeClient()
+
+    monkeypatch.setattr(management, "isolated_account_client", fake_client)
+    result = await management.parse_chat_participants(
+        1, "@testgroup", limit=10, exclude_blocked=True
+    )
+
+    assert [item["id"] for item in result["participants"]] == [2]
+    assert result["filters"]["exclude_blocked"] is True
