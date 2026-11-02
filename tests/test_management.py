@@ -300,3 +300,74 @@ async def test_parse_chat_participants_can_exclude_account_blocklist(monkeypatch
 
     assert [item["id"] for item in result["participants"]] == [2]
     assert result["filters"]["exclude_blocked"] is True
+
+
+@pytest.mark.asyncio
+async def test_parse_chat_comments_exports_only_matching_public_comments(monkeypatch):
+    from contextlib import asynccontextmanager
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    from app.telegram_gateway import management
+
+    now = datetime.now(timezone.utc)
+
+    class FakeMessage:
+        def __init__(self, message_id, body, sender_id=10, replies=None):
+            self.id = message_id
+            self.message = body
+            self.sender_id = sender_id
+            self.date = now
+            self.action = None
+            self.replies = replies
+
+    post = FakeMessage(100, "post", replies=SimpleNamespace(replies=2))
+    comments = [
+        FakeMessage(101, "VPN works"),
+        FakeMessage(102, "ordinary discussion"),
+    ]
+
+    class FakeClient:
+        async def get_entity(self, _target):
+            return SimpleNamespace(id=77, title="Test channel", username="test", broadcast=True)
+
+        async def iter_messages(self, _entity, limit, reply_to=None):
+            if reply_to is None:
+                assert limit == 5
+                yield post
+            else:
+                assert reply_to == 100
+                assert limit == 5
+                for comment in comments:
+                    yield comment
+
+    @asynccontextmanager
+    async def fake_client(_account_id):
+        yield SimpleNamespace(id=1), FakeClient()
+
+    monkeypatch.setattr(management, "isolated_account_client", fake_client)
+    result = await management.parse_chat_comments(
+        1, "@test", post_limit=5, comment_limit=5, keywords=["vpn"]
+    )
+
+    assert result["title"] == "Test channel"
+    assert result["scanned_posts"] == 1
+    assert result["scanned_comments"] == 2
+    assert result["visible_count"] == 1
+    assert result["comments"][0]["comment_id"] == 101
+    assert result["comments"][0]["text"] == "VPN works"
+
+
+def test_parser_profile_filters_use_explicit_telegram_fields_only():
+    from types import SimpleNamespace
+
+    from app.telegram_gateway.management import _profile_matches_parser_filters
+
+    user = SimpleNamespace(
+        id=1, bot=True, deleted=False, scam=False, username="person",
+        photo=object(), premium=True, status=None,
+    )
+    assert not _profile_matches_parser_filters(user, exclude_bots=True)
+    assert _profile_matches_parser_filters(user, username_only=True, photo_only=True, premium_only=True)
+    assert not _profile_matches_parser_filters(user, active_days=7)
+    assert not _profile_matches_parser_filters(user, exclude_blocked=True, blocked_ids={1})
