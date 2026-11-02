@@ -2,7 +2,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.api import miniapp
-from app.api.miniapp import ChannelAssistantPatch, ContentGenerateInput, ContentDraftPatch, InboxReplyInput
+from app.api.miniapp import (ChannelAssistantPatch, ContentGenerateInput, ContentDraftPatch, InboxReplyInput, ModuleSettingsInput)
 from app.storage.models import ContentDraft
 
 
@@ -132,3 +132,62 @@ def test_inbox_frontend_ignores_stale_dialog_and_message_requests():
     assert "inboxMessagesRequest" in html
     assert "aid!==state.inboxAccountId" in html
     assert "state.inboxPeer?.peer_id!==peer.peer_id" in html
+
+
+
+def test_module_catalog_contains_the_requested_workspace_modules():
+    ids = {item["id"] for item in miniapp.MODULE_CATALOG}
+    assert len(ids) == 15
+    assert {
+        "neuro_commenting", "neuro_shilling", "neuro_chatting", "neuro_dialogs",
+        "dm_mailings", "chat_mailings", "mass_tagging", "mass_reactions",
+        "mass_viewing", "auto_warmup", "account_manager", "account_protection",
+        "user_parser", "channel_parser", "inviter",
+    } == ids
+
+
+def test_module_settings_are_bounded_and_keep_isolated_account_selection():
+    payload = ModuleSettingsInput(
+        enabled=False, account_ids=[1, 2], delay_min_seconds=10,
+        delay_max_seconds=30, probability=75, daily_limit=50,
+        keywords=["billing", "support"],
+    )
+    assert payload.account_ids == [1, 2]
+    assert payload.probability == 75
+    with pytest.raises(ValidationError):
+        ModuleSettingsInput(delay_min_seconds=86401)
+    with pytest.raises(ValidationError):
+        ModuleSettingsInput(probability=101)
+    with pytest.raises(ValidationError):
+        ModuleSettingsInput(daily_limit=-1)
+
+
+def test_module_settings_defaults_are_not_enabled_implicitly():
+    assert miniapp._module_config(None)["enabled"] is False
+    assert miniapp._module_config("{broken")["account_ids"] == []
+
+
+def test_modules_and_automation_are_separate_routes():
+    paths = {route.path for route in miniapp.router.routes}
+    assert "/v1/miniapp/modules" in paths
+    assert "/v1/miniapp/modules/{module_id}" in paths
+    assert "/v1/miniapp/automation/tasks" in paths
+    assert "/v1/miniapp/automation/tasks/{task_id}" in paths
+
+
+def test_module_catalog_does_not_enable_restricted_bulk_behaviour():
+    states = {item["id"]: item["state"] for item in miniapp.MODULE_CATALOG}
+    assert states["neuro_shilling"] == "restricted"
+    assert states["mass_viewing"] == "restricted"
+    assert states["user_parser"] == "restricted"
+    assert states["inviter"] == "restricted"
+
+
+def test_miniapp_has_distinct_module_and_automation_navigation():
+    from pathlib import Path
+
+    html = (Path(__file__).parents[1] / "app" / "api" / "static" / "index.html").read_text(encoding="utf-8")
+    assert 'data-page="modules"' in html
+    assert 'data-page="automation"' in html
+    assert "Модули автоматизации" not in html
+    assert "function renderAutomation()" in html

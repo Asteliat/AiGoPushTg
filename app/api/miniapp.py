@@ -19,6 +19,7 @@ from app.storage.db import SessionFactory, get_session
 from app.storage.models import (
     Account, AIAgent, AppSetting, AuditEvent, ChannelBinding, ChatBinding,
     Example, Persona, TriggerRule, ChannelAnalysis, ContentDraft,
+    AutomationTask, AutomationTaskRecipient,
 )
 
 router = APIRouter(prefix="/v1/miniapp", tags=["miniapp"])
@@ -254,6 +255,19 @@ class ContentDraftPatch(BaseModel):
     title: str | None = Field(default=None, max_length=160)
     body: str | None = Field(default=None, min_length=1, max_length=12000)
     status: Literal["draft", "archived"] | None = None
+
+
+class ModuleSettingsInput(BaseModel):
+    enabled: bool = False
+    account_ids: list[int] = Field(default_factory=list, max_length=100)
+    agent_id: int | None = Field(default=None, ge=1)
+    persona_id: int | None = Field(default=None, ge=1)
+    prompt: str = Field(default="", max_length=8000)
+    delay_min_seconds: int = Field(default=30, ge=0, le=86400)
+    delay_max_seconds: int = Field(default=120, ge=0, le=86400)
+    probability: int = Field(default=100, ge=0, le=100)
+    daily_limit: int = Field(default=20, ge=0, le=10000)
+    keywords: list[str] = Field(default_factory=list, max_length=100)
 
 
 @router.get("/overview")
@@ -1180,3 +1194,127 @@ async def search_channels(payload: SearchInput, actor: int = Depends(require_adm
             raw_id = item.get("id")
             item["id"] = int(utils.get_peer_id(PeerChannel(int(raw_id)))) if raw_id is not None else None
     return {"results": results[:payload.limit], "count": len(results)}
+
+
+# Module catalog is deliberately separate from the automation task queue. A module owns
+# its configuration; automation only supervises durable tasks.
+MODULE_CATALOG = [
+    {"id":"neuro_commenting","title":"Нейрокомментинг","icon":"✳","description":"Контекстные ответы на новые публикации в подключённых каналах.","state":"ready","note":"Использует существующий обработчик каналов. Настройки канала и агента остаются внутри модуля."},
+    {"id":"neuro_shilling","title":"НейроШиллинг","icon":"◉","description":"Сценарии обсуждений и роли участников.","state":"restricted","note":"Не запускаем координированные фальшивые обсуждения и выдачу нескольких аккаунтов за независимых людей."},
+    {"id":"neuro_chatting","title":"Нейрочаттинг","icon":"☷","description":"Контекстные ответы ИИ в группах, которыми вы управляете или где есть разрешение.","state":"ready","note":"Использует существующие AI-разговоры, привязки групп и настройки аккаунтов."},
+    {"id":"neuro_dialogs","title":"НейроДиалоги","icon":"▣","description":"Входящие личные диалоги, история, ИИ-черновики и передача оператору.","state":"ready","note":"Работает через существующий Inbox. Отправка ответа требует действия оператора."},
+    {"id":"dm_mailings","title":"ЛС-Рассылки","icon":"➤","description":"Сообщения только пользователям, которые явно подписались на получение сообщений.","state":"restricted","note":"Нельзя использовать для холодной рассылки или обхода ограничений. Сначала требуется отдельный opt-in workflow."},
+    {"id":"chat_mailings","title":"Чат-Рассылки","icon":"▤","description":"Планирование публикаций в собственных или администрируемых сообществах.","state":"limited","note":"Пока доступна контент-студия с ручной публикацией; автоматическая очередь публикаций не подключена."},
+    {"id":"mass_tagging","title":"Масстегинг","icon":"＠","description":"Упоминания пользователей в публикациях и историях.","state":"restricted","note":"Массовые отметки без явного согласия пользователей не реализуются."},
+    {"id":"mass_reactions","title":"МассРеакции","icon":"♡","description":"Управление реакциями на выбранные публикации.","state":"restricted","note":"Не реализуем искусственное накручивание реакций или координацию фальшивой вовлечённости."},
+    {"id":"mass_viewing","title":"Масслукинг","icon":"◉","description":"Просмотр публичных историй и аналитика доступности.","state":"restricted","note":"Автоматическая накрутка просмотров и скрытое массовое отслеживание аудитории не поддерживаются."},
+    {"id":"auto_warmup","title":"Автопрогрев","icon":"⌁","description":"Проверка готовности аккаунтов и безопасные паузы.","state":"limited","note":"Вместо имитации человеческой активности — мониторинг состояния, ошибки и расписание пауз."},
+    {"id":"account_manager","title":"Менеджер аккаунтов","icon":"♙","description":"Список аккаунтов, статусы подключений, привязки ИИ и управление паузами.","state":"limited","note":"Базовое управление уже работает; импорт/экспорт сессий и группировка ещё не подключены."},
+    {"id":"account_protection","title":"ИИ Защита аккаунта","icon":"♡","description":"Состояние сессий, ошибки, журнал и ручное планирование пауз.","state":"limited","note":"Доступна базовая диагностика и журнал. Автоматическое принятие рискованных действий не включается."},
+    {"id":"user_parser","title":"Парсер пользователей","icon":"⌕","description":"Поиск и экспорт только публичных агрегированных данных или собственных контактов с законным основанием.","state":"restricted","note":"Массовый сбор персональных данных и подготовка баз для нежелательных сообщений не поддерживаются."},
+    {"id":"channel_parser","title":"Парсер каналов и чатов","icon":"⌕","description":"Поиск площадок по тематике и сохранение собственной базы.","state":"ready","note":"Использует существующий поиск групп/каналов. Автоматическое вступление не выполняется."},
+    {"id":"inviter","title":"Инвайтер","icon":"＋","description":"Приглашение участников в собственные сообщества только по явному согласию.","state":"restricted","note":"Массовые инвайты и добавление людей без подтверждённого согласия не запускаются."}
+]
+MODULE_DEFAULTS = {
+    "enabled": False, "account_ids": [], "agent_id": None, "persona_id": None,
+    "prompt": "", "delay_min_seconds": 30, "delay_max_seconds": 120,
+    "probability": 100, "daily_limit": 20, "keywords": [],
+}
+MODULE_STATES = {item["id"]: item for item in MODULE_CATALOG}
+
+
+def _module_config(raw: str | None) -> dict[str, Any]:
+    try:
+        value = json.loads(raw or "{}")
+    except (TypeError, json.JSONDecodeError):
+        value = {}
+    result = dict(MODULE_DEFAULTS)
+    if isinstance(value, dict):
+        result.update({key: value[key] for key in MODULE_DEFAULTS if key in value})
+    return result
+
+
+@router.get("/modules")
+async def get_modules(_: int = Depends(require_admin), db: AsyncSession = Depends(get_session)):
+    rows = (await db.scalars(select(AppSetting).where(AppSetting.key.like("module_config:%")))).all()
+    configs = {row.key.split(":", 1)[1]: _module_config(row.value) for row in rows}
+    return [{"id": item["id"], "title": item["title"], "icon": item["icon"],
+             "description": item["description"], "state": item["state"], "note": item["note"],
+             "settings": configs.get(item["id"], dict(MODULE_DEFAULTS))}
+            for item in MODULE_CATALOG]
+
+
+@router.put("/modules/{module_id}")
+async def update_module_settings(module_id: str, payload: ModuleSettingsInput,
+                                 actor: int = Depends(require_admin),
+                                 db: AsyncSession = Depends(get_session)):
+    definition = MODULE_STATES.get(module_id)
+    if definition is None:
+        raise HTTPException(404, "Модуль не найден.")
+    if payload.enabled and definition["state"] in {"restricted", "limited"}:
+        raise HTTPException(409, "Этот модуль пока нельзя запускать автоматически. Ознакомьтесь с описанием доступного режима.")
+    if payload.delay_min_seconds > payload.delay_max_seconds:
+        raise HTTPException(400, "Минимальная задержка не может быть больше максимальной.")
+    account_ids = list(dict.fromkeys(payload.account_ids))
+    if account_ids:
+        found = set((await db.scalars(select(Account.id).where(Account.id.in_(account_ids)))).all())
+        if found != set(account_ids):
+            raise HTTPException(400, "В списке есть неизвестный аккаунт.")
+    if payload.agent_id is not None and not await db.get(AIAgent, payload.agent_id):
+        raise HTTPException(400, "ИИ-агент не найден.")
+    if payload.persona_id is not None and not await db.get(Persona, payload.persona_id):
+        raise HTTPException(400, "Персона не найдена.")
+    values = payload.model_dump()
+    values["account_ids"] = account_ids
+    values["keywords"] = list(dict.fromkeys(x.strip() for x in values["keywords"] if x.strip()))
+    key = f"module_config:{module_id}"
+    row = await db.get(AppSetting, key)
+    if row is None:
+        row = AppSetting(key=key, value=json.dumps(values, ensure_ascii=False))
+        db.add(row)
+    else:
+        row.value = json.dumps(values, ensure_ascii=False)
+    await _audit(db, actor, "module.settings.update", "module", module_id)
+    await db.commit()
+    return {"id": module_id, "settings": values}
+
+
+@router.get("/automation/tasks")
+async def get_automation_tasks(_: int = Depends(require_admin), db: AsyncSession = Depends(get_session)):
+    rows = (await db.scalars(select(AutomationTask).order_by(desc(AutomationTask.created_at)).limit(100))).all()
+    if not rows:
+        return []
+    ids = [row.id for row in rows]
+    result = await db.execute(
+        select(AutomationTaskRecipient.task_id, AutomationTaskRecipient.status, func.count())
+        .where(AutomationTaskRecipient.task_id.in_(ids))
+        .group_by(AutomationTaskRecipient.task_id, AutomationTaskRecipient.status)
+    )
+    counts: dict[int, dict[str, int]] = {}
+    for task_id, status, count in result.all():
+        counts.setdefault(task_id, {})[status] = int(count)
+    return [{
+        "id": row.id, "account_id": row.account_id, "kind": row.kind, "status": row.status,
+        "scheduled_at": row.scheduled_at.isoformat() if row.scheduled_at else None,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "completed_at": row.completed_at.isoformat() if row.completed_at else None,
+        "last_error": row.last_error, "counts": counts.get(row.id, {}),
+    } for row in rows]
+
+
+@router.patch("/automation/tasks/{task_id}")
+async def update_automation_task(task_id: int, status: Literal["paused", "queued", "cancelled"],
+                                 actor: int = Depends(require_admin)):
+    from app.services.automation import set_campaign_status
+    try:
+        await set_campaign_status(task_id, status)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    await _write_audit_event(actor, "automation.task.status", "automation_task", task_id)
+    return {"ok": True, "id": task_id, "status": status}
+
+
+async def _write_audit_event(actor: int, action: str, kind: str, object_id: Any) -> None:
+    async with SessionFactory() as db:
+        await _audit(db, actor, action, kind, object_id)
+        await db.commit()
