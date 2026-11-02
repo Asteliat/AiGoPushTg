@@ -19,6 +19,7 @@ from app.storage.models import (
     Account, AIAgent, AppSetting, AuditEvent, ChannelBinding, ChatBinding,
     Example, Persona, TriggerRule,
 )
+from app.services import automation as telegram_automation
 
 router = APIRouter(prefix="/v1/miniapp", tags=["miniapp"])
 
@@ -178,6 +179,10 @@ class BindingInput(BaseModel):
 class LogDestinationInput(BaseModel):
     chat_id: int
     thread_id: int | None = Field(default=None, gt=0)
+
+
+class ModulePolicyInput(BaseModel):
+    values: dict[str, int]
 
 
 @router.get("/overview")
@@ -595,6 +600,48 @@ async def logs(_: int = Depends(require_admin), db: AsyncSession = Depends(get_s
     return [{"id": r.id, "actor": r.actor_telegram_id, "action": r.action,
              "object_type": r.object_type, "object_id": r.object_id,
              "created_at": r.created_at.isoformat() if r.created_at else None} for r in rows]
+
+
+
+MODULE_LABELS = {
+    "invite": "Инвайтинг",
+    "broadcast": "Рассылки",
+    "subscription": "Подписка и отписка",
+    "reaction": "Реакции",
+}
+MODULE_FIELD_LABELS = {
+    "interval_seconds": "Интервал между действиями, сек.",
+    "daily_limit": "Лимит в сутки",
+    "batch_size": "Действий за пакет",
+    "batch_pause_seconds": "Пауза между пакетами, сек.",
+    "per_account_limit": "Лимит на аккаунт",
+    "daily_account_limit": "Лимит в сутки на аккаунт",
+    "floodwait_wait_seconds": "Ждать при FloodWait, сек.",
+    "floodwait_threshold": "FloodWait до карантина",
+}
+
+
+@router.get("/module-policies")
+async def get_module_policies(_: int = Depends(require_admin)):
+    result = {}
+    for module, label in MODULE_LABELS.items():
+        result[module] = {"label": label, "values": await telegram_automation.module_policy(module)}
+    return result
+
+
+@router.put("/module-policies/{module}")
+async def update_module_policy(module: str, payload: ModulePolicyInput,
+                               actor: int = Depends(require_admin)):
+    if module not in MODULE_LABELS:
+        raise HTTPException(404, "Модуль не найден.")
+    try:
+        values = await telegram_automation.set_module_policy(module, **payload.values)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, str(exc)) from None
+    async with get_session() as db:
+        await _audit(db, actor, "module.policy.update", "module", module)
+        await db.commit()
+    return {"label": MODULE_LABELS[module], "values": values}
 
 
 @router.get("/bindings")
