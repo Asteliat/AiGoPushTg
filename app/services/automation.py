@@ -629,6 +629,8 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                         )
                         if kind in {"invite", "direct_invite"}:
                             sent_query = sent_query.where(AutomationTask.kind.in_(["invite", "direct_invite"]))
+                        elif kind in {"subscription_join", "subscription_leave"}:
+                            sent_query = sent_query.where(AutomationTask.kind.in_(["subscription_join", "subscription_leave"]))
                         else:
                             sent_query = sent_query.where(AutomationTask.kind.in_(["broadcast", "group_broadcast"]))
                         sent_today = await db.scalar(sent_query)
@@ -668,8 +670,33 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                                 await client(InviteToChannelRequest(channel=target_group, users=[user]))
                             except UserAlreadyParticipantError:
                                 pass
+                        elif kind in {"subscription_join", "subscription_leave"}:
+                            from telethon.tl.functions.channels import JoinChannelRequest, LeaveChannelRequest
+                            from telethon.tl.functions.messages import CheckChatInviteRequest, ImportChatInviteRequest
+                            from telethon.tl.types import ChatInviteAlready
+
+                            target_ref = peer_ref.strip()
+                            lowered = target_ref.lower().rstrip("/")
+                            if kind == "subscription_join" and ("t.me/+" in lowered or "t.me/joinchat/" in lowered):
+                                invite_hash = target_ref.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1].lstrip("+")
+                                if not invite_hash:
+                                    raise ValueError("Некорректная приватная ссылка-приглашение.")
+                                invite = await client(CheckChatInviteRequest(hash=invite_hash))
+                                if not isinstance(invite, ChatInviteAlready):
+                                    await client(ImportChatInviteRequest(hash=invite_hash))
+                            else:
+                                target = target_ref
+                                if "t.me/" in lowered:
+                                    target = target_ref.split("t.me/", 1)[1].split("/", 1)[0].split("?", 1)[0]
+                                entity = await client.get_entity(target)
+                                if kind == "subscription_join":
+                                    await client(JoinChannelRequest(entity))
+                                elif entity.__class__.__name__ == "Chat":
+                                    await client.delete_dialog(entity)
+                                else:
+                                    await client(LeaveChannelRequest(entity))
                         else:
-                            entity = await _resolve_campaign_peer(client, peer_id, recipient.peer_ref)
+                            entity = await _resolve_campaign_peer(client, peer_id, peer_ref)
                             if kind == "group_broadcast":
                                 permissions = await client.get_permissions(entity, "me")
                                 if not (getattr(permissions, "is_admin", False) or getattr(permissions, "is_creator", False)):
