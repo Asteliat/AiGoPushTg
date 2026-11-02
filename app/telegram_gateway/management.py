@@ -21,7 +21,7 @@ from typing import AsyncIterator
 
 from telethon import TelegramClient, utils
 from telethon.errors import FloodWaitError
-from telethon.tl.functions.channels import JoinChannelRequest, LeaveChannelRequest
+from telethon.tl.functions.channels import GetParticipantRequest, JoinChannelRequest, LeaveChannelRequest
 from telethon.tl.functions.contacts import DeleteContactsRequest, GetBlockedRequest, ImportContactsRequest
 from telethon.tl.functions.messages import CheckChatInviteRequest, ImportChatInviteRequest, SendReactionRequest
 from telethon.tl.functions.users import GetFullUserRequest
@@ -470,18 +470,37 @@ async def join_chat(account_id: int, link: str) -> None:
 
 
 async def verify_chat_membership(client, entity) -> bool:
-    """Verify the authenticated Telegram user is an actual participant."""
+    """Verify membership with Telegram's GetParticipant RPC, not cached permissions."""
+    from telethon.tl.types import InputPeerSelf
+
     me = await client.get_me()
     if me is None or not getattr(me, "id", None):
         raise RuntimeError("Telegram не вернул текущий аккаунт для проверки членства.")
+
     try:
-        # Resolve the current account explicitly instead of relying on the magic "me" string.
-        await client.get_permissions(entity, me)
-        return True
+        result = await client(GetParticipantRequest(
+            channel=entity,
+            participant=InputPeerSelf(),
+        ))
     except Exception as exc:
-        if type(exc).__name__ in {"UserNotParticipantError", "ParticipantIdInvalidError"}:
+        if type(exc).__name__ in {
+            "UserNotParticipantError",
+            "ParticipantIdInvalidError",
+        }:
             return False
         raise
+
+    participant = getattr(result, "participant", None)
+    if participant is None:
+        return False
+
+    # A left/kicked participant is not a successful membership.
+    participant_type = type(participant).__name__
+    if participant_type in {"ChannelParticipantLeft", "ChannelParticipantBanned"}:
+        return False
+    if bool(getattr(participant, "left", False)) or bool(getattr(participant, "kicked", False)):
+        return False
+    return True
 
 
 async def leave_chat(account_id: int, link: str) -> None:
