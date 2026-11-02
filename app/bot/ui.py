@@ -2765,8 +2765,8 @@ async def management_story_received(m: Message, state: FSMContext):
     if not media:
         await prompt_message(m, state, "Отправьте вертикальное фото как фото или изображение-файл.")
         return
-    if int(getattr(media, "file_size", 0) or 0) > 30 * 1024 * 1024:
-        await prompt_message(m, state, "Фото для истории превышает лимит 30 МБ.")
+    if int(getattr(media, "file_size", 0) or 0) > 20 * 1024 * 1024:
+        await prompt_message(m, state, "Фото для истории превышает лимит загрузки 20 МБ.")
         return
     data = await state.get_data()
     aid = int(data.get("management_account_id") or 0)
