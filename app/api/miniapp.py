@@ -17,7 +17,7 @@ from app.settings import get_settings
 from app.storage.db import SessionFactory, get_session
 from app.storage.models import (
     Account, AIAgent, AppSetting, AuditEvent, ChannelBinding, ChatBinding,
-    Example, Persona, TriggerRule,
+    Example, Persona, TriggerRule, AutomationTask, AutomationTaskRecipient, AutomationSchedule,
 )
 from app.services import automation as telegram_automation
 
@@ -598,6 +598,104 @@ async def remove_log_destination(category: str, chat_id: int, thread_id: int | N
                                           for target, thread in destinations]}
 
 
+
+class CampaignStatusInput(BaseModel):
+    status: str = Field(pattern="^(paused|cancelled|queued)$")
+
+
+class ScheduleStatusInput(BaseModel):
+    status: str = Field(pattern="^(active|paused|cancelled)$")
+
+
+@router.get("/campaigns")
+async def get_campaigns(account_id: int | None = None, _: int = Depends(require_admin),
+                        db: AsyncSession = Depends(get_session)):
+    query = select(AutomationTask).order_by(desc(AutomationTask.id)).limit(100)
+    if account_id is not None:
+        if not await db.get(Account, account_id):
+            raise HTTPException(404, "Аккаунт не найден.")
+        query = select(AutomationTask).where(AutomationTask.account_id == account_id).order_by(desc(AutomationTask.id)).limit(100)
+    tasks = list((await db.scalars(query)).all())
+    task_ids = [row.id for row in tasks]
+    counts = {}
+    if task_ids:
+        rows = (await db.execute(
+            select(AutomationTaskRecipient.task_id, AutomationTaskRecipient.status, func.count())
+            .where(AutomationTaskRecipient.task_id.in_(task_ids))
+            .group_by(AutomationTaskRecipient.task_id, AutomationTaskRecipient.status)
+        )).all()
+        for task_id, status, count in rows:
+            counts.setdefault(int(task_id), {})[str(status)] = int(count)
+    return [{
+        "id": row.id, "account_id": row.account_id, "kind": row.kind, "status": row.status,
+        "scheduled_at": row.scheduled_at.isoformat() if row.scheduled_at else None,
+        "last_error": row.last_error, "recipients": counts.get(row.id, {}),
+    } for row in tasks]
+
+
+@router.get("/campaigns/{task_id}")
+async def get_campaign(task_id: int, _: int = Depends(require_admin)):
+    try:
+        return await telegram_automation.campaign_status(task_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from None
+
+
+@router.patch("/campaigns/{task_id}")
+async def update_campaign(task_id: int, payload: CampaignStatusInput,
+                          actor: int = Depends(require_admin)):
+    try:
+        await telegram_automation.set_campaign_status(task_id, payload.status)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    async with SessionFactory() as db:
+        await _audit(db, actor, "campaign.status", "campaign", f"{task_id}:{payload.status}")
+        await db.commit()
+    return {"ok": True}
+
+
+@router.post("/campaigns/{task_id}/retry")
+async def retry_campaign(task_id: int, actor: int = Depends(require_admin)):
+    try:
+        count = await telegram_automation.retry_failed_campaign(task_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    async with SessionFactory() as db:
+        await _audit(db, actor, "campaign.retry", "campaign", task_id)
+        await db.commit()
+    return {"ok": True, "recipients": count}
+
+
+@router.get("/schedules")
+async def get_schedules(account_id: int | None = None, _: int = Depends(require_admin),
+                        db: AsyncSession = Depends(get_session)):
+    query = select(AutomationSchedule).order_by(desc(AutomationSchedule.id)).limit(100)
+    if account_id is not None:
+        if not await db.get(Account, account_id):
+            raise HTTPException(404, "Аккаунт не найден.")
+        query = select(AutomationSchedule).where(AutomationSchedule.account_id == account_id).order_by(desc(AutomationSchedule.id)).limit(100)
+    rows = list((await db.scalars(query)).all())
+    return [{
+        "id": row.id, "account_id": row.account_id, "kind": row.kind, "status": row.status,
+        "next_run_at": row.next_run_at.isoformat() if row.next_run_at else None,
+        "interval_seconds": row.interval_seconds, "runs_count": row.runs_count,
+        "max_runs": row.max_runs, "last_error": row.last_error, "last_task_id": row.last_task_id,
+    } for row in rows]
+
+
+@router.patch("/schedules/{schedule_id}")
+async def update_schedule(schedule_id: int, payload: ScheduleStatusInput,
+                          actor: int = Depends(require_admin)):
+    try:
+        await telegram_automation.set_schedule_status(schedule_id, payload.status)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    async with SessionFactory() as db:
+        await _audit(db, actor, "schedule.status", "schedule", f"{schedule_id}:{payload.status}")
+        await db.commit()
+    return {"ok": True}
+
+
 @router.get("/logs")
 async def logs(_: int = Depends(require_admin), db: AsyncSession = Depends(get_session)):
     rows = (await db.scalars(select(AuditEvent).order_by(desc(AuditEvent.id)).limit(200))).all()
@@ -634,8 +732,8 @@ PARSER_FILTERS = {
     "username_only", "photo_only", "premium_only",
 }
 PARSER_NUMERIC_LIMITS = {
-    "limit": (1, 100000), "post_limit": (1, 10000), "comment_limit": (1, 10000),
-    "days": (0, 3650), "message_delay_seconds": (0, 9999),
+    "limit": (1, 500), "post_limit": (1, 500), "comment_limit": (1, 500),
+    "days": (0, 365), "message_delay_seconds": (0, 9999),
     "chat_delay_seconds": (0, 9999), "comment_delay_seconds": (0, 9999),
 }
 
@@ -706,6 +804,82 @@ async def update_parser_settings(account_id: int, kind: str, payload: ParserSett
     await _audit(db, actor, "parser.settings.update", "parser", f"{account_id}:{kind}")
     await db.commit()
     return await _parser_settings(db, account_id, kind)
+
+
+
+class ParserRunInput(BaseModel):
+    target: str = Field(min_length=2, max_length=255)
+
+
+@router.post("/parser/run/{account_id}/{kind}")
+async def run_parser(account_id: int, kind: str, payload: ParserRunInput,
+                     actor: int = Depends(require_admin), db: AsyncSession = Depends(get_session)):
+    if kind not in PARSER_SETTING_DEFAULTS:
+        raise HTTPException(404, "Раздел парсера не найден.")
+    if not await db.get(Account, account_id):
+        raise HTTPException(404, "Аккаунт не найден.")
+    settings = await _parser_settings(db, account_id, kind)
+    import re
+    keywords = [part.strip() for part in re.split(r"[,;\\n]", settings.get("keywords", "")) if part.strip()]
+    filters = {key: settings[key] for key in (
+        "exclude_bots", "exclude_deleted", "exclude_scam", "exclude_blocked",
+        "username_only", "photo_only", "premium_only", "active_days",
+    )}
+    from app.telegram_gateway import management as telegram_management
+    target = payload.target.strip()
+    try:
+        if kind == "participants":
+            result = await telegram_management.parse_chat_participants(
+                account_id, target, limit=settings["limit"], **filters,
+            )
+            items = result.pop("participants", [])
+            summary = {
+                "title": result["title"], "scanned": result["scanned_count"],
+                "matched": result["visible_count"], "activity_unknown": result["activity_unknown_count"],
+            }
+        elif kind == "messages":
+            if target.casefold() in {"all", "все", "все чаты"}:
+                result = await telegram_management.parse_account_history(
+                    account_id, limit_per_chat=settings["limit"], days=settings["days"],
+                    keywords=keywords, message_delay_seconds=settings["message_delay_seconds"],
+                    chat_delay_seconds=settings["chat_delay_seconds"], max_chats=100,
+                    **filters,
+                )
+                items = [
+                    {"chat": item.get("title", ""), "chat_id": item.get("channel_id"),
+                     **post}
+                    for item in result["results"] for post in item.get("posts", [])
+                ]
+                summary = {
+                    "title": "История аккаунта", "scanned": result["messages_count"],
+                    "matched": len(items), "chats_scanned": result["chats_scanned"],
+                    "chats_parsed": result["chats_parsed"], "errors": len(result["errors"]),
+                }
+            else:
+                result = await telegram_management.parse_chat_history(
+                    account_id, target, limit=settings["limit"], days=settings["days"],
+                    keywords=keywords, message_delay_seconds=settings["message_delay_seconds"],
+                    **filters,
+                )
+                items = result["posts"]
+                summary = {"title": result["title"], "scanned": result["scanned"], "matched": len(items)}
+        else:
+            result = await telegram_management.parse_chat_comments(
+                account_id, target, post_limit=settings["post_limit"],
+                comment_limit=settings["comment_limit"], days=settings["days"],
+                keywords=keywords, comment_delay_seconds=settings["comment_delay_seconds"],
+                **filters,
+            )
+            items = result["comments"]
+            summary = {
+                "title": result["title"], "scanned_posts": result["scanned_posts"],
+                "scanned_comments": result["scanned_comments"], "matched": result["visible_count"],
+            }
+    except Exception as exc:
+        raise HTTPException(400, f"Парсер не смог завершить задачу: {type(exc).__name__}: {str(exc)[:220]}") from None
+    await _audit(db, actor, "parser.run", "parser", f"{account_id}:{kind}")
+    await db.commit()
+    return {"account_id": account_id, "kind": kind, "summary": summary, "items": items[:500]}
 
 
 MODULE_LABELS = {
