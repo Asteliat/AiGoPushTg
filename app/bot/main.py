@@ -18,12 +18,18 @@ async def main() -> None:
     (cfg.data_dir / "sessions").mkdir(parents=True, exist_ok=True)
     bot = Bot(token=cfg.bot_token)
     if cfg.mini_app_url:
-        await bot.set_chat_menu_button(
-            menu_button=MenuButtonWebApp(
-                text="Открыть панель",
-                web_app=WebAppInfo(url=cfg.mini_app_url),
-            )
-        )
+        if not cfg.mini_app_url.startswith("https://"):
+            logging.error("MINI_APP_URL must use HTTPS; the Mini App menu button was not configured.")
+        else:
+            try:
+                await bot.set_chat_menu_button(
+                    menu_button=MenuButtonWebApp(
+                        text="Открыть панель",
+                        web_app=WebAppInfo(url=cfg.mini_app_url),
+                    )
+                )
+            except Exception:
+                logging.exception("Could not configure the Telegram Mini App menu button.")
     dp = Dispatcher()
     dp.include_router(router)
     try:
