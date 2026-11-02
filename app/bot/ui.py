@@ -268,7 +268,6 @@ async def restore_previous_screen(c, callback_data, state: FSMContext | None = N
     elif callback_data.startswith("trigger:account:"): await trigger_screen(c, "account", int(parts[2]))
     elif callback_data.startswith("acc:view:"): await acc_view(c, int(parts[2]))
     elif callback_data.startswith("acc:runtime:menu:"): await account_runtime_menu(c, int(parts[3]))
-    elif callback_data.startswith("acc:runtime:menu:"): await account_runtime_menu(c, int(parts[3]))
     elif callback_data == "acc:list": await acc_list(c)
     elif callback_data.startswith("acc:learnprompt:"): await acc_learning_prompt(c, int(parts[2]))
     elif callback_data.startswith("acc:learn:"): await acc_learning_menu(c, int(parts[2]))
@@ -3769,7 +3768,7 @@ async def account_runtime_menu(c: CallbackQuery, aid: int):
         if account_override is not None:
             buttons.append([("↩️ Наследовать значение агента / глобальное", f"acc:rt:inherit:{aid}:{key}")])
     buttons += [[("⬅️ К аккаунту", f"acc:view:{aid}"), ("🏠 Главное меню", "nav:home")]]
-    await edit(c, "\\n".join(lines), kb(buttons))
+    await edit(c, "\n".join(lines), kb(buttons))
 
 
 @router.callback_query(F.data.startswith("acc:runtime:menu:"))
@@ -3801,7 +3800,7 @@ async def account_runtime_input(c: CallbackQuery, state: FSMContext):
         if unit == "сек."
         else f"Введите вероятность от {minimum}% до {maximum}%."
     )
-    await edit(c, f"{label} · аккаунт #{aid}\\n{hint}", CANCEL)
+    await edit(c, f"{label} · аккаунт #{aid}\n{hint}", CANCEL)
 
 
 @router.callback_query(F.data.startswith("acc:rt:inherit:"))
