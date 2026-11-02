@@ -173,3 +173,44 @@ async def test_update_profile_rejects_invalid_username_before_session_access():
 
     with pytest.raises(ValueError, match="Username"):
         await update_profile(1, username="bad username")
+
+@pytest.mark.asyncio
+async def test_parse_chat_history_applies_message_delay(monkeypatch):
+    from datetime import datetime, timezone
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    import app.telegram_gateway.management as management
+
+    class FakeClient:
+        async def get_entity(self, _target):
+            return SimpleNamespace(id=77, title="Test channel", username="test", broadcast=True)
+
+        async def iter_messages(self, _entity, limit):
+            assert limit == 2
+            for message_id in (1, 2):
+                yield SimpleNamespace(
+                    id=message_id, action=None, date=datetime.now(timezone.utc),
+                    message=f"message {message_id}", reactions=None, replies=None,
+                    views=0, forwards=0, media=None, sender_id=10,
+                )
+
+    @asynccontextmanager
+    async def fake_client(_account_id):
+        yield SimpleNamespace(id=1), FakeClient()
+
+    sleeps = []
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(management, "isolated_account_client", fake_client)
+    monkeypatch.setattr(management.asyncio, "sleep", fake_sleep)
+
+    result = await management.parse_chat_history(
+        1, "@test", limit=2, message_delay_seconds=3
+    )
+
+    assert len(result["posts"]) == 2
+    assert result["filters"]["message_delay_seconds"] == 3
+    assert sleeps == [3, 3]
