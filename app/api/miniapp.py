@@ -185,6 +185,10 @@ class ModulePolicyInput(BaseModel):
     values: dict[str, int]
 
 
+class ParserSettingsInput(BaseModel):
+    values: dict[str, Any]
+
+
 @router.get("/overview")
 async def overview(_: int = Depends(require_admin), db: AsyncSession = Depends(get_session)):
     accounts = list((await db.scalars(select(Account).order_by(Account.id))).all())
@@ -601,6 +605,107 @@ async def logs(_: int = Depends(require_admin), db: AsyncSession = Depends(get_s
              "object_type": r.object_type, "object_id": r.object_id,
              "created_at": r.created_at.isoformat() if r.created_at else None} for r in rows]
 
+
+
+
+PARSER_SETTING_DEFAULTS = {
+    "participants": {
+        "limit": 200, "exclude_bots": False, "exclude_deleted": False,
+        "exclude_scam": False, "exclude_blocked": False, "username_only": False,
+        "photo_only": False, "premium_only": False, "active_days": 0,
+    },
+    "messages": {
+        "limit": 100, "days": 0, "keywords": "",
+        "message_delay_seconds": 0, "chat_delay_seconds": 0,
+        "exclude_bots": False, "exclude_deleted": False,
+        "exclude_scam": False, "exclude_blocked": False, "username_only": False,
+        "photo_only": False, "premium_only": False, "active_days": 0,
+    },
+    "comments": {
+        "post_limit": 100, "comment_limit": 100, "days": 0,
+        "keywords": "", "comment_delay_seconds": 0,
+        "exclude_bots": False, "exclude_deleted": False,
+        "exclude_scam": False, "exclude_blocked": False, "username_only": False,
+        "photo_only": False, "premium_only": False, "active_days": 0,
+    },
+}
+PARSER_FILTERS = {
+    "exclude_bots", "exclude_deleted", "exclude_scam", "exclude_blocked",
+    "username_only", "photo_only", "premium_only",
+}
+PARSER_NUMERIC_LIMITS = {
+    "limit": (1, 100000), "post_limit": (1, 10000), "comment_limit": (1, 10000),
+    "days": (0, 3650), "message_delay_seconds": (0, 9999),
+    "chat_delay_seconds": (0, 9999), "comment_delay_seconds": (0, 9999),
+}
+
+
+async def _parser_settings(db: AsyncSession, account_id: int, kind: str) -> dict[str, Any]:
+    defaults = PARSER_SETTING_DEFAULTS[kind]
+    prefix = f"parser.settings.{account_id}.{kind}."
+    rows = (await db.scalars(select(AppSetting).where(AppSetting.key.startswith(prefix)))).all()
+    raw = {row.key[len(prefix):]: row.value for row in rows}
+    values = dict(defaults)
+    for key, default in defaults.items():
+        value = raw.get(key)
+        if value is None:
+            continue
+        if isinstance(default, bool):
+            values[key] = value.lower() in {"1", "true", "yes", "on", "да"}
+        elif isinstance(default, int):
+            try:
+                values[key] = int(value)
+            except (TypeError, ValueError):
+                pass
+        else:
+            values[key] = value
+    return values
+
+
+@router.get("/parser-settings/{account_id}/{kind}")
+async def get_parser_settings(account_id: int, kind: str,
+                              _: int = Depends(require_admin), db: AsyncSession = Depends(get_session)):
+    if kind not in PARSER_SETTING_DEFAULTS:
+        raise HTTPException(404, "Раздел парсера не найден.")
+    if not await db.get(Account, account_id):
+        raise HTTPException(404, "Аккаунт не найден.")
+    return await _parser_settings(db, account_id, kind)
+
+
+@router.put("/parser-settings/{account_id}/{kind}")
+async def update_parser_settings(account_id: int, kind: str, payload: ParserSettingsInput,
+                                 actor: int = Depends(require_admin), db: AsyncSession = Depends(get_session)):
+    if kind not in PARSER_SETTING_DEFAULTS:
+        raise HTTPException(404, "Раздел парсера не найден.")
+    if not await db.get(Account, account_id):
+        raise HTTPException(404, "Аккаунт не найден.")
+    defaults = PARSER_SETTING_DEFAULTS[kind]
+    if not payload.values or set(payload.values) - set(defaults):
+        raise HTTPException(400, "Переданы неизвестные параметры парсера.")
+    for key, value in payload.values.items():
+        if key in PARSER_FILTERS:
+            if not isinstance(value, bool):
+                raise HTTPException(400, f"Параметр {key} должен быть логическим.")
+        elif key == "keywords":
+            if not isinstance(value, str) or len(value) > 1000:
+                raise HTTPException(400, "Ключевые слова должны быть строкой до 1000 символов.")
+        elif key == "active_days":
+            if not isinstance(value, int) or isinstance(value, bool) or value not in {0, 3, 7, 30}:
+                raise HTTPException(400, "Период активности: 0, 3, 7 или 30 дней.")
+        else:
+            bounds = PARSER_NUMERIC_LIMITS.get(key)
+            if not bounds or not isinstance(value, int) or isinstance(value, bool) or not bounds[0] <= value <= bounds[1]:
+                raise HTTPException(400, f"Некорректное значение параметра {key}.")
+        setting_key = f"parser.settings.{account_id}.{kind}.{key}"
+        row = await db.get(AppSetting, setting_key)
+        stored = str(value).lower() if isinstance(value, bool) else str(value)
+        if row:
+            row.value = stored
+        else:
+            db.add(AppSetting(key=setting_key, value=stored))
+    await _audit(db, actor, "parser.settings.update", "parser", f"{account_id}:{kind}")
+    await db.commit()
+    return await _parser_settings(db, account_id, kind)
 
 
 MODULE_LABELS = {
