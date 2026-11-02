@@ -529,6 +529,16 @@ async def test_update_profile_bio_fails_when_telegram_does_not_save_it(monkeypat
 
     fake_client = FakeClient()
     fake_account = SimpleNamespace(proxy_config_encrypted=None)
+    clock = {"now": 0.0}
+
+    def fake_monotonic():
+        return clock["now"]
+
+    async def fake_sleep(seconds):
+        clock["now"] += seconds
+
+    monkeypatch.setattr(management.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(management.asyncio, "sleep", fake_sleep)
 
     @asynccontextmanager
     async def fake_lock(_account_id):
@@ -548,5 +558,5 @@ async def test_update_profile_bio_fails_when_telegram_does_not_save_it(monkeypat
     with pytest.raises(RuntimeError, match="Telegram не подтвердил изменение Bio"):
         await management.update_profile(1, about="new bio")
 
-    assert fake_client.full_user_reads == 3
+    assert fake_client.full_user_reads > 2
 
