@@ -216,10 +216,10 @@ class ChannelAssistantPatch(BaseModel):
 
 
 class ContentGenerateInput(BaseModel):
-    account_id: int | None = None
-    agent_id: int | None = None
-    persona_id: int | None = None
-    channel_binding_id: int | None = None
+    account_id: int | None = Field(default=None, ge=1)
+    agent_id: int | None = Field(default=None, ge=1)
+    persona_id: int | None = Field(default=None, ge=1)
+    channel_binding_id: int | None = Field(default=None, ge=1)
     title: str = Field(default="", max_length=160)
     brief: str = Field(min_length=5, max_length=6000)
 
@@ -1041,6 +1041,8 @@ async def generate_content_draft(payload: ContentGenerateInput, actor: int = Dep
         account = await db.get(Account, channel.account_id)
     agent_id = payload.agent_id or (account.ai_agent_id if account else None)
     agent = await db.get(AIAgent, agent_id) if agent_id else None
+    if agent_id and agent is None:
+        raise HTTPException(404, "ИИ-агент не найден.")
     if agent is None:
         agent = await db.scalar(select(AIAgent).where(
             AIAgent.enabled.is_(True), AIAgent.is_default.is_(True)
@@ -1053,6 +1055,8 @@ async def generate_content_draft(payload: ContentGenerateInput, actor: int = Dep
         raise HTTPException(400, "Выберите активного ИИ-агента и заполните его API-ключ, адрес и модель.")
     persona_id = payload.persona_id if payload.persona_id is not None else (account.persona_id if account else None)
     persona = await db.get(Persona, persona_id) if persona_id else None
+    if persona_id and persona is None:
+        raise HTTPException(404, "Персона не найдена.")
     query = select(Example).where(Example.consent_confirmed.is_(True))
     if account:
         query = query.where(or_(Example.account_id == account.id, Example.account_id.is_(None)))
