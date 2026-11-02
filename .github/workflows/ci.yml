@@ -22,10 +22,10 @@ jobs:
           import re
           from pathlib import Path
           html = Path("app/api/static/index.html").read_text(encoding="utf-8")
-          scripts = re.findall(r"<script(?:\\s[^>]*)?>(.*?)</script>", html, re.S)
+          scripts = re.findall(r"<script(?:\s[^>]*)?>(.*?)</script>", html, re.S)
           if not scripts:
               raise SystemExit("Mini App inline script was not found")
-          Path("/tmp/miniapp.js").write_text("\\n".join(scripts), encoding="utf-8")
+          Path("/tmp/miniapp.js").write_text("\n".join(scripts), encoding="utf-8")
           PY
           node --check /tmp/miniapp.js
       - run: pytest -q
