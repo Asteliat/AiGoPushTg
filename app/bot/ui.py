@@ -931,15 +931,6 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
                 await c.message.answer(f"❌ Аккаунт #{account_id}: {type(exc).__name__}: {str(exc)[:150]}")
         await c.answer(f"Экспортировано файлов: {sent}/{len(selected_ids)}.")
         return
-    if action == "resetlimits":
-        try:
-            await telegram_automation.reset_account_limits(aid)
-            await edit(c, "Индивидуальные лимиты удалены. Теперь аккаунт использует глобальные значения по умолчанию.", kb([
-                [("↩️ К инструментам аккаунта", f"tool:management:account:{aid}")],
-            ]))
-        except Exception as exc:
-            await edit(c, f"Не удалось сбросить лимиты: {type(exc).__name__}: {str(exc)[:250]}", back_home())
-        return
     if action == "reactions":
         selected_ids = [int(value) for value in (await state.get_data()).get("management_account_ids") or [aid]]
         rows = []
