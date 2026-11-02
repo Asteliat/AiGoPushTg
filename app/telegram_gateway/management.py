@@ -303,45 +303,54 @@ async def delete_contact(account_id: int, user_id: int) -> None:
 
 
 async def join_chat(account_id: int, link: str) -> None:
-    """Join a public chat or a private invite; FloodWait is returned to the caller."""
+    """Join one explicit public chat or invite link, respecting global subscription policy."""
     value = link.strip()
     if not value:
         raise ValueError("Укажите ссылку или @username.")
-    from app.services.automation import reserve_operation_slot
+    from app.services.automation import record_module_floodwait, reserve_operation_slot
     await reserve_operation_slot(account_id, "subscription")
-    async with _account_lock(account_id):
-        async with isolated_account_client(account_id) as (_account, client):
-            lowered = value.lower().rstrip("/")
-            if "t.me/+" in lowered or "t.me/joinchat/" in lowered:
-                invite_hash = value.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1].lstrip("+")
-                if not invite_hash:
-                    raise ValueError("Некорректная приватная ссылка-приглашение.")
-                invite = await client(CheckChatInviteRequest(hash=invite_hash))
-                if isinstance(invite, ChatInviteAlready):
+    try:
+        async with _account_lock(account_id):
+            async with isolated_account_client(account_id) as (_account, client):
+                lowered = value.lower().rstrip("/")
+                if "t.me/+" in lowered or "t.me/joinchat/" in lowered:
+                    invite_hash = value.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1].lstrip("+")
+                    if not invite_hash:
+                        raise ValueError("Некорректная приватная ссылка-приглашение.")
+                    invite = await client(CheckChatInviteRequest(hash=invite_hash))
+                    if isinstance(invite, ChatInviteAlready):
+                        return
+                    await client(ImportChatInviteRequest(hash=invite_hash))
                     return
-                await client(ImportChatInviteRequest(hash=invite_hash))
-                return
-            target = value
-            if "t.me/" in lowered:
-                target = value.rstrip("/").rsplit("/", 1)[-1]
-            entity = await client.get_entity(target)
-            await client(JoinChannelRequest(entity))
+                target = value
+                if "t.me/" in lowered:
+                    target = value.rstrip("/").rsplit("/", 1)[-1]
+                entity = await client.get_entity(target)
+                await client(JoinChannelRequest(entity))
+    except FloodWaitError as exc:
+        await record_module_floodwait(account_id, "subscription", max(1, int(exc.seconds)))
+        raise
 
 
 async def leave_chat(account_id: int, link: str) -> None:
+    """Leave one explicitly selected chat, respecting global subscription policy."""
     value = link.strip()
     if not value:
         raise ValueError("Укажите ссылку или @username.")
-    from app.services.automation import reserve_operation_slot
+    from app.services.automation import record_module_floodwait, reserve_operation_slot
     await reserve_operation_slot(account_id, "subscription")
-    async with _account_lock(account_id):
-        async with isolated_account_client(account_id) as (_account, client):
-            target = value.split("t.me/", 1)[1].split("/", 1)[0].split("?", 1)[0] if "t.me/" in value.lower() else value
-            entity = await client.get_entity(target)
-            if entity.__class__.__name__ == "Chat":
-                await client.delete_dialog(entity)
-            else:
-                await client(LeaveChannelRequest(entity))
+    try:
+        async with _account_lock(account_id):
+            async with isolated_account_client(account_id) as (_account, client):
+                target = value.split("t.me/", 1)[1].split("/", 1)[0].split("?", 1)[0] if "t.me/" in value.lower() else value
+                entity = await client.get_entity(target)
+                if entity.__class__.__name__ == "Chat":
+                    await client.delete_dialog(entity)
+                else:
+                    await client(LeaveChannelRequest(entity))
+    except FloodWaitError as exc:
+        await record_module_floodwait(account_id, "subscription", max(1, int(exc.seconds)))
+        raise
 
 
 async def get_chat_overview(account_id: int, link: str) -> ChatOverview:
