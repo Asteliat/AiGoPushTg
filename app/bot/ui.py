@@ -812,7 +812,7 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         "joinbatch": "Создание задачи подписки. Отправьте now | ссылки или дату YYYY-MM-DD HH:MM UTC | ссылки, по одной на строку. Можно загрузить TXT/CSV. Максимум 500 ссылок; задача попадёт в очередь, её можно приостановить или отменить.",
         "leavebatch": "Создание задачи отписки. Отправьте now | ссылки или дату YYYY-MM-DD HH:MM UTC | ссылки, по одной на строку. Можно загрузить TXT/CSV. Максимум 500 ссылок; задача попадёт в очередь, её можно приостановить или отменить.",
         "parsechannel": "Формат: @канал | сообщений (1–500) | за сколько дней (0 = без ограничения) | ключевые слова через запятую или - | комментарии да/нет.\nПример: @telegram | 100 | 7 | впн, VPN, випиэн | да. Выгрузка будет в TXT и CSV.",
-        "parseparticipants": "Формат: @группа | лимит | без ботов (да/нет) | без удалённых (да/нет) | только с username | только с фото | только Premium | активны за N дней (0 = без фильтра).\nПример: @mygroup | 500 | да | да | нет | да | нет | 7. Нужны права администратора. Активность учитывается только если Telegram показывает точное время последнего посещения; скрытые данные не угадываются.",
+        "parseparticipants": "Формат: @группа | лимит | без ботов | без удалённых | только username | только фото | только Premium | активны за N дней (0 = без фильтра) | без scam (да/нет).\nПример: @mygroup | 500 | да | да | нет | да | нет | 7 | да. Нужны права администратора. Активность учитывается только при доступном точном времени последнего посещения; скрытые данные не угадываются.",
         "join": "Отправьте @username или публичную ссылку t.me/… для вступления.",
         "leave": "Отправьте @username или публичную ссылку t.me/… для выхода.",
         "reaction": "Отправьте данные через |\nФормат: @username | ID_публикации | 👍",
@@ -1770,8 +1770,8 @@ async def management_input_received(m: Message, state: FSMContext):
             )
         elif action == "parseparticipants":
             parts = [x.strip() for x in raw.split("|")]
-            if not 1 <= len(parts) <= 8:
-                raise ValueError("Формат: группа | лимит | без ботов | без удалённых | username | фото | Premium | активность дней.")
+            if not 1 <= len(parts) <= 9:
+                raise ValueError("Формат: группа | лимит | без ботов | без удалённых | username | фото | Premium | активность дней | без scam.")
             def yes(index):
                 return len(parts) > index and parts[index].lower() in {"да", "yes", "true", "1", "on"}
             limit = int(parts[1]) if len(parts) > 1 and parts[1] else 200
@@ -1780,15 +1780,15 @@ async def management_input_received(m: Message, state: FSMContext):
                 aid, parts[0], limit=limit,
                 exclude_bots=yes(2), exclude_deleted=yes(3),
                 username_only=yes(4), photo_only=yes(5), premium_only=yes(6),
-                active_days=active_days,
+                active_days=active_days, exclude_scam=yes(8),
             )
             output = io.StringIO()
             writer = csv.writer(output)
-            writer.writerow(["telegram_id", "username", "first_name", "last_name", "is_bot", "is_deleted", "has_photo", "is_premium", "last_seen"])
+            writer.writerow(["telegram_id", "username", "first_name", "last_name", "is_bot", "is_deleted", "is_scam", "has_photo", "is_premium", "last_seen"])
             for person in result["participants"]:
                 writer.writerow([
                     person["id"], person["username"], person["first_name"],
-                    person["last_name"], person["is_bot"], person["is_deleted"],
+                    person["last_name"], person["is_bot"], person["is_deleted"], person["is_scam"],
                     person["has_photo"], person["is_premium"], person["last_seen"],
                 ])
             txt_lines = [
@@ -1796,7 +1796,7 @@ async def management_input_received(m: Message, state: FSMContext):
                 f"Аккаунт: #{aid}", f"Chat ID: {result['chat_id']}",
                 f"Username: @{result['username']}" if result["username"] else "Username: —",
                 f"Получено после фильтров: {result['visible_count']} из просмотренных {result['scanned_count']} (лимит {result['requested_limit']})",
-                f"Фильтры: без ботов={result['filters']['exclude_bots']} · без удалённых={result['filters']['exclude_deleted']} · username={result['filters']['username_only']} · фото={result['filters']['photo_only']} · Premium={result['filters']['premium_only']} · активность дней={result['filters']['active_days']}",
+                f"Фильтры: без ботов={result['filters']['exclude_bots']} · без удалённых={result['filters']['exclude_deleted']} · без scam={result['filters']['exclude_scam']} · username={result['filters']['username_only']} · фото={result['filters']['photo_only']} · Premium={result['filters']['premium_only']} · активность дней={result['filters']['active_days']}",
                 f"Активность скрыта Telegram у: {result['activity_unknown_count']} профилей", "",
             ]
             for index, person in enumerate(result["participants"], 1):
