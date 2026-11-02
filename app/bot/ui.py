@@ -656,6 +656,16 @@ async def tool_module_quarantine_clear(c: CallbackQuery):
 
 
 POLICY_FIELDS = {
+    "interval_seconds": ("⏱ Интервал между действиями", "секунд", 1, 9999),
+    "per_account_limit": ("📦 Лимит на аккаунт за задачу", "операций", 1, 9999),
+    "daily_account_limit": ("📅 Лимит на аккаунт за 24 часа", "операций", 1, 9999),
+    "batch_size": ("🧩 Размер пакета", "операций", 1, 9999),
+    "batch_pause_seconds": ("⏸ Пауза между пакетами", "секунд", 1, 9999),
+    "floodwait_wait_seconds": ("🛡 Максимальное ожидание FloodWait", "секунд", 1, 9999),
+    "floodwait_threshold": ("🚧 FloodWait до карантина", "срабатываний", 1, 100),
+}
+
+INVITE_POLICY_FIELDS = {
     "interval_seconds": ("⏱ Ждать между приглашениями", "секунд", 1, 9999),
     "per_account_limit": ("📦 Лимит на аккаунт", "человек", 1, 9999),
     "daily_account_limit": ("📅 Лимит в сутки на аккаунт", "человек", 1, 9999),
@@ -665,15 +675,20 @@ POLICY_FIELDS = {
 }
 
 
+def policy_fields_for(module: str) -> dict:
+    return INVITE_POLICY_FIELDS if module == "invite" else POLICY_FIELDS
+
+
 @router.callback_query(F.data.startswith("tool:policy:field:"))
 async def tool_policy_field(c: CallbackQuery, state: FSMContext):
     if not await check_cb(c):
         return
     _, _, _, module, field = c.data.split(":")
-    if module not in {"invite", "broadcast", "subscription", "reaction"} or field not in POLICY_FIELDS:
+    fields = policy_fields_for(module)
+    if module not in {"invite", "broadcast", "subscription", "reaction"} or field not in fields:
         await c.answer("Неизвестный параметр.", show_alert=True)
         return
-    label, unit, minimum, maximum = POLICY_FIELDS[field]
+    label, unit, minimum, maximum = fields[field]
     policy = await telegram_automation.module_policy(module)
     await state.clear()
     await state.update_data(
@@ -684,7 +699,12 @@ async def tool_policy_field(c: CallbackQuery, state: FSMContext):
         return_callback=f"tool:policy:{module}",
     )
     await state.set_state(Flow.management_input)
-    await edit(c, f"{label}\n\nТекущее значение: {policy[field]} {unit}.\nВведите новое целое число от {minimum} до {maximum}.", CANCEL)
+    extra = (
+        "\n\nЕсли Telegram требует подождать не дольше этого времени, задача дождётся окончания FloodWait. "
+        "Более длительное ожидание отправит аккаунт в карантин."
+        if module == "invite" and field == "floodwait_wait_seconds" else ""
+    )
+    await edit(c, f"{label}\n\nТекущее значение: {policy[field]} {unit}.\nВведите новое целое число от {minimum} до {maximum}.{extra}", CANCEL)
 
 
 @router.callback_query(F.data.startswith("tool:policy:"))
@@ -698,7 +718,7 @@ async def tool_policy_edit(c: CallbackQuery, state: FSMContext):
     policy = await telegram_automation.module_policy(module)
     title = MODULE_ACTIONS[module][0]
     rows = []
-    for field, (label, unit, _minimum, _maximum) in POLICY_FIELDS.items():
+    for field, (label, unit, _minimum, _maximum) in policy_fields_for(module).items():
         rows.append([(f"{label}: {policy[field]} {unit}", f"tool:policy:field:{module}:{field}")])
     rows.extend([
         [("↩️ Назад в модуль", f"tool:module:{module}")],
