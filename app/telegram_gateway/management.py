@@ -410,6 +410,7 @@ async def parse_chat_history(
                 if cutoff and (not message_date or message_date < cutoff):
                     continue
                 body = (message.message or "").strip()
+                links = list(dict.fromkeys(re.findall(r"(?i)(?:https?://)?(?:www\\.)?(?:t\\.me|telegram\\.me)/[^\\s<>()]+|https?://[^\\s<>()]+", body)))
                 if terms and not any(term in body.casefold() for term in terms):
                     continue
                 reaction_items = []
@@ -443,6 +444,7 @@ async def parse_chat_history(
                     "id": int(message.id),
                     "date": message.date.isoformat() if message.date else "",
                     "text": body[:3000],
+                    "links": links,
                     "views": int(message.views or 0),
                     "forwards": int(message.forwards or 0),
                     "replies": int(getattr(getattr(message, "replies", None), "replies", 0) or 0),
