@@ -351,6 +351,25 @@ MODULE_ACTIONS = {
 async def tool_module_accounts(c: CallbackQuery):
     if not await check_cb(c):
         return
+    if ":account:" in c.data:
+        parts = c.data.split(":")
+        module, aid = parts[3], int(parts[4])
+        if module not in MODULE_ACTIONS:
+            await c.answer("Неизвестный модуль.", show_alert=True)
+            return
+        async with SessionFactory() as db:
+            account = await db.get(Account, aid)
+        if not account or not account.enabled:
+            await c.answer("Аккаунт не найден или выключен.", show_alert=True)
+            return
+        title, actions = MODULE_ACTIONS[module]
+        rows = [[(label, f"tool:mg:{action}:{aid}")] for label, action in actions]
+        rows.extend([
+            [("⚙️ Глобальные настройки", f"tool:policy:{module}")],
+            [("↩️ К аккаунтам модуля", f"tool:module:{module}")],
+        ])
+        await edit(c, f"{title} · {account.display_name} · #{aid}\n\nВыберите действие:", kb(rows))
+        return
     module = c.data.rsplit(":", 1)[-1]
     if module not in MODULE_ACTIONS:
         await c.answer("Неизвестный модуль.", show_alert=True)
@@ -1016,7 +1035,22 @@ async def management_input_received(m: Message, state: FSMContext):
     raw = (m.text or "").strip()
     await delete_msg(m)
     try:
-        if action in {"broadcastlimits", "invitelimits", "subscriptionlimits", "reactionlimits", "global-broadcast", "global-invite", "global-subscription", "global-reaction"}:
+        if action and action.startswith("policy-"):
+            module = action.removeprefix("policy-")
+            parts = [x.strip() for x in raw.split("|")]
+            if len(parts) != 6 or any(not item.isdigit() for item in parts):
+                raise ValueError("Формат: интервал | лимит на аккаунт | дневной лимит | размер пакета | максимум ожидания FloodWait | FloodWait до карантина.")
+            await telegram_automation.set_module_policy(
+                module,
+                interval_seconds=int(parts[0]),
+                per_account_limit=int(parts[1]),
+                daily_account_limit=int(parts[2]),
+                batch_size=int(parts[3]),
+                floodwait_wait_seconds=int(parts[4]),
+                floodwait_threshold=int(parts[5]),
+            )
+            message = f"Глобальные настройки модуля «{module}» сохранены и будут общими для всех выбранных аккаунтов."
+        elif action in {"broadcastlimits", "invitelimits", "subscriptionlimits", "reactionlimits", "global-broadcast", "global-invite", "global-subscription", "global-reaction"}:
             parts = [x.strip() for x in raw.split("|")]
             if len(parts) != 4:
                 raise ValueError("Формат: интервал | максимум за 24 часа | тихо с | тихо до. Для отключения тихих часов укажите - в обоих последних полях.")
@@ -1372,8 +1406,11 @@ async def management_input_received(m: Message, state: FSMContext):
             message = "Профиль обновлён."
         else:
             raise ValueError("Неизвестное действие.")
-        back_callback = "tool:management" if action == "global-limits" or action.startswith("global-") else f"tool:management:account:{aid}"
-        back_label = "↩️ К управлению аккаунтами" if action == "global-limits" or action.startswith("global-") else "↩️ К инструментам аккаунта"
+        if action and action.startswith("policy-"):
+            back_callback, back_label = "tool:policy:menu", "↩️ К глобальным настройкам"
+        else:
+            back_callback = "tool:management" if action == "global-limits" or action.startswith("global-") else f"tool:management:account:{aid}"
+            back_label = "↩️ К управлению аккаунтами" if action == "global-limits" or action.startswith("global-") else "↩️ К инструментам аккаунта"
         await finish_prompt(m, state, message, kb([
             [(back_label, back_callback)],
             [("🏠 Главное меню", "nav:home")],
