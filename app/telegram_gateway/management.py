@@ -418,10 +418,94 @@ async def get_chat_overview(account_id: int, link: str) -> ChatOverview:
             )
 
 
+async def _blocked_user_ids(client) -> set[int]:
+    """Return only the account's own Telegram block list."""
+    blocked_ids: set[int] = set()
+    offset = 0
+    while True:
+        page = await client(GetBlockedRequest(offset=offset, limit=100))
+        items = list(getattr(page, "blocked", []) or [])
+        for item in items:
+            user_id = getattr(getattr(item, "peer", None), "user_id", None)
+            if user_id:
+                blocked_ids.add(int(user_id))
+        if len(items) < 100:
+            break
+        offset += len(items)
+    return blocked_ids
+
+
+def _profile_matches_parser_filters(
+    user, *, exclude_bots: bool = False, exclude_deleted: bool = False,
+    exclude_scam: bool = False, exclude_blocked: bool = False,
+    username_only: bool = False, photo_only: bool = False,
+    premium_only: bool = False, active_days: int = 0,
+    blocked_ids: set[int] | None = None,
+) -> bool:
+    """Apply only explicit Telegram profile fields; do not infer demographics or location."""
+    if user is None or not getattr(user, "id", None):
+        return False
+    if exclude_bots and bool(getattr(user, "bot", False)):
+        return False
+    if exclude_deleted and bool(getattr(user, "deleted", False)):
+        return False
+    if exclude_scam and bool(getattr(user, "scam", False)):
+        return False
+    if exclude_blocked and int(user.id) in (blocked_ids or set()):
+        return False
+    if username_only and not getattr(user, "username", None):
+        return False
+    if photo_only and not getattr(user, "photo", None):
+        return False
+    if premium_only and not bool(getattr(user, "premium", False)):
+        return False
+    if active_days:
+        from datetime import datetime, timedelta, timezone
+        status = getattr(user, "status", None)
+        last_seen = getattr(status, "was_online", None) or getattr(status, "expires", None)
+        if last_seen is None:
+            return False
+        if last_seen.tzinfo is None:
+            last_seen = last_seen.replace(tzinfo=timezone.utc)
+        if last_seen < datetime.now(timezone.utc) - timedelta(days=int(active_days)):
+            return False
+    return True
+
+
+async def _sender_passes_parser_filters(
+    message, client, *, exclude_bots: bool = False, exclude_deleted: bool = False,
+    exclude_scam: bool = False, exclude_blocked: bool = False,
+    username_only: bool = False, photo_only: bool = False,
+    premium_only: bool = False, active_days: int = 0,
+    blocked_ids: set[int] | None = None,
+) -> bool:
+    enabled = any((
+        exclude_bots, exclude_deleted, exclude_scam, exclude_blocked,
+        username_only, photo_only, premium_only, active_days,
+    ))
+    if not enabled:
+        return True
+    try:
+        sender = await message.get_sender()
+    except Exception:
+        sender = None
+    return _profile_matches_parser_filters(
+        sender, exclude_bots=exclude_bots, exclude_deleted=exclude_deleted,
+        exclude_scam=exclude_scam, exclude_blocked=exclude_blocked,
+        username_only=username_only, photo_only=photo_only,
+        premium_only=premium_only, active_days=active_days,
+        blocked_ids=blocked_ids,
+    )
+
+
 async def parse_chat_history(
     account_id: int, channel: str, *, limit: int = 20, days: int = 0,
     keywords: list[str] | None = None, include_comments: bool = False,
     comment_limit: int = 20, message_delay_seconds: int = 0,
+    exclude_bots: bool = False, exclude_deleted: bool = False,
+    exclude_scam: bool = False, exclude_blocked: bool = False,
+    username_only: bool = False, photo_only: bool = False,
+    premium_only: bool = False, active_days: int = 0,
 ) -> dict:
     """Parse accessible message history with optional date/keyword filters and comments."""
     from datetime import datetime, timedelta, timezone
@@ -443,12 +527,21 @@ async def parse_chat_history(
                 raise ValueError("Укажите канал или группу, историю которой аккаунт имеет право просматривать.")
             posts = []
             scanned = 0
+            blocked_ids = await _blocked_user_ids(client) if exclude_blocked else set()
             async for message in client.iter_messages(entity, limit=limit):
                 if message_delay_seconds:
                     await asyncio.sleep(message_delay_seconds)
                 if not message or getattr(message, "action", None):
                     continue
                 scanned += 1
+                if not await _sender_passes_parser_filters(
+                    message, client, exclude_bots=exclude_bots,
+                    exclude_deleted=exclude_deleted, exclude_scam=exclude_scam,
+                    exclude_blocked=exclude_blocked, username_only=username_only,
+                    photo_only=photo_only, premium_only=premium_only,
+                    active_days=active_days, blocked_ids=blocked_ids,
+                ):
+                    continue
                 message_date = message.date
                 if message_date and message_date.tzinfo is None:
                     message_date = message_date.replace(tzinfo=timezone.utc)
@@ -503,8 +596,14 @@ async def parse_chat_history(
                 "username": getattr(entity, "username", None),
                 "posts": posts,
                 "scanned": scanned,
-                "filters": {"days": days, "keywords": terms, "comments": include_comments,
-                            "message_delay_seconds": message_delay_seconds},
+                "filters": {
+                    "days": days, "keywords": terms, "comments": include_comments,
+                    "message_delay_seconds": message_delay_seconds,
+                    "exclude_bots": exclude_bots, "exclude_deleted": exclude_deleted,
+                    "exclude_scam": exclude_scam, "exclude_blocked": exclude_blocked,
+                    "username_only": username_only, "photo_only": photo_only,
+                    "premium_only": premium_only, "active_days": active_days,
+                },
             }
 
 
@@ -514,6 +613,10 @@ async def parse_account_history(
     keywords: list[str] | None = None, include_comments: bool = False,
     comment_limit: int = 20, message_delay_seconds: int = 0,
     chat_delay_seconds: int = 0, max_chats: int = 500,
+    exclude_bots: bool = False, exclude_deleted: bool = False,
+    exclude_scam: bool = False, exclude_blocked: bool = False,
+    username_only: bool = False, photo_only: bool = False,
+    premium_only: bool = False, active_days: int = 0,
 ) -> dict:
     """Parse visible history across this account's own dialogs, isolating each chat."""
     max_chats = max(1, min(int(max_chats), 500))
@@ -532,6 +635,10 @@ async def parse_account_history(
                 keywords=keywords, include_comments=include_comments,
                 comment_limit=comment_limit,
                 message_delay_seconds=message_delay_seconds,
+                exclude_bots=exclude_bots, exclude_deleted=exclude_deleted,
+                exclude_scam=exclude_scam, exclude_blocked=exclude_blocked,
+                username_only=username_only, photo_only=photo_only,
+                premium_only=premium_only, active_days=active_days,
             )
             results.append(parsed)
         except FloodWaitError:
@@ -561,6 +668,103 @@ async def parse_account_history(
             "chat_delay_seconds": chat_delay_seconds,
         },
     }
+
+
+async def parse_chat_comments(
+    account_id: int, channel: str, *, post_limit: int = 100,
+    comment_limit: int = 100, days: int = 0,
+    keywords: list[str] | None = None, comment_delay_seconds: int = 0,
+    exclude_bots: bool = False, exclude_deleted: bool = False,
+    exclude_scam: bool = False, exclude_blocked: bool = False,
+    username_only: bool = False, photo_only: bool = False,
+    premium_only: bool = False, active_days: int = 0,
+) -> dict:
+    """Export accessible public discussion comments with bounded filters and delays."""
+    from datetime import datetime, timedelta, timezone
+
+    post_limit = max(1, min(int(post_limit), 500))
+    comment_limit = max(1, min(int(comment_limit), 500))
+    days = max(0, min(int(days), 365))
+    comment_delay_seconds = max(0, min(int(comment_delay_seconds), 9999))
+    terms = [str(term).strip().casefold() for term in (keywords or []) if str(term).strip()]
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days) if days else None
+
+    async with _account_lock(account_id):
+        async with isolated_account_client(account_id) as (_account, client):
+            entity = await client.get_entity(channel.strip())
+            if not (
+                getattr(entity, "broadcast", False)
+                or getattr(entity, "megagroup", False)
+                or entity.__class__.__name__ == "Chat"
+            ):
+                raise ValueError("Укажите канал или группу, комментарии которой доступны аккаунту.")
+
+            blocked_ids = await _blocked_user_ids(client) if exclude_blocked else set()
+            comments = []
+            scanned_posts = 0
+            scanned_comments = 0
+            async for post in client.iter_messages(entity, limit=post_limit):
+                if not post or getattr(post, "action", None):
+                    continue
+                post_date = post.date
+                if post_date and post_date.tzinfo is None:
+                    post_date = post_date.replace(tzinfo=timezone.utc)
+                if cutoff and (not post_date or post_date < cutoff):
+                    break
+                scanned_posts += 1
+                reply_count = int(getattr(getattr(post, "replies", None), "replies", 0) or 0)
+                if not reply_count:
+                    continue
+                async for comment in client.iter_messages(
+                    entity, reply_to=int(post.id), limit=comment_limit,
+                ):
+                    if not comment or getattr(comment, "action", None):
+                        continue
+                    scanned_comments += 1
+                    if comment_delay_seconds:
+                        await asyncio.sleep(comment_delay_seconds)
+                    comment_date = comment.date
+                    if comment_date and comment_date.tzinfo is None:
+                        comment_date = comment_date.replace(tzinfo=timezone.utc)
+                    if cutoff and (not comment_date or comment_date < cutoff):
+                        continue
+                    body = (comment.message or "").strip()
+                    if terms and not any(term in body.casefold() for term in terms):
+                        continue
+                    if not await _sender_passes_parser_filters(
+                        comment, client, exclude_bots=exclude_bots,
+                        exclude_deleted=exclude_deleted, exclude_scam=exclude_scam,
+                        exclude_blocked=exclude_blocked, username_only=username_only,
+                        photo_only=photo_only, premium_only=premium_only,
+                        active_days=active_days, blocked_ids=blocked_ids,
+                    ):
+                        continue
+                    comments.append({
+                        "post_id": int(post.id),
+                        "post_date": post.date.isoformat() if post.date else "",
+                        "comment_id": int(comment.id),
+                        "date": comment.date.isoformat() if comment.date else "",
+                        "sender_id": int(comment.sender_id or 0),
+                        "text": body[:3000],
+                    })
+            return {
+                "channel_id": int(entity.id),
+                "title": str(getattr(entity, "title", "") or getattr(entity, "username", "") or channel),
+                "username": getattr(entity, "username", None),
+                "scanned_posts": scanned_posts,
+                "scanned_comments": scanned_comments,
+                "visible_count": len(comments),
+                "comments": comments,
+                "filters": {
+                    "post_limit": post_limit, "comment_limit": comment_limit,
+                    "days": days, "keywords": terms,
+                    "comment_delay_seconds": comment_delay_seconds,
+                    "exclude_bots": exclude_bots, "exclude_deleted": exclude_deleted,
+                    "exclude_scam": exclude_scam, "exclude_blocked": exclude_blocked,
+                    "username_only": username_only, "photo_only": photo_only,
+                    "premium_only": premium_only, "active_days": active_days,
+                },
+            }
 
 
 async def parse_chat_participants(
