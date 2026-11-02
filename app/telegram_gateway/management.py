@@ -506,6 +506,7 @@ async def parse_chat_history(
     exclude_scam: bool = False, exclude_blocked: bool = False,
     username_only: bool = False, photo_only: bool = False,
     premium_only: bool = False, active_days: int = 0,
+    blocked_ids: set[int] | None = None,
 ) -> dict:
     """Parse accessible message history with optional date/keyword filters and comments."""
     from datetime import datetime, timedelta, timezone
@@ -527,7 +528,10 @@ async def parse_chat_history(
                 raise ValueError("Укажите канал или группу, историю которой аккаунт имеет право просматривать.")
             posts = []
             scanned = 0
-            blocked_ids = await _blocked_user_ids(client) if exclude_blocked else set()
+            blocked_ids = (
+                set(blocked_ids) if blocked_ids is not None
+                else (await _blocked_user_ids(client) if exclude_blocked else set())
+            )
             async for message in client.iter_messages(entity, limit=limit):
                 if message_delay_seconds:
                     await asyncio.sleep(message_delay_seconds)
@@ -623,6 +627,11 @@ async def parse_account_history(
     chat_delay_seconds = max(0, min(int(chat_delay_seconds), 9999))
     dialogs = await list_account_dialogs(account_id, limit=500, kind="all")
     selected = dialogs[:max_chats]
+    shared_blocked_ids = None
+    if exclude_blocked:
+        async with _account_lock(account_id):
+            async with isolated_account_client(account_id) as (_account, client):
+                shared_blocked_ids = await _blocked_user_ids(client)
     results = []
     errors = []
     for index, dialog in enumerate(selected):
@@ -639,6 +648,7 @@ async def parse_account_history(
                 exclude_scam=exclude_scam, exclude_blocked=exclude_blocked,
                 username_only=username_only, photo_only=photo_only,
                 premium_only=premium_only, active_days=active_days,
+                blocked_ids=shared_blocked_ids,
             )
             results.append(parsed)
         except FloodWaitError:
