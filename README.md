@@ -289,3 +289,79 @@ Worker теперь перечитывает список включённых �
 Операции выполняются через временные SQLite-снимки сессий и PostgreSQL advisory locks. Сетевые сбои с неизвестным результатом доставки не приводят к автоматической повторной отправке. Модуль не создаёт искусственные просмотры или синтетическую статистику.
 
 Проверки CI включают Ruff и Pytest. Перед рабочим использованием требуется smoke-тест на отдельном Telegram-аккаунте: CI не заменяет проверку реального поведения Telegram API.
+
+
+## Mini App — панель управления Telegram
+
+Ветка `feature/telegram-miniapp-control-center` добавляет мобильную панель управления, открываемую внутри Telegram по адресу `/miniapp`.
+
+### Подключение
+
+1. Разместите API за публичным HTTPS-доменом.
+2. Настройте reverse proxy так, чтобы запросы `/miniapp` и `/v1/miniapp/*` направлялись в сервис `api:8080`. Оба пути должны обслуживаться одним origin.
+3. Укажите полный HTTPS-адрес страницы в `MINI_APP_URL`, например `https://bot.example.com/miniapp`.
+4. Пересоздайте сервис `bot`, чтобы он установил Menu Button через Telegram Bot API.
+5. Откройте бота и нажмите «Открыть панель».
+
+### Возможности панели
+
+- Список аккаунтов, пауза, включение/выключение и привязка ИИ-агента и персоны.
+- Управление ИИ-агентами и их индивидуальными вероятностями/задержками; пустое значение использует глобальную настройку.
+- Создание персон и примеров с подтверждением права на использование данных.
+- Поиск групп и каналов с проверкой результатов через Telegram. Добавление результата создаёт выключенную привязку и не вступает в чат/канал.
+- Глобальные и индивидуальные триггеры.
+- Глобальные вероятности, журнал аудита и получатели логов с проверкой доставки.
+- Настройки лимитов отдельно для инвайтинга, рассылок, подписки и реакций.
+- Персональные настройки парсера на аккаунт: участники, сообщения и комментарии; запуск парсинга и выгрузка результата в CSV.
+- Очередь кампаний и повторяющихся расписаний: просмотр, пауза, возобновление, отмена, повтор неудачных доставок и журнал получателей.
+- Очередь запланированных реакций с отменой и ручным разбором неопределённого результата.
+
+### Безопасность Mini App
+
+- Сервер проверяет подпись Telegram `initData` по HMAC-SHA-256 и сверяет Telegram ID с `ADMIN_IDS`.
+- Секрет API, токен бота, Telegram session-файлы и ключи ИИ-провайдеров не передаются в браузер.
+- Mini App нельзя публиковать без HTTPS. Не открывайте API-порт напрямую в интернет; используйте reverse proxy и сетевые ограничения.
+- Если `MINI_APP_URL` не задан, кнопка Mini App в меню бота не устанавливается.
+
+### Границы текущей версии Mini App
+
+Панель использует существующие операции и данные бота, но не является полной копией GramGPT и не заменяет все сценарии inline-меню. Создание новых кампаний и расписаний, импорт/экспорт аккаунтов и контактов, редактирование профилей и часть специализированных модулей пока остаются в существующем интерфейсе. Парсер Mini App выполняется синхронно в API-запросе; длительные задачи с большими задержками удобнее запускать из штатной очереди бота. Перед production необходимо проверить reverse proxy и реальный запуск Mini App внутри Telegram.
+
+
+
+
+
+## Modular workspace refresh — 2026-11-02
+
+The Mini App is being redesigned as a product workspace rather than a mirror of the old Telegram "Tools" menu.
+
+### Primary modules
+
+- **AI Conversations** — a single account-level control surface for the existing private/group reply behavior, with agent, persona, manual/automatic mode and the existing probability controls. The same setting is not duplicated in separate cards.
+- **AI Channel Assistant** — independent per-channel processing, publication mode, reply probability, cooldown and instructions. New channel bindings remain disabled until the operator enables them.
+- **Content Studio** — generate, edit, save, archive and copy AI-assisted channel-post drafts. Generation never publishes automatically.
+- **Community Research** — Telegram-verified group/channel discovery and saved community lists. Search results do not trigger joins or subscriptions.
+- **Smart Triggers** — global and account-specific rules using the existing priority and cooldown logic.
+- **Account Health** — account/session state and operator controls, without synthetic activity or restriction evasion.
+- **Analytics & Events** — channel analysis history and audit events based on stored application records.
+- **AI Profiles** — existing agents, personas and consent-confirmed examples remain first-class workspace features.
+
+### Retired from the product navigation
+
+The old invite, contact-harvesting, bulk DM/chat mailing, subscribe/unsubscribe and mass-reaction modules are removed from the new workspace. Legacy database rows and worker code are retained temporarily for safe rollback and to avoid deleting historical data during the interface migration; the old Tools callbacks redirect to the new workspace. The old parser UI and task/reaction queues are no longer part of the Mini App navigation.
+
+The new product deliberately does not implement fake views/reactions, coordinated multi-account engagement, behavior simulation to evade Telegram limits, unsolicited bulk messaging, GGR scoring or an account marketplace. Where a previous feature overlaps with an existing capability, the product uses the existing account/AI/channel implementation instead of introducing a second competing settings surface.
+
+### Content Studio storage
+
+The `content_drafts` table is created by the existing `Base.metadata.create_all` migration step. Drafts reference the selected account, agent, persona and optional channel binding; deleting a draft does not send or publish anything. No existing account, session, agent, persona, example, trigger or channel-binding rows are removed.
+
+
+### Retirement safety switch
+
+The legacy invite/broadcast/subscription/reaction dispatcher is disabled by default in the refreshed product through `LEGACY_AUTOMATION_ENABLED=false`. Historical task, schedule and consent rows are retained; they are not deleted. Setting the variable to `true` is an explicit rollback switch and should only be used if the operator intentionally restores the legacy tools.
+
+
+### Unified Inbox
+
+The refreshed Mini App includes a read-only dialog list and message history for a selected account, contextual AI reply drafts, and operator-approved replies. The API never starts a new conversation: a reply must reference the latest inbound message; group replies additionally require that the group is saved and enabled. Broadcast channels are read-only in this inbox. FloodWait is returned to the operator and is never bypassed or retried automatically.
