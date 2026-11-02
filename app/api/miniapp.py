@@ -10,7 +10,7 @@ from urllib.parse import parse_qsl
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.settings import get_settings
@@ -34,7 +34,7 @@ def _telegram_user_id(init_data: str | None) -> int:
         user = json.loads(pairs.get("user", "{}"))
     except (ValueError, TypeError, json.JSONDecodeError):
         raise HTTPException(status_code=401, detail="Некорректные данные Telegram.") from None
-    if not received_hash or abs(time.time() - auth_date) > 86400:
+    if not received_hash or auth_date > time.time() + 60 or time.time() - auth_date > 86400:
         raise HTTPException(status_code=401, detail="Срок авторизации истёк. Откройте Mini App заново.")
     check_string = "\n".join(f"{key}={value}" for key, value in sorted(pairs.items()))
     secret = hmac.new(b"WebAppData", cfg.bot_token.encode(), hashlib.sha256).digest()
@@ -173,14 +173,14 @@ async def overview(_: int = Depends(require_admin), db: AsyncSession = Depends(g
     accounts = list((await db.scalars(select(Account).order_by(Account.id))).all())
     agents = list((await db.scalars(select(AIAgent).order_by(AIAgent.id))).all())
     personas = list((await db.scalars(select(Persona).order_by(Persona.id))).all())
-    examples_count = await db.scalar(select(Example.id))
+    examples_count = await db.scalar(select(func.count()).select_from(Example))
     triggers = list((await db.scalars(select(TriggerRule).order_by(TriggerRule.id))).all())
     settings = await _read_settings(db)
     return {
         "accounts": len(accounts), "active_accounts": sum(a.enabled and not a.manual_pause for a in accounts),
         "paused_accounts": sum(a.manual_pause for a in accounts),
         "agents": len(agents), "personas": len(personas),
-        "examples": int(examples_count is not None),
+        "examples": int(examples_count or 0),
         "triggers": len(triggers), "enabled_triggers": sum(t.enabled for t in triggers),
         "global_ai_enabled": settings.get("ai_global_enabled", False),
     }
