@@ -1712,10 +1712,11 @@ async def management_input_received(m: Message, state: FSMContext):
                 if enabled else f"Автоответчик выключен для {len(account_ids)} аккаунтов."
             )
         elif action and action.startswith("policy-field-"):
-            _, module, field = action.split("-", 3)
-            if field not in POLICY_FIELDS:
+            _, _, module, field = action.split("-", 3)
+            fields = policy_fields_for(module)
+            if field not in fields:
                 raise ValueError("Неизвестный параметр настроек.")
-            _label, unit, minimum, maximum = POLICY_FIELDS[field]
+            _label, unit, minimum, maximum = fields[field]
             if not raw.isdigit() or not minimum <= int(raw) <= maximum:
                 raise ValueError(f"Введите целое число от {minimum} до {maximum}.")
             await telegram_automation.set_module_policy(module, **{field: int(raw)})
