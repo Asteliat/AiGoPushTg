@@ -34,7 +34,7 @@ async def init_db() -> None:
             "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS learning_completed_at TIMESTAMPTZ NULL",
             "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS learning_limit INTEGER NOT NULL DEFAULT 500",
             "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS learning_prompt TEXT NOT NULL DEFAULT ''",
-            "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS ai_identity_disclosed BOOLEAN NOT NULL DEFAULT FALSE",
+            "ALTER TABLE accounts DROP COLUMN IF EXISTS ai_identity_disclosed",
             "ALTER TABLE accounts DROP COLUMN IF EXISTS mention_reply_probability_override",
             "ALTER TABLE accounts DROP COLUMN IF EXISTS dm_reply_probability_override",
             "ALTER TABLE accounts DROP COLUMN IF EXISTS proactive_reply_probability_override",
