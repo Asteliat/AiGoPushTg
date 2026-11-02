@@ -1295,8 +1295,8 @@ async def cancel_scheduled_reaction(reaction_id: int) -> None:
         row = await db.get(ScheduledReaction, reaction_id)
         if not row:
             raise ValueError("Запланированная реакция не найдена.")
-        if row.status != "queued":
-            raise ValueError("Можно отменить только ожидающую реакцию.")
+        if row.status not in {"queued", "paused"}:
+            raise ValueError("Можно отменить только ожидающую или приостановленную реакцию.")
         row.status = "cancelled"
         row.updated_at = utcnow()
         await db.commit()
