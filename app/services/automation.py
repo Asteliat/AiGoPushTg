@@ -465,26 +465,10 @@ async def set_account_limits(
     account_id: int, *, interval_seconds: int, daily_limit: int,
     quiet_start_utc: str | None = None, quiet_end_utc: str | None = None,
 ) -> None:
-    if not 1 <= int(interval_seconds) <= 3600:
-        raise ValueError("Интервал должен быть от 1 до 3600 секунд.")
-    if not 1 <= int(daily_limit) <= 500:
-        raise ValueError("Дневной лимит должен быть от 1 до 500 сообщений.")
-    quiet_start, quiet_end = _normalize_quiet_hours(quiet_start_utc, quiet_end_utc)
-    async with SessionFactory() as db:
-        if not await db.get(Account, account_id):
-            raise ValueError("Аккаунт не найден.")
-        for key, value in (
-            (f"automation.{account_id}.interval_seconds", str(int(interval_seconds))),
-            (f"automation.{account_id}.daily_limit", str(int(daily_limit))),
-            (f"automation.{account_id}.quiet_start_utc", quiet_start),
-            (f"automation.{account_id}.quiet_end_utc", quiet_end),
-        ):
-            row = await db.get(AppSetting, key)
-            if row:
-                row.value = value
-            else:
-                db.add(AppSetting(key=key, value=value))
-        await db.commit()
+    """Deprecated compatibility shim: individual operation limits are no longer supported."""
+    raise ValueError(
+        "Индивидуальные лимиты отключены. Измените глобальные настройки соответствующего модуля."
+    )
 
 
 async def _sleep_with_task_heartbeat(task_id: int, seconds: int) -> None:
