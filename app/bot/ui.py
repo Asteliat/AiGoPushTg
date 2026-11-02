@@ -4348,7 +4348,7 @@ async def acc_view(c, account_id: int | None = None):
         [("⬅️ К аккаунтам","acc:list"),("🏠 Главное меню","nav:home")]]
     await edit(c,txt,kb(buttons))
 
-@router.callback_query(F.data.startswith("acc:sendmessage:"))
+@router.callback_query(F.data.regexp(r"^acc:sendmessage:[0-9]+$"))
 async def acc_send_message_start(c: CallbackQuery, state: FSMContext):
     if not await check_cb(c):
         return
@@ -4432,6 +4432,7 @@ async def manual_message_text_received(m: Message, state: FSMContext):
             [("❌ Отмена", "nav:cancel")],
         ]),
     )
+    await state.set_state(Flow.manual_message_confirm)
 
 
 @router.callback_query(F.data.startswith("acc:sendmessage:confirm:"))
