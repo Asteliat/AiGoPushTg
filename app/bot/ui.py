@@ -226,6 +226,7 @@ def cancel_return_for(callback_data: str) -> str:
     if callback_data.startswith("channel:edit:") and len(parts) >= 5:
         return f"channel:{'gsettings' if parts[2] == 'g' else 'csettings'}:{parts[3]}"
     if callback_data.startswith("acc:sendmessage:"): return f"acc:view:{parts[-1]}"
+    if callback_data.startswith("acc:rt:input:"): return f"acc:runtime:menu:{parts[3]}"
     if callback_data.startswith("acc:context:edit:"): return f"acc:learnprompt:{parts[3]}"
     if callback_data.startswith("acc:personaoverride:"): return f"acc:view:{parts[2]}"
     if callback_data.startswith("trigger:account:"): return callback_data
@@ -266,6 +267,7 @@ async def restore_previous_screen(c, callback_data, state: FSMContext | None = N
     elif callback_data == "trigger:global": await trigger_screen(c, "global")
     elif callback_data.startswith("trigger:account:"): await trigger_screen(c, "account", int(parts[2]))
     elif callback_data.startswith("acc:view:"): await acc_view(c, int(parts[2]))
+    elif callback_data.startswith("acc:runtime:menu:"): await account_runtime_menu(c, int(parts[3]))
     elif callback_data == "acc:list": await acc_list(c)
     elif callback_data.startswith("acc:learnprompt:"): await acc_learning_prompt(c, int(parts[2]))
     elif callback_data.startswith("acc:learn:"): await acc_learning_menu(c, int(parts[2]))
@@ -3627,6 +3629,23 @@ async def runtime_value_save(m: Message, state: FSMContext):
         return
     await delete_msg(m)
     shown = format_duration(value) if unit == "сек." else f"{value}{unit}"
+    if runtime_scope == "account":
+        aid = int(data["runtime_aid"])
+        async with SessionFactory() as db:
+            account = await db.get(Account, aid)
+            if not account:
+                await finish_prompt(m, state, "Аккаунт не найден.")
+                return
+            setattr(account, attr, value)
+            await db.commit()
+        await finish_prompt(
+            m, state, f"✅ {label}: {shown} · своя настройка аккаунта",
+            kb([[
+                ("⬅️ К вероятностям аккаунта", f"acc:runtime:menu:{aid}"),
+                ("👤 К аккаунту", f"acc:view:{aid}"),
+            ]]),
+        )
+        return
     if runtime_scope in {"agent", "agent_channel"}:
         aid = int(data["runtime_aid"])
         async with SessionFactory() as db:
@@ -3712,6 +3731,96 @@ async def agent_runtime_menu(c: CallbackQuery, aid: int):
             buttons.append([("↩️ Наследовать настройки аккаунта", f"agent:channelrt:inherit:{aid}:{key}")])
     buttons += [[("⬅️ К агенту", f"agent:view:{aid}"), ("🏠 Главное меню", "nav:home")]]
     await edit(c, "\n".join(lines), kb(buttons))
+
+
+async def account_runtime_menu(c: CallbackQuery, aid: int):
+    async with SessionFactory() as db:
+        account = await db.get(Account, aid)
+        global_values = await read_global_runtime(db)
+        agent = await db.get(AIAgent, account.ai_agent_id) if account and account.ai_agent_id else None
+    if not account:
+        await c.answer("Аккаунт не найден.", show_alert=True)
+        return
+    buttons = []
+    lines = [
+        f"🎚 Вероятности и паузы · {account.display_name}",
+        "",
+        "Своя — значение задано для этого аккаунта.",
+        "Наследует из глобальных — используется общее значение, если агент не задаёт своё.",
+    ]
+    for key, (label, unit, _minimum, _maximum) in RUNTIME_KEYS.items():
+        account_override = getattr(account, key + "_override")
+        agent_override = getattr(agent, key + "_override") if agent else None
+        effective = (
+            account_override if account_override is not None
+            else agent_override if agent_override is not None
+            else global_values[key]
+        )
+        shown_value = format_duration(effective) if key.endswith("_seconds") else f"{effective}{unit}"
+        if account_override is not None:
+            source = f"Своя · {shown_value}"
+        elif agent_override is not None:
+            source = f"Из ИИ-агента · {shown_value}"
+        else:
+            source = f"Наследует глобальную · {shown_value}"
+        lines.append(f"{label}: {source}")
+        buttons.append([(f"✏️ {label}: {source}", f"acc:rt:input:{aid}:{key}")])
+        if account_override is not None:
+            buttons.append([("↩️ Наследовать значение агента / глобальное", f"acc:rt:inherit:{aid}:{key}")])
+    buttons += [[("⬅️ К аккаунту", f"acc:view:{aid}"), ("🏠 Главное меню", "nav:home")]]
+    await edit(c, "\\n".join(lines), kb(buttons))
+
+
+@router.callback_query(F.data.startswith("acc:runtime:menu:"))
+async def account_runtime_menu_cb(c: CallbackQuery):
+    if not await check_cb(c):
+        return
+    await account_runtime_menu(c, int(c.data.split(":")[3]))
+
+
+@router.callback_query(F.data.startswith("acc:rt:input:"))
+async def account_runtime_input(c: CallbackQuery, state: FSMContext):
+    if not await check_cb(c):
+        return
+    parts = c.data.split(":")
+    aid, key = int(parts[3]), parts[4]
+    if key not in RUNTIME_KEYS:
+        await c.answer("Неизвестная настройка.", show_alert=True)
+        return
+    label, unit, minimum, maximum = RUNTIME_KEYS[key]
+    await state.clear()
+    await state.update_data(
+        runtime_key=key, runtime_scope="account", runtime_aid=aid,
+        ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id,
+        return_callback=f"acc:runtime:menu:{aid}",
+    )
+    await state.set_state(Flow.runtime_value)
+    hint = (
+        f"Введите число секунд. Максимум: {maximum} сек. ({format_duration(maximum)})."
+        if unit == "сек."
+        else f"Введите вероятность от {minimum}% до {maximum}%."
+    )
+    await edit(c, f"{label} · аккаунт #{aid}\\n{hint}", CANCEL)
+
+
+@router.callback_query(F.data.startswith("acc:rt:inherit:"))
+async def account_runtime_inherit(c: CallbackQuery):
+    if not await check_cb(c):
+        return
+    parts = c.data.split(":")
+    if len(parts) != 5 or parts[4] not in RUNTIME_KEYS:
+        await c.answer("Неизвестная настройка.", show_alert=True)
+        return
+    aid, key = int(parts[3]), parts[4]
+    async with SessionFactory() as db:
+        account = await db.get(Account, aid)
+        if not account:
+            await c.answer("Аккаунт не найден.", show_alert=True)
+            return
+        setattr(account, key + "_override", None)
+        await db.commit()
+    await account_runtime_menu(c, aid)
+
 
 @router.callback_query(F.data.startswith("agent:runtime:menu:"))
 async def agent_runtime_menu_cb(c: CallbackQuery):
@@ -4340,6 +4449,7 @@ async def acc_view(c, account_id: int | None = None):
         [("🧠 ИИ Агент",f"acc:agents:{aid}"),("🎭 Персона",f"acc:personas:{aid}")],
         [("⚙️ Прокси",f"acc:proxysettings:{aid}"),("✏️ Правила",f"acc:personaoverride:{aid}")],
         [("💡 Примеры",f"example:account:{aid}"),("💬 Чаты",f"chat:account:{aid}")],
+        [("🎚 Вероятности ответов",f"acc:runtime:menu:{aid}")],
         [("✉️ Отправить сообщение",f"acc:sendmessage:{aid}")],
         [("💬📣Встпуление",f"chat:joinlink:{aid}"),
          ((("⏳ Завершение" if a.learning_status == "stopping" else "⏹ Остановить") if learning else "🧠 Автообучение"),(f"learn:stop:{aid}" if learning else f"acc:learn:{aid}"))],
