@@ -478,6 +478,11 @@ async def main():
                     probability_key = "proactive_reply_probability"
                     proactive = True
                 else:
+                    logging.info(
+                        "Proactive group replies are disabled until AI-management disclosure is enabled: "
+                        "account=%s chat=%s",
+                        aid, event.chat_id,
+                    )
                     return
             elif event.is_private:
                 probability_key = "dm_reply_probability"
@@ -487,7 +492,6 @@ async def main():
             setting = await db.get(AppSetting, probability_key)
             global_probability = int(setting.value) if setting and setting.value.isdigit() else (0 if probability_key == "proactive_reply_probability" else 100)
             probability = resolve_runtime_override(
-                getattr(current, probability_key + "_override"),
                 getattr(agent, probability_key + "_override"),
                 global_probability,
             )
