@@ -289,8 +289,8 @@ async def publish_story_photo(account_id: int, photo_path: str, *, caption: str 
         raise ValueError("Файл истории не найден.")
     if os.path.getsize(photo_path) > 30 * 1024 * 1024:
         raise ValueError("Фото для истории не должно превышать 30 МБ.")
-    if len(caption) > 200:
-        raise ValueError("Подпись к истории не должна превышать 200 символов.")
+    if len(caption) > 2048:
+        raise ValueError("Подпись к истории не должна превышать 2048 символов.")
 
     from PIL import Image
     try:
@@ -316,7 +316,7 @@ async def publish_story_photo(account_id: int, photo_path: str, *, caption: str 
         async with isolated_account_client(account_id) as (_account, client):
             peer = await client.get_input_entity("me")
             availability = await client(CanSendStoryRequest(peer=peer))
-            if int(getattr(availability, "count", 0) or 0) < 1:
+            if int(getattr(availability, "count_remains", getattr(availability, "count", 0)) or 0) < 1:
                 raise RuntimeError("Telegram не разрешает добавить историю: нет доступных слотов.")
             uploaded = await client.upload_file(photo_path)
             await client(SendStoryRequest(
