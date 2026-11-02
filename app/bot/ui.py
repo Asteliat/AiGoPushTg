@@ -342,6 +342,7 @@ MODULE_ACTIONS = {
         ("📝 Парсер по сообщениям", "parsechannel"),
         ("💬 Парсер по комментариям", "parsecomments"),
         ("ℹ️ Публичная информация о чате", "chatinfo"),
+        ("⚙️ Настройки парсера", "parser_settings"),
     ]),
     "contacts": ("📇 Контакты", [
         ("📇 Просмотреть контакты", "contacts"),
@@ -725,6 +726,209 @@ async def tool_policy_edit(c: CallbackQuery, state: FSMContext):
         [("🏠 Главное меню", "nav:home")],
     ])
     await edit(c, f"⚙️ Настройки модуля · {title}\n\nВыберите параметр, который хотите изменить. Каждое значение настраивается отдельно кнопкой.", kb(rows))
+
+
+PARSER_SETTING_DEFAULTS = {
+    "participants": {
+        "limit": 200, "exclude_bots": False, "exclude_deleted": False,
+        "exclude_scam": False, "exclude_blocked": False, "username_only": False,
+        "photo_only": False, "premium_only": False, "active_days": 0,
+    },
+    "messages": {
+        "limit": 100, "days": 0, "keywords": "",
+        "message_delay_seconds": 0, "chat_delay_seconds": 0,
+        "exclude_bots": False, "exclude_deleted": False,
+        "exclude_scam": False, "exclude_blocked": False, "username_only": False,
+        "photo_only": False, "premium_only": False, "active_days": 0,
+    },
+    "comments": {
+        "post_limit": 100, "comment_limit": 100, "days": 0,
+        "keywords": "", "comment_delay_seconds": 0,
+        "exclude_bots": False, "exclude_deleted": False,
+        "exclude_scam": False, "exclude_blocked": False, "username_only": False,
+        "photo_only": False, "premium_only": False, "active_days": 0,
+    },
+}
+
+PARSER_FILTER_LABELS = {
+    "exclude_bots": "Пропустить ботов",
+    "exclude_deleted": "Пропустить удалённых",
+    "exclude_scam": "Пропустить scam",
+    "exclude_blocked": "Пропустить заблокированных этим аккаунтом",
+    "username_only": "Только с username",
+    "photo_only": "Только с фото",
+    "premium_only": "Только с Premium",
+}
+
+PARSER_NUMERIC_LABELS = {
+    "participants": {"limit": "Лимит участников"},
+    "messages": {
+        "limit": "Сообщений на чат", "days": "Искать за последние дни (0 — без ограничения)",
+        "message_delay_seconds": "Задержка между сообщениями, сек.",
+        "chat_delay_seconds": "Задержка между чатами, сек.",
+    },
+    "comments": {
+        "post_limit": "Публикаций для проверки",
+        "comment_limit": "Комментариев на публикацию",
+        "days": "Искать за последние дни (0 — без ограничения)",
+        "comment_delay_seconds": "Задержка между комментариями, сек.",
+    },
+}
+
+
+async def parser_settings_for(account_id: int, kind: str) -> dict:
+    defaults = PARSER_SETTING_DEFAULTS[kind]
+    prefix = f"parser.settings.{int(account_id)}.{kind}."
+    async with SessionFactory() as db:
+        rows = list((await db.scalars(
+            select(AppSetting).where(AppSetting.key.startswith(prefix))
+        )).all())
+    values = {row.key[len(prefix):]: row.value for row in rows}
+    result = dict(defaults)
+    for key, default in defaults.items():
+        raw = values.get(key)
+        if raw is None:
+            continue
+        if isinstance(default, bool):
+            result[key] = raw.lower() in {"1", "true", "yes", "on", "да"}
+        elif isinstance(default, int):
+            try:
+                result[key] = int(raw)
+            except (TypeError, ValueError):
+                result[key] = default
+        else:
+            result[key] = raw
+    return result
+
+
+async def parser_settings_root(c: CallbackQuery, account_id: int) -> None:
+    await edit(c, f"⚙️ Настройки парсера · аккаунт #{account_id}\n\nУ каждого подраздела свои независимые параметры и фильтры.", kb([
+        [("👥 Парсер участников", f"tool:parser:settings:{account_id}:participants")],
+        [("📝 Парсер по сообщениям", f"tool:parser:settings:{account_id}:messages")],
+        [("💬 Парсер по комментариям", f"tool:parser:settings:{account_id}:comments")],
+        [("↩️ К аккаунту парсера", f"tool:module:account:parser:{account_id}")],
+    ]))
+
+
+async def parser_settings_screen(c: CallbackQuery, account_id: int, kind: str) -> None:
+    if kind not in PARSER_SETTING_DEFAULTS:
+        await c.answer("Неизвестный раздел парсера.", show_alert=True)
+        return
+    values = await parser_settings_for(account_id, kind)
+    titles = {
+        "participants": "👥 Парсер участников",
+        "messages": "📝 Парсер по сообщениям",
+        "comments": "💬 Парсер по комментариям",
+    }
+    lines = [f"⚙️ {titles[kind]} · аккаунт #{account_id}", "", "Нажмите на параметр, чтобы изменить его."]
+    rows = []
+    for field, label in PARSER_NUMERIC_LABELS[kind].items():
+        rows.append([(f"🔢 {label}: {values[field]}", f"tool:parser:input:{account_id}:{kind}:{field}")])
+    if kind != "participants":
+        lines.append(f"Ключевые слова: {values['keywords'] or 'не заданы (без фильтра)'}")
+        rows.append([("🔤 Ключевые слова", f"tool:parser:input:{account_id}:{kind}:keywords")])
+    for field, label in PARSER_FILTER_LABELS.items():
+        enabled = bool(values[field])
+        rows.append([(( "🟢 " if enabled else "⚪ ") + label, f"tool:parser:toggle:{account_id}:{kind}:{field}")])
+    active_days = int(values["active_days"])
+    rows.append([(f"🕒 Активность: {'любая' if not active_days else f'за {active_days} дней'}", f"tool:parser:active:{account_id}:{kind}:0")])
+    rows.append([
+        (("☑️ " if active_days == days else "") + ("Без ограничения" if days == 0 else f"За {days} дня"), f"tool:parser:active:{account_id}:{kind}:{days}")
+        for days in (0, 3, 7, 30)
+    ])
+    lines.extend([
+        "",
+        "Фильтр активности зависит от видимости статуса пользователя в Telegram. Если статус скрыт, профиль не считается подтверждённо активным.",
+        "Автоматическое определение пола, возраста и города не включено: Telegram не предоставляет достоверных полей для этого, а угадывать такие личные данные по профилям нельзя.",
+    ])
+    rows.extend([
+        [("↩️ К настройкам парсера", f"tool:parser:settings:{account_id}")],
+        [("↩️ К аккаунту парсера", f"tool:module:account:parser:{account_id}")],
+    ])
+    await edit(c, "\n".join(lines), kb(rows))
+
+
+@router.callback_query(F.data.startswith("tool:parser:settings:"))
+async def parser_settings_open(c: CallbackQuery):
+    if not await check_cb(c):
+        return
+    parts = c.data.split(":")
+    account_id = int(parts[3])
+    if len(parts) == 4:
+        await parser_settings_root(c, account_id)
+    else:
+        await parser_settings_screen(c, account_id, parts[4])
+
+
+@router.callback_query(F.data.startswith("tool:parser:toggle:"))
+async def parser_settings_toggle(c: CallbackQuery):
+    if not await check_cb(c):
+        return
+    _, _, _, account_raw, kind, field = c.data.split(":")
+    account_id = int(account_raw)
+    if kind not in PARSER_SETTING_DEFAULTS or field not in PARSER_FILTER_LABELS:
+        await c.answer("Неизвестный фильтр.", show_alert=True)
+        return
+    key = f"parser.settings.{account_id}.{kind}.{field}"
+    async with SessionFactory() as db:
+        row = await db.get(AppSetting, key)
+        current = row.value.lower() in {"1", "true", "yes", "on", "да"} if row else False
+        if row:
+            row.value = "false" if current else "true"
+        else:
+            db.add(AppSetting(key=key, value="true"))
+        await db.commit()
+    await parser_settings_screen(c, account_id, kind)
+
+
+@router.callback_query(F.data.startswith("tool:parser:active:"))
+async def parser_settings_active(c: CallbackQuery):
+    if not await check_cb(c):
+        return
+    _, _, _, account_raw, kind, days_raw = c.data.split(":")
+    account_id, days = int(account_raw), int(days_raw)
+    if kind not in PARSER_SETTING_DEFAULTS or days not in {0, 3, 7, 30}:
+        await c.answer("Неизвестный период активности.", show_alert=True)
+        return
+    key = f"parser.settings.{account_id}.{kind}.active_days"
+    async with SessionFactory() as db:
+        row = await db.get(AppSetting, key)
+        if row:
+            row.value = str(days)
+        else:
+            db.add(AppSetting(key=key, value=str(days)))
+        await db.commit()
+    await parser_settings_screen(c, account_id, kind)
+
+
+@router.callback_query(F.data.startswith("tool:parser:input:"))
+async def parser_settings_input(c: CallbackQuery, state: FSMContext):
+    if not await check_cb(c):
+        return
+    _, _, _, account_raw, kind, field = c.data.split(":")
+    account_id = int(account_raw)
+    if kind not in PARSER_SETTING_DEFAULTS or field not in (
+        set(PARSER_NUMERIC_LABELS[kind]) | ({"keywords"} if kind != "participants" else set())
+    ):
+        await c.answer("Неизвестный параметр.", show_alert=True)
+        return
+    label = PARSER_NUMERIC_LABELS[kind].get(field, "Ключевые слова через запятую")
+    current = await parser_settings_for(account_id, kind)
+    await state.clear()
+    return_callback = f"tool:parser:settings:{account_id}:{kind}"
+    await state.update_data(
+        management_action=f"parser-setting-{kind}-{field}",
+        management_account_id=account_id,
+        management_account_ids=[account_id],
+        module_selection_module="parser",
+        module_return_callback=return_callback,
+        return_callback=return_callback,
+        ui_chat_id=c.message.chat.id,
+        ui_message_id=c.message.message_id,
+    )
+    await state.set_state(Flow.management_input)
+    hint = "Отправьте слова через запятую или точку с запятой. Отправьте - чтобы очистить фильтр." if field == "keywords" else "Введите целое число."
+    await edit(c, f"{label}\n\nТекущее значение: {current[field]}\n{hint}", CANCEL)
 
 
 @router.callback_query(F.data == "tool:groups")
