@@ -173,7 +173,6 @@ async def _cleanup_campaign_upload(account_id: int, payload: dict) -> None:
             active_schedules = await db.scalar(select(func.count()).select_from(
                 AutomationSchedule
             ).where(
-                AutomationSchedule.account_id == account_id,
                 AutomationSchedule.status.in_(["active", "paused"]),
                 AutomationSchedule.payload.contains(str(candidate)),
             ))
@@ -183,7 +182,6 @@ async def _cleanup_campaign_upload(account_id: int, payload: dict) -> None:
                 AutomationTaskRecipient,
                 AutomationTaskRecipient.task_id == AutomationTask.id,
             ).where(
-                AutomationTask.account_id == account_id,
                 AutomationTask.payload.contains(str(candidate)),
                 or_(
                     AutomationTask.status.in_(["queued", "running", "paused", "needs_review"]),
