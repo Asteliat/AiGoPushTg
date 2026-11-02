@@ -653,7 +653,7 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         "parsechats": "Будет сформирован CSV со списком групп и каналов, в которых состоит аккаунт. Отправьте максимум диалогов (1–500), либо оставьте пустым для 200.",
         "joinbatch": "Отправьте от 1 до 20 ссылок или @username, каждый с новой строки. Аккаунт будет вступать последовательно; при FloodWait остановится и покажет ожидание.",
         "leavebatch": "Отправьте от 1 до 20 ссылок или @username, каждый с новой строки. Аккаунт будет выходить последовательно; при FloodWait остановится.",
-        "parsechannel": "Отправьте @username канала и количество публикаций через |. Например: @telegram | 20. Максимум 100 последних сообщений; списки участников не собираются.",
+        "parsechannel": "Формат: @канал | сообщений (1–500) | за сколько дней (0 = без ограничения) | ключевые слова через запятую или - | комментарии да/нет.\nПример: @telegram | 100 | 7 | впн, VPN, випиэн | да. Выгрузка будет в TXT и CSV.",
         "parseparticipants": "Отправьте @username или ссылку на собственную группу и лимит через |. Например: @mygroup | 200. Аккаунт должен быть администратором. Telegram возвращает только видимых участников; максимум 500. Будут выгружены только публичные поля профиля.",
         "join": "Отправьте @username или публичную ссылку t.me/… для вступления.",
         "leave": "Отправьте @username или публичную ссылку t.me/… для выхода.",
@@ -1378,24 +1378,32 @@ async def management_input_received(m: Message, state: FSMContext):
             )
         elif action == "parsechannel":
             parts = [x.strip() for x in raw.split("|")]
-            if len(parts) not in {1, 2}:
-                raise ValueError("Формат: @username | количество.")
-            limit = int(parts[1]) if len(parts) == 2 else 20
-            result = await telegram_management.parse_chat_history(aid, parts[0], limit=limit)
+            if not 1 <= len(parts) <= 5:
+                raise ValueError("Формат: @канал | количество | дни | ключевые слова | комментарии да/нет.")
+            limit = int(parts[1]) if len(parts) > 1 and parts[1] else 20
+            days = int(parts[2]) if len(parts) > 2 and parts[2] else 0
+            keywords = [] if len(parts) < 4 or parts[3] in {"", "-"} else [x.strip() for x in parts[3].split(",") if x.strip()]
+            include_comments = len(parts) > 4 and parts[4].lower() in {"да", "yes", "true", "1", "on"}
+            result = await telegram_management.parse_chat_history(
+                aid, parts[0], limit=limit, days=days, keywords=keywords,
+                include_comments=include_comments,
+            )
             output = io.StringIO()
             writer = csv.writer(output)
-            writer.writerow(["message_id", "date", "views", "forwards", "replies", "reactions", "has_media", "text"])
+            writer.writerow(["message_id", "date", "views", "forwards", "replies", "reactions", "has_media", "text", "comments"])
             for post in result["posts"]:
                 reactions = ", ".join(f"{item['emoji']}:{item['count']}" for item in post["reactions"])
+                comments = " || ".join(f"{item['date']} · {item['sender_id']}: {item['text']}" for item in post.get("comments", []))
                 writer.writerow([
                     post["id"], post["date"], post["views"], post["forwards"],
-                    post["replies"], reactions, post["has_media"], post["text"],
+                    post["replies"], reactions, post["has_media"], post["text"], comments,
                 ])
             txt_lines = [
                 f"ИСТОРИЯ: {result['title']}",
                 f"Аккаунт: #{aid}", f"Chat ID: {result['channel_id']}",
                 f"Username: @{result['username']}" if result["username"] else "Username: —",
-                f"Экспортировано сообщений: {len(result['posts'])}", "",
+                f"Экспортировано сообщений: {len(result['posts'])} из просмотренных {result.get('scanned', len(result['posts']))}",
+                f"Фильтры: дней={result['filters']['days'] or 'все'} · ключевые слова={', '.join(result['filters']['keywords']) or 'нет'} · комментарии={'да' if result['filters']['comments'] else 'нет'}", "",
             ]
             for post in result["posts"]:
                 reactions = ", ".join(f"{item['emoji']} × {item['count']}" for item in post["reactions"]) or "нет"
@@ -1403,8 +1411,15 @@ async def management_input_received(m: Message, state: FSMContext):
                     f"Публикация #{post['id']}", f"Дата: {post['date'] or '—'}",
                     f"Просмотры: {post['views']} · Пересылки: {post['forwards']} · Ответы: {post['replies']}",
                     f"Реакции: {reactions}", f"Медиа: {'да' if post['has_media'] else 'нет'}",
-                    "Текст:", post["text"] or "[без текста]", "", "─" * 48, "",
+                    "Текст:", post["text"] or "[без текста]",
                 ])
+                if post.get("comments"):
+                    txt_lines.append("Комментарии:")
+                    for comment in post["comments"]:
+                        txt_lines.append(
+                            f"  [{comment['date'] or '—'}] ID {comment['sender_id']}: {comment['text']}"
+                        )
+                txt_lines.extend(["", "─" * 48, ""])
             await m.answer_document(BufferedInputFile("\n".join(txt_lines).encode("utf-8"), filename=f"history-account-{aid}-{result['channel_id']}.txt"), caption=f"История «{result['title']}»: TXT, {len(result['posts'])} публикаций.")
             document = BufferedInputFile(output.getvalue().encode("utf-8-sig"), filename=f"history-account-{aid}-{result['channel_id']}.csv")
             await m.answer_document(document, caption="Дополнительно: таблица CSV.")
