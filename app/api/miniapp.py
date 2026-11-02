@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import time
+from types import SimpleNamespace
 from typing import Any, Literal
 from urllib.parse import parse_qsl
 
@@ -55,6 +56,26 @@ def _telegram_user_id(init_data: str | None) -> int:
 
 async def require_admin(x_telegram_init_data: str | None = Header(default=None)) -> int:
     return _telegram_user_id(x_telegram_init_data)
+
+
+def _snapshot_agent(agent: AIAgent) -> SimpleNamespace:
+    """Detach provider settings from ORM state before any network request."""
+    return SimpleNamespace(
+        enabled=bool(agent.enabled),
+        api_key=str(agent.api_key),
+        base_url=str(agent.base_url),
+        model=str(agent.model),
+        timeout_seconds=int(agent.timeout_seconds),
+    )
+
+
+def _format_inbox_context(messages: list[Any]) -> str:
+    """Format chronological Telegram messages with real line breaks."""
+    return "\n".join(
+        ("Аккаунт: " if item.out else "Собеседник: ")
+        + ((item.message or "[медиа/вложение]")[:1200])
+        for item in messages
+    )
 
 
 async def _audit(db: AsyncSession, actor: int, action: str, kind: str, object_id: Any = "") -> None:
@@ -844,13 +865,7 @@ async def inbox_ai_draft(payload: InboxPeerInput, _: int = Depends(require_admin
     # Rollback releases the request's DB transaction before Telegram/AI network calls.
     # AsyncSession.rollback() expires ORM instances, so copy every value used below
     # into plain Python data before releasing the session.
-    agent_config = type("AgentConfig", (), {
-        "enabled": bool(agent.enabled),
-        "api_key": str(agent.api_key),
-        "base_url": str(agent.base_url),
-        "model": str(agent.model),
-        "timeout_seconds": int(agent.timeout_seconds),
-    })()
+    agent_config = _snapshot_agent(agent)
     approved_examples = [
         (str(item.incoming_text), str(item.preferred_reply))
         for item in examples
@@ -877,10 +892,7 @@ async def inbox_ai_draft(payload: InboxPeerInput, _: int = Depends(require_admin
             inbound = raw[-1] if raw else None
             if inbound is None or inbound.out:
                 raise HTTPException(409, "Последнее сообщение уже отправлено аккаунтом. Обновите диалог после нового входящего сообщения.")
-            context = "\\n".join(
-                ("Аккаунт: " if item.out else "Собеседник: ") + ((item.message or "[медиа/вложение]")[:1200])
-                for item in raw
-            )
+            context = _format_inbox_context(raw)
             draft = await generate_reply(
                 agent=agent_config,
                 incoming_text=(inbound.message or "Собеседник отправил медиа или вложение."),
@@ -1058,10 +1070,23 @@ async def generate_content_draft(payload: ContentGenerateInput, actor: int = Dep
         style += "\n\nИндивидуальные правила аккаунта:\n" + account.persona_style_override[:6000]
     if account and account.learning_prompt.strip():
         style += "\n\nКонтекст стиля аккаунта:\n" + account.learning_prompt[:6000]
+    # Snapshot everything needed for generation, then release the DB connection
+    # before waiting on the external AI provider.
+    account_id = int(account.id) if account else None
+    channel_binding_id = int(channel.id) if channel else None
+    selected_agent_id = int(agent.id)
+    selected_persona_id = int(persona.id) if persona else None
+    agent_config = _snapshot_agent(agent)
+    approved_examples = [
+        (str(item.incoming_text), str(item.preferred_reply))
+        for item in examples
+    ]
+    await db.rollback()
+
     from app.ai.provider import generate_reply
     try:
         body = await generate_reply(
-            agent=agent,
+            agent=agent_config,
             incoming_text=payload.brief,
             style_instructions=(
                 "Ты редактор контента для официального Telegram-канала. Создай качественный, "
@@ -1069,14 +1094,14 @@ async def generate_content_draft(payload: ContentGenerateInput, actor: int = Dep
                 "цифры, ссылки, отзывы или обещания. Если данных недостаточно, формулируй осторожно. "
                 "Не добавляй хештеги без необходимости. " + style
             ),
-            examples=[(item.incoming_text, item.preferred_reply) for item in examples],
+            examples=approved_examples,
         )
     except Exception as exc:
         raise HTTPException(502, f"Не удалось создать черновик: {type(exc).__name__}: {str(exc)[:220]}") from None
     row = ContentDraft(
-        account_id=account.id if account else None, agent_id=agent.id,
-        persona_id=persona.id if persona else None,
-        channel_binding_id=channel.id if channel else None,
+        account_id=account_id, agent_id=selected_agent_id,
+        persona_id=selected_persona_id,
+        channel_binding_id=channel_binding_id,
         title=payload.title.strip(), prompt=payload.brief.strip(), body=body,
         status="draft",
     )
