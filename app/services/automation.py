@@ -1352,14 +1352,15 @@ async def process_due_reactions(*, max_jobs: int = 5) -> int:
             await react_to_message(account_id, chat=chat_ref, message_id=message_id, emoji=emoji)
         except Exception as exc:
             from telethon.errors import FloodWaitError
+            quarantine = await module_quarantine_status(account_id, "reaction")
             async with SessionFactory() as db:
                 row = await db.get(ScheduledReaction, reaction_id)
                 if row and row.status == "running":
                     if isinstance(exc, FloodWaitError):
-                        row.status = "queued"
+                        row.status = "paused" if quarantine["quarantined"] else "queued"
                         row.run_at = utcnow() + timedelta(seconds=max(1, int(exc.seconds)))
                     elif isinstance(exc, OperationRateLimitError):
-                        row.status = "queued"
+                        row.status = "paused" if quarantine["quarantined"] else "queued"
                         row.run_at = utcnow() + timedelta(seconds=exc.retry_after)
                     elif isinstance(exc, (TimeoutError, ConnectionError, OSError)):
                         row.status = "uncertain"
