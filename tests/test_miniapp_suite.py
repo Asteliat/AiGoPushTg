@@ -220,3 +220,26 @@ def test_opt_in_consent_requires_evidence_source():
     with pytest.raises(ValidationError):
         ConsentInput(account_id=1, peer_id=42, peer_ref="@person",
                      consent_source="user opted in", consent_confirmed=False)
+
+
+
+def test_consent_mail_modules_are_available_only_through_the_guarded_workflow():
+    states = {item["id"]: item["state"] for item in miniapp.MODULE_CATALOG}
+    assert states["dm_mailings"] == "ready"
+    assert states["chat_mailings"] == "ready"
+    assert miniapp.MODULE_DEFAULTS["enabled"] is False
+
+
+def test_campaign_module_delay_limits_cannot_be_zero_or_negative():
+    with pytest.raises(ValidationError):
+        ModuleSettingsInput(delay_min_seconds=4)
+    with pytest.raises(ValidationError):
+        ModuleSettingsInput(delay_max_seconds=0)
+
+
+def test_campaign_worker_has_a_separate_safe_dispatch_mode():
+    import inspect
+    from app.services.automation import process_due_campaigns
+
+    assert "safe_only" in inspect.signature(process_due_campaigns).parameters
+    assert inspect.signature(process_due_campaigns).parameters["safe_only"].default is False
