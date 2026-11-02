@@ -329,3 +329,29 @@ Worker теперь перечитывает список включённых �
 
 
 
+
+
+## Modular workspace refresh — 2026-11-02
+
+The Mini App is being redesigned as a product workspace rather than a mirror of the old Telegram "Tools" menu.
+
+### Primary modules
+
+- **AI Conversations** — a single account-level control surface for the existing private/group reply behavior, with agent, persona, manual/automatic mode and the existing probability controls. The same setting is not duplicated in separate cards.
+- **AI Channel Assistant** — independent per-channel processing, publication mode, reply probability, cooldown and instructions. New channel bindings remain disabled until the operator enables them.
+- **Content Studio** — generate, edit, save, archive and copy AI-assisted channel-post drafts. Generation never publishes automatically.
+- **Community Research** — Telegram-verified group/channel discovery and saved community lists. Search results do not trigger joins or subscriptions.
+- **Smart Triggers** — global and account-specific rules using the existing priority and cooldown logic.
+- **Account Health** — account/session state and operator controls, without synthetic activity or restriction evasion.
+- **Analytics & Events** — channel analysis history and audit events based on stored application records.
+- **AI Profiles** — existing agents, personas and consent-confirmed examples remain first-class workspace features.
+
+### Retired from the product navigation
+
+The old invite, contact-harvesting, bulk DM/chat mailing, subscribe/unsubscribe and mass-reaction modules are removed from the new workspace. Legacy database rows and worker code are retained temporarily for safe rollback and to avoid deleting historical data during the interface migration; the old Tools callbacks redirect to the new workspace. The old parser UI and task/reaction queues are no longer part of the Mini App navigation.
+
+The new product deliberately does not implement fake views/reactions, coordinated multi-account engagement, behavior simulation to evade Telegram limits, unsolicited bulk messaging, GGR scoring or an account marketplace. Where a previous feature overlaps with an existing capability, the product uses the existing account/AI/channel implementation instead of introducing a second competing settings surface.
+
+### Content Studio storage
+
+The `content_drafts` table is created by the existing `Base.metadata.create_all` migration step. Drafts reference the selected account, agent, persona and optional channel binding; deleting a draft does not send or publish anything. No existing account, session, agent, persona, example, trigger or channel-binding rows are removed.
