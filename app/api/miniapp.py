@@ -974,6 +974,22 @@ async def bindings(_: int = Depends(require_admin), db: AsyncSession = Depends(g
     }
 
 
+
+@router.delete("/bindings/{kind}/{binding_id}")
+async def delete_binding(kind: str, binding_id: int,
+                         actor: int = Depends(require_admin), db: AsyncSession = Depends(get_session)):
+    if kind not in {"group", "channel"}:
+        raise HTTPException(404, "Тип площадки не найден.")
+    model = ChatBinding if kind == "group" else ChannelBinding
+    row = await db.get(model, binding_id)
+    if not row:
+        raise HTTPException(404, "Сохранённая площадка не найдена.")
+    await db.delete(row)
+    await _audit(db, actor, "binding.delete", kind, binding_id)
+    await db.commit()
+    return {"ok": True, "left_chat": False}
+
+
 @router.patch("/bindings/{kind}/{binding_id}")
 async def update_binding(kind: str, binding_id: int, enabled: bool,
                          actor: int = Depends(require_admin), db: AsyncSession = Depends(get_session)):
