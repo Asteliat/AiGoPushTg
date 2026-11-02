@@ -1,7 +1,7 @@
 name: CI
 on:
   push:
-    branches: [main, feature/telegram-miniapp-control-center]
+    branches: [main, feature/telegram-miniapp-control-center, feature/atcivperson-modular-suite]
   pull_request:
     branches: [main]
 jobs:
