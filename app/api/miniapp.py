@@ -128,7 +128,7 @@ class AgentInput(BaseModel):
     proactive_reply_probability_override: int | None = Field(default=None, ge=0, le=100)
     reply_cooldown_seconds_override: int | None = Field(default=None, ge=0, le=2147483647)
     channel_reply_probability_override: int | None = Field(default=None, ge=0, le=100)
-    channel_reply_cooldown_seconds_override: int | None = Field(default=None, ge=0, le=604800)
+    channel_reply_cooldown_seconds_override: int | None = Field(default=None, ge=0, le=2147483647)
 
 
 class PersonaInput(BaseModel):
