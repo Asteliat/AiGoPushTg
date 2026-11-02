@@ -166,3 +166,42 @@ async def test_campaign_peer_resolution_accepts_matching_username_id():
 
     result = await _resolve_campaign_peer(FakeClient(), 123, "@current_username")
     assert result == expected
+
+
+
+def test_module_kind_mapping_is_explicit():
+    from app.services.automation import _module_name_for_kind
+
+    assert _module_name_for_kind("invite") == "invite"
+    assert _module_name_for_kind("direct_invite") == "invite"
+    assert _module_name_for_kind("broadcast") == "broadcast"
+    assert _module_name_for_kind("subscription_join") == "subscription"
+    assert _module_name_for_kind("subscription_leave") == "subscription"
+    assert _module_name_for_kind("reaction") == "reaction"
+
+
+def test_global_module_policy_defaults_and_batch_size():
+    from app.services.automation import MODULE_POLICY_DEFAULTS
+
+    assert MODULE_POLICY_DEFAULTS["invite"]["per_account_limit"] == 99
+    assert MODULE_POLICY_DEFAULTS["invite"]["daily_account_limit"] == 25
+    assert MODULE_POLICY_DEFAULTS["broadcast"]["batch_size"] == 10
+    assert MODULE_POLICY_DEFAULTS["subscription"]["floodwait_threshold"] == 10
+
+
+@pytest.mark.asyncio
+async def test_individual_operation_limits_are_rejected_without_database_access():
+    from app.services.automation import set_operation_limits
+
+    with pytest.raises(ValueError, match="Индивидуальные лимиты отключены"):
+        await set_operation_limits(
+            "invite", interval_seconds=10, daily_limit=10, account_id=1
+        )
+
+
+@pytest.mark.asyncio
+async def test_unknown_module_policy_is_rejected():
+    from app.services.automation import module_policy
+
+    with pytest.raises(ValueError, match="Неизвестный модуль"):
+        await module_policy("unknown")
