@@ -845,7 +845,7 @@ __all__ = [
     "set_global_automation_limits", "set_operation_limits", "operation_limits",
     "create_schedule", "list_schedules", "set_schedule_status", "dispatch_due_schedules",
     "resolve_uncertain_recipient", "schedule_reaction", "list_scheduled_reactions",
-    "cancel_scheduled_reaction", "resolve_scheduled_reaction", "process_due_reactions", "reserve_operation_slot",
+    "cancel_scheduled_reaction", "set_scheduled_reaction_status", "resolve_scheduled_reaction", "process_due_reactions", "reserve_operation_slot",
     "OperationRateLimitError", "module_policy", "set_module_policy", "record_module_floodwait",
     "module_quarantine_status", "clear_module_quarantine",
     "set_campaign_status",
@@ -1274,6 +1274,20 @@ async def list_scheduled_reactions(account_id: int, *, limit: int = 20) -> list[
             "emoji": row.emoji, "run_at": _aware(row.run_at).isoformat(),
             "status": row.status, "last_error": row.last_error,
         } for row in rows]
+
+
+async def set_scheduled_reaction_status(reaction_id: int, status: str) -> None:
+    if status not in {"queued", "paused", "cancelled"}:
+        raise ValueError("Недопустимый статус реакции.")
+    async with SessionFactory() as db:
+        row = await db.get(ScheduledReaction, reaction_id)
+        if not row:
+            raise ValueError("Запланированная реакция не найдена.")
+        if row.status not in {"queued", "paused"}:
+            raise ValueError("Эту реакцию нельзя изменить в текущем статусе.")
+        row.status = status
+        row.updated_at = utcnow()
+        await db.commit()
 
 
 async def cancel_scheduled_reaction(reaction_id: int) -> None:
