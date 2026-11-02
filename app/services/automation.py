@@ -792,11 +792,15 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                         async with SessionFactory() as db:
                             current = await db.get(AutomationTask, task_id)
                             if current and current.status == "running":
+                                pause_seconds = (
+                                    interval if module == "invite"
+                                    else max(interval, int(policy.get("batch_pause_seconds", interval)))
+                                )
                                 current.status = "queued"
-                                current.scheduled_at = utcnow() + timedelta(seconds=interval)
+                                current.scheduled_at = utcnow() + timedelta(seconds=pause_seconds)
                                 current.last_error = (
                                     f"Пакет {processed_in_batch}/{batch_size} обработан; "
-                                    f"следующее приглашение/действие через {interval} сек."
+                                    f"следующее действие через {pause_seconds} сек."
                                 )
                                 current.updated_at = utcnow()
                                 await db.commit()
@@ -851,10 +855,10 @@ __all__ = [
 
 
 MODULE_POLICY_DEFAULTS = {
-    "broadcast": {"interval_seconds": 30, "daily_limit": 50, "batch_size": 10, "per_account_limit": 50, "daily_account_limit": 50, "floodwait_wait_seconds": 9999, "floodwait_threshold": 10},
+    "broadcast": {"interval_seconds": 30, "daily_limit": 50, "batch_size": 10, "batch_pause_seconds": 60, "per_account_limit": 50, "daily_account_limit": 50, "floodwait_wait_seconds": 9999, "floodwait_threshold": 10},
     "invite": {"interval_seconds": 120, "daily_limit": 25, "batch_size": 1, "per_account_limit": 99, "daily_account_limit": 25, "floodwait_wait_seconds": 9999, "floodwait_threshold": 10},
-    "subscription": {"interval_seconds": 10, "daily_limit": 20, "batch_size": 1, "per_account_limit": 20, "daily_account_limit": 20, "floodwait_wait_seconds": 9999, "floodwait_threshold": 10},
-    "reaction": {"interval_seconds": 30, "daily_limit": 50, "batch_size": 1, "per_account_limit": 50, "daily_account_limit": 50, "floodwait_wait_seconds": 9999, "floodwait_threshold": 10},
+    "subscription": {"interval_seconds": 10, "daily_limit": 20, "batch_size": 1, "batch_pause_seconds": 60, "per_account_limit": 20, "daily_account_limit": 20, "floodwait_wait_seconds": 9999, "floodwait_threshold": 10},
+    "reaction": {"interval_seconds": 30, "daily_limit": 50, "batch_size": 1, "batch_pause_seconds": 60, "per_account_limit": 50, "daily_account_limit": 50, "floodwait_wait_seconds": 9999, "floodwait_threshold": 10},
 }
 
 
@@ -884,8 +888,9 @@ async def module_policy(module: str) -> dict:
             result[name] = int(values.get(name, default))
         except (TypeError, ValueError):
             result[name] = default
-    for name in ("interval_seconds", "daily_limit", "batch_size", "per_account_limit", "daily_account_limit", "floodwait_wait_seconds", "floodwait_threshold"):
-        result[name] = max(1, min(9999 if name != "floodwait_threshold" else 100, result[name]))
+    for name in ("interval_seconds", "daily_limit", "batch_size", "batch_pause_seconds", "per_account_limit", "daily_account_limit", "floodwait_wait_seconds", "floodwait_threshold"):
+        if name in result:
+            result[name] = max(1, min(9999 if name != "floodwait_threshold" else 100, result[name]))
     return result
 
 
