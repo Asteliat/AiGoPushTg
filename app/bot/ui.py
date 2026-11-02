@@ -5845,6 +5845,8 @@ async def chat_join_confirm(c):
                 entity = await client.get_entity(pending["entity_id"])
             elif pending["kind"] == "public":
                 entity = await client.get_entity(pending["target"])
+                if not _group_entity(entity):
+                    raise ValueError("Ссылка ведёт не на группу.")
                 async def report_floodwait(seconds):
                     await edit(c,
                         f"⏳ Telegram временно ограничил вступления. Жду {seconds} сек., затем повторю вступление в группу «{pending['title']}»…",
@@ -5906,6 +5908,8 @@ async def chat_join_confirm(c):
                         raise RuntimeError("Не удалось определить уже доступную группу.")
                     chat_id = int(utils.get_peer_id(entity))
                     title = (getattr(entity, "title", None) or pending["title"] or "Группа")[:255]
+                    if not await telegram_management.verify_chat_membership(client, entity):
+                        raise RuntimeError("Telegram не подтвердил членство аккаунта в группе.")
             except Exception as nested:
                 await edit(c, f"Аккаунт уже состоит в группе, но не удалось обновить её в списке: {type(nested).__name__}.", kb([[("⬅️ К аккаунту", f"acc:view:{aid}")]]))
                 return
