@@ -388,7 +388,9 @@ async def render_campaign_kind_selection(c: CallbackQuery, state: FSMContext, mo
     if module == "invite":
         kinds = [
             [("🔗 Отправить ссылку-приглашение", f"tool:campaign:start:{ids[0]}:invite:once")],
+            [("🗓 Повторять отправку ссылки", f"tool:campaign:start:{ids[0]}:invite:recurring")],
             [("👥 Пригласить выбранных пользователей в группу", f"tool:campaign:start:{ids[0]}:direct_invite:once")],
+            [("🗓 Повторять прямые приглашения", f"tool:campaign:start:{ids[0]}:direct_invite:recurring")],
         ]
     else:
         kinds = [
