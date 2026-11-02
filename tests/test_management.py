@@ -657,7 +657,7 @@ async def test_send_manual_message_rejects_broadcast_channel(monkeypatch):
     monkeypatch.setattr(management, "_account_lock", lambda _aid: _AsyncNullLock())
     monkeypatch.setattr(management, "isolated_account_client", fake_client)
 
-    with pytest.raises(ValueError, match="вещательных каналов"):
+    with pytest.raises(ValueError, match="вещательные каналы"):
         await management.send_message_to_chat(1, "@broadcast", "hello")
 
 
