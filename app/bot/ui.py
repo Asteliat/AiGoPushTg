@@ -391,13 +391,13 @@ async def render_module_account_selection(c: CallbackQuery, state: FSMContext, m
           f"tool:module:toggle:{module}:{account.id}")]
         for account in accounts
     ]
+    rows.append([("🌐 Выбрать все аккаунты", f"tool:module:all:{module}")])
+    if module in {"invite", "broadcast", "subscription", "reaction"}:
+        rows.append([("⚙️ Настройки модуля", f"tool:policy:{module}")])
     rows.extend([
-        [("🌐 Выбрать все аккаунты", f"tool:module:all:{module}")],
         [("➡️ Продолжить · " + str(len(selected)), f"tool:module:continue:{module}")],
         [("↩️ Инструменты", "tool:menu")],
     ])
-    if module in {"invite", "broadcast", "subscription", "reaction"}:
-        rows.append([("⚙️ Настройки модуля", f"tool:policy:{module}")])
     await edit(c, f"{MODULE_ACTIONS[module][0]}\n\nОтметьте один или несколько аккаунтов. Настройки применяются только к этому модулю.", kb(rows))
 
 
