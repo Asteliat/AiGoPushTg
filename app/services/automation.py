@@ -112,6 +112,13 @@ async def create_campaign(
     unique_ids = list(dict.fromkeys(int(peer_id) for peer_id in recipients))
     if not unique_ids or len(unique_ids) > MAX_RECIPIENTS:
         raise ValueError(f"Выберите от 1 до {MAX_RECIPIENTS} получателей.")
+    module = _module_name_for_kind(kind)
+    policy = await module_policy(module)
+    if len(unique_ids) > policy["per_account_limit"]:
+        raise ValueError(
+            f"Глобальный лимит модуля «{module}»: не более {policy['per_account_limit']} "
+            "получателей на один аккаунт в одной задаче."
+        )
     due = _aware(scheduled_at or utcnow())
     if due < utcnow() - timedelta(minutes=1):
         raise ValueError("Время запуска уже прошло.")
@@ -511,7 +518,16 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
             module = _module_name_for_kind(kind)
             policy = await module_policy(module)
             interval, daily_limit = policy["interval_seconds"], policy["daily_account_limit"]
-            _, _, quiet_start, quiet_end = await _account_limits(account_id, module)
+            quiet_keys = [
+                f"automation.default.{module}.quiet_start_utc",
+                f"automation.default.{module}.quiet_end_utc",
+            ]
+            async with SessionFactory() as policy_db:
+                quiet_values = {row.key: row.value for row in (await policy_db.scalars(
+                    select(AppSetting).where(AppSetting.key.in_(quiet_keys))
+                )).all()}
+            quiet_start = quiet_values.get(quiet_keys[0], "") or None
+            quiet_end = quiet_values.get(quiet_keys[1], "") or None
             quarantine = await module_quarantine_status(account_id, module)
             if quarantine["quarantined"]:
                 async with SessionFactory() as db:
