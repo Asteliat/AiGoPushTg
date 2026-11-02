@@ -94,6 +94,9 @@ class ChatBinding(Base):
     account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), index=True)
     auto_discovered: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
     chat_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    # Telethon's access hash is required to address private supergroups from a fresh session snapshot.
+    access_hash: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    peer_type: Mapped[str] = mapped_column(String(16), default="channel", server_default="channel", nullable=False)
     title: Mapped[str] = mapped_column(String(255), default="")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
