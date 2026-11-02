@@ -4445,7 +4445,7 @@ async def acc_view(c, account_id: int | None = None):
         else:
             learning_text = "контекст сохранён вручную" if a.learning_prompt.strip() else "не запускалось"
     conn_label = {"connected": "подключён", "connecting": "подключается", "paused": "пауза", "disconnected": "отключён", "error": "ошибка подключения", "unauthorized": "сессия не авторизована"}.get(a.connection_status, a.connection_status)
-    txt=f"👤 {a.display_name} (@{a.username or 'нет username'})\nID: #{aid}\nАккаунт: {'включён' if a.enabled else 'выключен'}\nСоединение: {conn_label}\nРабота: {'⏸ на паузе' if a.manual_pause else ('активна' if a.enabled else 'отключена')}\nИИ для аккаунта: {'включён' if a.ai_enabled else 'выключен'}\nСамостоятельное участие в группах: {'включено' if a.ai_identity_disclosed else 'выключено'}\nРежим ответов: {'автоматический' if a.reply_mode=='automatic' else 'ручной'}\nАгент: {agent.name if agent else 'не назначен'}\nПерсона: {persona.name if persona else 'не назначена'}\nАктивных чатов: {chats}\nОбучение: {learning_text}\nПрокси: {'настроен' if a.proxy_config_encrypted else 'нет'}\nИндивидуальные правила: {'заданы' if a.persona_style_override.strip() else 'нет'}"
+    txt=f"👤 {a.display_name} (@{a.username or 'нет username'})\nID: #{aid}\nАккаунт: {'включён' if a.enabled else 'выключен'}\nСоединение: {conn_label}\nРабота: {'⏸ на паузе' if a.manual_pause else ('активна' if a.enabled else 'отключена')}\nИИ для аккаунта: {'включён' if a.ai_enabled else 'выключен'}\nАккаунт обозначен как управляемый ИИ: {'да' if a.ai_identity_disclosed else 'нет'}\nРежим ответов: {'автоматический' if a.reply_mode=='automatic' else 'ручной'}\nАгент: {agent.name if agent else 'не назначен'}\nПерсона: {persona.name if persona else 'не назначена'}\nАктивных чатов: {chats}\nОбучение: {learning_text}\nПрокси: {'настроен' if a.proxy_config_encrypted else 'нет'}\nИндивидуальные правила: {'заданы' if a.persona_style_override.strip() else 'нет'}"
     buttons=[
         [(("▶️ Возобновить" if a.manual_pause else "⏸ Пауза"),f"acc:pause:{aid}"),
          (("▶️ Включить" if not a.enabled else "⏸ Отключить"),f"acc:toggle:{aid}")],
@@ -4710,7 +4710,7 @@ async def acc_autonomous_toggle(c):
         enabled = account.ai_identity_disclosed
         await db.commit()
     await c.answer(
-        "Самостоятельные ответы в группах включены." if enabled
+        "Самостоятельные ответы разрешены. Убедитесь, что участники знают об управлении аккаунтом через ИИ." if enabled
         else "Самостоятельные ответы в группах выключены."
     )
     await acc_view(c)
