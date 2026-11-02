@@ -2111,22 +2111,29 @@ async def management_input_received(m: Message, state: FSMContext):
                 f"Тип: {'канал' if item.is_channel else 'группа' if item.is_group else 'чат/другой'}"
             )
         elif action == "parsechannel":
-            parts = [x.strip() for x in raw.split("|")]
-            if not 1 <= len(parts) <= 7:
-                raise ValueError("Формат: @чат или all | сообщений на чат | дни | ключевые слова | комментарии да/нет | задержка сообщений | задержка чатов.")
-            target = parts[0]
-            limit = int(parts[1]) if len(parts) > 1 and parts[1] else 20
-            days = int(parts[2]) if len(parts) > 2 and parts[2] else 0
-            keywords = [] if len(parts) < 4 or parts[3] in {"", "-"} else [x.strip() for x in re.split(r"[,;]", parts[3]) if x.strip()]
-            include_comments = len(parts) > 4 and parts[4].lower() in {"да", "yes", "true", "1", "on"}
-            message_delay = int(parts[5]) if len(parts) > 5 and parts[5] else 0
-            chat_delay = int(parts[6]) if len(parts) > 6 and parts[6] else 0
+            target = raw.strip()
+            if not target or "|" in target:
+                raise ValueError("Укажите только @username, ссылку на чат или all. Остальные параметры задаются в настройках парсера.")
+            parser_settings = await parser_settings_for(aid, "messages")
+            limit = parser_settings["limit"]
+            days = parser_settings["days"]
+            keywords = [item.strip() for item in re.split(r"[,;]", parser_settings["keywords"]) if item.strip()]
+            include_comments = False
+            message_delay = parser_settings["message_delay_seconds"]
+            chat_delay = parser_settings["chat_delay_seconds"]
+            profile_filters = {
+                key: parser_settings[key] for key in (
+                    "exclude_bots", "exclude_deleted", "exclude_scam", "exclude_blocked",
+                    "username_only", "photo_only", "premium_only", "active_days",
+                )
+            }
             if target.lower() in {"all", "все", "все чаты"}:
                 account_result = await telegram_management.parse_account_history(
                     aid, limit_per_chat=limit, days=days, keywords=keywords,
                     include_comments=include_comments,
                     message_delay_seconds=message_delay,
                     chat_delay_seconds=chat_delay,
+                    **profile_filters,
                 )
                 results = account_result["results"]
                 errors = account_result["errors"]
@@ -2137,6 +2144,7 @@ async def management_input_received(m: Message, state: FSMContext):
                     aid, target, limit=limit, days=days, keywords=keywords,
                     include_comments=include_comments,
                     message_delay_seconds=message_delay,
+                    **profile_filters,
                 )
                 results = [result]
                 errors = []
@@ -2198,18 +2206,20 @@ async def management_input_received(m: Message, state: FSMContext):
                 f"Чатов с ошибками: {len(errors)}. Результаты отправлены в TXT и CSV."
             )
         elif action == "parseparticipants":
-            parts = [x.strip() for x in raw.split("|")]
-            if not 1 <= len(parts) <= 10:
-                raise ValueError("Формат: группа | лимит | без ботов | без удалённых | username | фото | Premium | активность дней | без scam | исключить заблокированных.")
-            def yes(index):
-                return len(parts) > index and parts[index].lower() in {"да", "yes", "true", "1", "on"}
-            limit = int(parts[1]) if len(parts) > 1 and parts[1] else 200
-            active_days = int(parts[7]) if len(parts) > 7 and parts[7] else 0
+            target = raw.strip()
+            if not target or "|" in target:
+                raise ValueError("Укажите только @username или ссылку на свою группу. Параметры фильтрации задаются отдельно в настройках парсера.")
+            parser_settings = await parser_settings_for(aid, "participants")
             result = await telegram_management.parse_chat_participants(
-                aid, parts[0], limit=limit,
-                exclude_bots=yes(2), exclude_deleted=yes(3),
-                username_only=yes(4), photo_only=yes(5), premium_only=yes(6),
-                active_days=active_days, exclude_scam=yes(8), exclude_blocked=yes(9),
+                aid, target, limit=parser_settings["limit"],
+                exclude_bots=parser_settings["exclude_bots"],
+                exclude_deleted=parser_settings["exclude_deleted"],
+                username_only=parser_settings["username_only"],
+                photo_only=parser_settings["photo_only"],
+                premium_only=parser_settings["premium_only"],
+                active_days=parser_settings["active_days"],
+                exclude_scam=parser_settings["exclude_scam"],
+                exclude_blocked=parser_settings["exclude_blocked"],
             )
             output = io.StringIO()
             writer = csv.writer(output)
@@ -2240,6 +2250,60 @@ async def management_input_received(m: Message, state: FSMContext):
             document = BufferedInputFile(output.getvalue().encode("utf-8-sig"), filename=f"participants-account-{aid}-{result['chat_id']}.csv")
             await m.answer_document(document, caption="Дополнительно: таблица CSV. Выгружены только публичные поля, доступные аккаунту.")
             message = f"Сформированы TXT и CSV. Доступно участников: {result['visible_count']}."
+        elif action == "parsecomments":
+            target = raw.strip()
+            if not target or "|" in target:
+                raise ValueError("Укажите только @username или ссылку на канал/группу.")
+            parser_settings = await parser_settings_for(aid, "comments")
+            keywords = [item.strip() for item in re.split(r"[,;]", parser_settings["keywords"]) if item.strip()]
+            profile_filters = {
+                key: parser_settings[key] for key in (
+                    "exclude_bots", "exclude_deleted", "exclude_scam", "exclude_blocked",
+                    "username_only", "photo_only", "premium_only", "active_days",
+                )
+            }
+            result = await telegram_management.parse_chat_comments(
+                aid, target,
+                post_limit=parser_settings["post_limit"],
+                comment_limit=parser_settings["comment_limit"],
+                days=parser_settings["days"],
+                keywords=keywords,
+                comment_delay_seconds=parser_settings["comment_delay_seconds"],
+                **profile_filters,
+            )
+            output = io.StringIO()
+            writer = csv.writer(output)
+            writer.writerow(["chat_title", "chat_id", "post_id", "post_date", "comment_id", "date", "sender_id", "text"])
+            txt_lines = [
+                f"КОММЕНТАРИИ: {result['title']}",
+                f"Аккаунт: #{aid} · Chat ID: {result['channel_id']}",
+                f"Публикаций просмотрено: {result['scanned_posts']}",
+                f"Комментариев просмотрено: {result['scanned_comments']}",
+                f"Комментариев после фильтров: {result['visible_count']}",
+                f"Период: {parser_settings['days'] or 'вся история'} · ключевые слова: {', '.join(keywords) or 'нет'}",
+                f"Задержка между комментариями: {parser_settings['comment_delay_seconds']} сек.",
+                "",
+            ]
+            for comment in result["comments"]:
+                writer.writerow([
+                    result["title"], result["channel_id"], comment["post_id"],
+                    comment["post_date"], comment["comment_id"], comment["date"],
+                    comment["sender_id"], comment["text"],
+                ])
+                txt_lines.extend([
+                    f"Публикация #{comment['post_id']} · комментарий #{comment['comment_id']}",
+                    f"Дата: {comment['date'] or '—'} · ID автора: {comment['sender_id']}",
+                    comment["text"] or "[без текста]", "", "─" * 48, "",
+                ])
+            await m.answer_document(
+                BufferedInputFile("\n".join(txt_lines).encode("utf-8"), filename=f"comments-account-{aid}-{result['channel_id']}.txt"),
+                caption=f"Комментарии: {result['title']} · {result['visible_count']} записей.",
+            )
+            await m.answer_document(
+                BufferedInputFile(output.getvalue().encode("utf-8-sig"), filename=f"comments-account-{aid}-{result['channel_id']}.csv"),
+                caption="Дополнительно: таблица CSV.",
+            )
+            message = f"Парсинг комментариев завершён. Найдено комментариев: {result['visible_count']}."
         elif action in {"join", "leave"}:
             account_ids = [int(value) for value in (data.get("management_account_ids") or [aid])]
             results = []
