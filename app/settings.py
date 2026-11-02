@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     )
     bot_token: str = ""
     api_secret_key: str = ""
-    mini_app_url: str = ""
+    mini_app_url: str = "https://panel.cloudre.store/miniapp"
     legacy_automation_enabled: bool = False
     admin_ids: str = ""
     telegram_api_id: int = 0
