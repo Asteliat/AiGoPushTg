@@ -1052,9 +1052,9 @@ async def generate_content_draft(payload: ContentGenerateInput, actor: int = Dep
     examples = list((await db.scalars(query.order_by(desc(Example.id)).limit(8))).all())
     style = persona.style_instructions if persona else ""
     if account and account.persona_style_override.strip():
-        style += "\n\\nИндивидуальные правила аккаунта:\\n" + account.persona_style_override[:6000]
+        style += "\n\nИндивидуальные правила аккаунта:\n" + account.persona_style_override[:6000]
     if account and account.learning_prompt.strip():
-        style += "\n\\nКонтекст стиля аккаунта:\\n" + account.learning_prompt[:6000]
+        style += "\n\nКонтекст стиля аккаунта:\n" + account.learning_prompt[:6000]
     from app.ai.provider import generate_reply
     try:
         body = await generate_reply(
