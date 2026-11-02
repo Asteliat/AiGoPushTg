@@ -715,38 +715,47 @@ async def parse_chat_comments(
                 reply_count = int(getattr(getattr(post, "replies", None), "replies", 0) or 0)
                 if not reply_count:
                     continue
-                async for comment in client.iter_messages(
-                    entity, reply_to=int(post.id), limit=comment_limit,
-                ):
-                    if not comment or getattr(comment, "action", None):
-                        continue
-                    scanned_comments += 1
-                    if comment_delay_seconds:
-                        await asyncio.sleep(comment_delay_seconds)
-                    comment_date = comment.date
-                    if comment_date and comment_date.tzinfo is None:
-                        comment_date = comment_date.replace(tzinfo=timezone.utc)
-                    if cutoff and (not comment_date or comment_date < cutoff):
-                        continue
-                    body = (comment.message or "").strip()
-                    if terms and not any(term in body.casefold() for term in terms):
-                        continue
-                    if not await _sender_passes_parser_filters(
-                        comment, client, exclude_bots=exclude_bots,
-                        exclude_deleted=exclude_deleted, exclude_scam=exclude_scam,
-                        exclude_blocked=exclude_blocked, username_only=username_only,
-                        photo_only=photo_only, premium_only=premium_only,
-                        active_days=active_days, blocked_ids=blocked_ids,
+                try:
+                    async for comment in client.iter_messages(
+                        entity, reply_to=int(post.id), limit=comment_limit,
                     ):
-                        continue
-                    comments.append({
-                        "post_id": int(post.id),
-                        "post_date": post.date.isoformat() if post.date else "",
-                        "comment_id": int(comment.id),
-                        "date": comment.date.isoformat() if comment.date else "",
-                        "sender_id": int(comment.sender_id or 0),
-                        "text": body[:3000],
-                    })
+                        if not comment or getattr(comment, "action", None):
+                            continue
+                        scanned_comments += 1
+                        if comment_delay_seconds:
+                            await asyncio.sleep(comment_delay_seconds)
+                        comment_date = comment.date
+                        if comment_date and comment_date.tzinfo is None:
+                            comment_date = comment_date.replace(tzinfo=timezone.utc)
+                        if cutoff and (not comment_date or comment_date < cutoff):
+                            continue
+                        body = (comment.message or "").strip()
+                        if terms and not any(term in body.casefold() for term in terms):
+                            continue
+                        if not await _sender_passes_parser_filters(
+                            comment, client, exclude_bots=exclude_bots,
+                            exclude_deleted=exclude_deleted, exclude_scam=exclude_scam,
+                            exclude_blocked=exclude_blocked, username_only=username_only,
+                            photo_only=photo_only, premium_only=premium_only,
+                            active_days=active_days, blocked_ids=blocked_ids,
+                        ):
+                            continue
+                        comments.append({
+                            "post_id": int(post.id),
+                            "post_date": post.date.isoformat() if post.date else "",
+                            "comment_id": int(comment.id),
+                            "date": comment.date.isoformat() if comment.date else "",
+                            "sender_id": int(comment.sender_id or 0),
+                            "text": body[:3000],
+                        })
+                except FloodWaitError:
+                    raise
+                except Exception as exc:
+                    logging.info(
+                        "Could not read discussion comments for account=%s chat=%s post=%s: %s",
+                        account_id, getattr(entity, "id", None), post.id, type(exc).__name__,
+                    )
+                    continue
             return {
                 "channel_id": int(entity.id),
                 "title": str(getattr(entity, "title", "") or getattr(entity, "username", "") or channel),
