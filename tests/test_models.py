@@ -134,11 +134,17 @@ def test_direct_invite_consent_is_group_specific():
     }
 
 
-def test_accounts_have_independent_reply_runtime_overrides() -> None:
-    columns = set(Account.__table__.columns.keys())
+def test_reply_probabilities_belong_to_ai_agents_not_accounts() -> None:
+    account_columns = set(Account.__table__.columns.keys())
+    agent_columns = set(AIAgent.__table__.columns.keys())
+    assert "reply_cooldown_seconds_override" in account_columns
+    assert not {
+        "mention_reply_probability_override",
+        "dm_reply_probability_override",
+        "proactive_reply_probability_override",
+    } & account_columns
     assert {
         "mention_reply_probability_override",
         "dm_reply_probability_override",
         "proactive_reply_probability_override",
-        "reply_cooldown_seconds_override",
-    } <= columns
+    } <= agent_columns
