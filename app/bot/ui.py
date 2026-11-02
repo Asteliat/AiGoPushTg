@@ -782,11 +782,16 @@ async def management_account_menu(c: CallbackQuery):
 
 
 async def management_prompt(c: CallbackQuery, state: FSMContext, action: str, aid: int, prompt: str):
+    previous = await state.get_data()
+    selected_ids = previous.get("management_account_ids") or [aid]
+    module = previous.get("module_selection_module")
     await state.clear()
     await state.update_data(
         management_action=action, management_account_id=aid,
+        management_account_ids=[int(value) for value in selected_ids],
+        module_selection_module=module,
         ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id,
-        return_callback=f"tool:management:account:{aid}",
+        return_callback=f"tool:module:{module}" if module else f"tool:management:account:{aid}",
     )
     await state.set_state(Flow.management_input)
     await edit(c, prompt + "\n\nОтмена — кнопкой ниже.", CANCEL)
@@ -1580,15 +1585,22 @@ async def management_input_received(m: Message, state: FSMContext):
                         schedule_at = datetime.strptime(time_part, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
                     except ValueError as exc:
                         raise ValueError("Время должно быть now или YYYY-MM-DD HH:MM UTC.") from exc
-            links = [line.strip() for line in link_block.replace(",", "\n").splitlines() if line.strip()]
-            task_id = await telegram_automation.create_subscription_task(
-                aid, links, action="join" if action == "joinbatch" else "leave",
-                scheduled_at=schedule_at,
-            )
-            message = (
-                f"Задача #{task_id} поставлена в очередь: "
-                f"{'подписка' if action == 'joinbatch' else 'отписка'}, ссылок: {len(set(links))}. "
-                f"Старт UTC: {schedule_at.isoformat()}. Управление доступно в «Очередь и журнал»."
+            links = [line.strip() for line in link_block.replace(",", "\\n").splitlines() if line.strip()]
+            account_ids = [int(value) for value in (data.get("management_account_ids") or [aid])]
+            created, failed = [], []
+            for account_id in account_ids:
+                try:
+                    task_id = await telegram_automation.create_subscription_task(
+                        account_id, links, action="join" if action == "joinbatch" else "leave",
+                        scheduled_at=schedule_at,
+                    )
+                    created.append((account_id, task_id))
+                except Exception as exc:
+                    failed.append((account_id, f"{type(exc).__name__}: {str(exc)[:160]}"))
+            message = "\\n".join(
+                [f"✅ Аккаунт #{account_id}: задача #{task_id}, ссылок: {len(set(links))}" for account_id, task_id in created]
+                + [f"❌ Аккаунт #{account_id}: {error}" for account_id, error in failed]
+                + [f"Старт UTC: {schedule_at.isoformat()}. Очередь и журнал — в этом же модуле."]
             )
         elif action == "chatinfo":
             item = await telegram_management.get_chat_overview(aid, raw)
@@ -1714,18 +1726,32 @@ async def management_input_received(m: Message, state: FSMContext):
         elif action == "reaction":
             parts = [x.strip() for x in raw.split("|")]
             if len(parts) != 3: raise ValueError("Формат: чат | ID публикации | emoji.")
-            await telegram_management.react_to_message(
-                aid, chat=parts[0], message_id=int(parts[1]), emoji=parts[2]
-            )
-            message = "Реакция отправлена на выбранную публикацию."
+            account_ids = [int(value) for value in (data.get("management_account_ids") or [aid])]
+            results = []
+            for account_id in account_ids:
+                try:
+                    await telegram_management.react_to_message(
+                        account_id, chat=parts[0], message_id=int(parts[1]), emoji=parts[2]
+                    )
+                    results.append(f"✅ #{account_id}: реакция отправлена")
+                except Exception as exc:
+                    results.append(f"❌ #{account_id}: {type(exc).__name__}: {str(exc)[:120]}")
+            message = "\\n".join(results)
         elif action == "editprofile":
             parts = [x.strip() for x in raw.split("|")]
             if len(parts) != 4: raise ValueError("Нужно четыре поля через |.")
             values = [None if x == "-" else x for x in parts]
-            await telegram_management.update_profile(
-                aid, first_name=values[0], last_name=values[1], about=values[2], username=values[3]
-            )
-            message = "Профиль обновлён."
+            account_ids = [int(value) for value in (data.get("management_account_ids") or [aid])]
+            results = []
+            for account_id in account_ids:
+                try:
+                    await telegram_management.update_profile(
+                        account_id, first_name=values[0], last_name=values[1], about=values[2], username=values[3]
+                    )
+                    results.append(f"✅ #{account_id}: профиль обновлён")
+                except Exception as exc:
+                    results.append(f"❌ #{account_id}: {type(exc).__name__}: {str(exc)[:120]}")
+            message = "\\n".join(results)
         else:
             raise ValueError("Неизвестное действие.")
         if action and action.startswith("policy-"):
