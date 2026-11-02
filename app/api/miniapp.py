@@ -288,8 +288,8 @@ class ModuleSettingsInput(BaseModel):
     agent_id: int | None = Field(default=None, ge=1)
     persona_id: int | None = Field(default=None, ge=1)
     prompt: str = Field(default="", max_length=8000)
-    delay_min_seconds: int = Field(default=30, ge=0, le=86400)
-    delay_max_seconds: int = Field(default=120, ge=0, le=86400)
+    delay_min_seconds: int = Field(default=30, ge=5, le=86400)
+    delay_max_seconds: int = Field(default=120, ge=5, le=86400)
     probability: int = Field(default=100, ge=0, le=100)
     daily_limit: int = Field(default=20, ge=0, le=10000)
     keywords: list[str] = Field(default_factory=list, max_length=100)
@@ -1228,8 +1228,8 @@ MODULE_CATALOG = [
     {"id":"neuro_shilling","title":"НейроШиллинг","icon":"◉","description":"Сценарии обсуждений и роли участников.","state":"restricted","note":"Не запускаем координированные фальшивые обсуждения и выдачу нескольких аккаунтов за независимых людей."},
     {"id":"neuro_chatting","title":"Нейрочаттинг","icon":"☷","description":"Контекстные ответы ИИ в группах, которыми вы управляете или где есть разрешение.","state":"ready","note":"Использует существующие AI-разговоры, привязки групп и настройки аккаунтов."},
     {"id":"neuro_dialogs","title":"НейроДиалоги","icon":"▣","description":"Входящие личные диалоги, история, ИИ-черновики и передача оператору.","state":"ready","note":"Работает через существующий Inbox. Отправка ответа требует действия оператора."},
-    {"id":"dm_mailings","title":"ЛС-Рассылки","icon":"➤","description":"Сообщения только пользователям, которые явно подписались на получение сообщений.","state":"restricted","note":"Нельзя использовать для холодной рассылки или обхода ограничений. Сначала требуется отдельный opt-in workflow."},
-    {"id":"chat_mailings","title":"Чат-Рассылки","icon":"▤","description":"Планирование публикаций в собственных или администрируемых сообществах.","state":"limited","note":"Пока доступна контент-студия с ручной публикацией; автоматическая очередь публикаций не подключена."},
+    {"id":"dm_mailings","title":"ЛС-Рассылки","icon":"➤","description":"Сообщения только пользователям, которые явно подписались на получение сообщений.","state":"ready","note":"Работает только по активному согласию каждого получателя. Настройте аккаунты, задержки и дневной лимит в этом модуле."},
+    {"id":"chat_mailings","title":"Чат-Рассылки","icon":"▤","description":"Планирование публикаций в группах, где аккаунт имеет права администратора.","state":"ready","note":"Публикации идут только в активные групповые привязки; права администратора повторно проверяются перед отправкой."},
     {"id":"mass_tagging","title":"Масстегинг","icon":"＠","description":"Упоминания пользователей в публикациях и историях.","state":"restricted","note":"Массовые отметки без явного согласия пользователей не реализуются."},
     {"id":"mass_reactions","title":"МассРеакции","icon":"♡","description":"Управление реакциями на выбранные публикации.","state":"restricted","note":"Не реализуем искусственное накручивание реакций или координацию фальшивой вовлечённости."},
     {"id":"mass_viewing","title":"Масслукинг","icon":"◉","description":"Просмотр публичных историй и аналитика доступности.","state":"restricted","note":"Автоматическая накрутка просмотров и скрытое массовое отслеживание аудитории не поддерживаются."},
@@ -1425,6 +1425,13 @@ async def create_automation_campaign(payload: CampaignInput, actor: int = Depend
                                      db: AsyncSession = Depends(get_session)):
     if not payload.confirm_scope:
         raise HTTPException(400, "Подтвердите, что выбраны только собственные площадки или получатели с явным согласием.")
+    module_id = "dm_mailings" if payload.kind == "broadcast" else "chat_mailings"
+    module_row = await db.get(AppSetting, f"module_config:{module_id}")
+    module_config = _module_config(module_row.value if module_row else None)
+    if not module_config["enabled"] or payload.account_id not in module_config["account_ids"]:
+        raise HTTPException(409, "Сначала включите этот модуль и назначьте выбранный аккаунт в его настройках.")
+    if int(module_config["daily_limit"]) < 1:
+        raise HTTPException(400, "Дневной лимит модуля должен быть больше нуля.")
     account = await db.get(Account, payload.account_id)
     if not account or not account.enabled or account.manual_pause:
         raise HTTPException(400, "Аккаунт не найден, отключён или находится на паузе.")
@@ -1463,6 +1470,11 @@ async def create_automation_campaign(payload: CampaignInput, actor: int = Depend
             recipient_refs={item.peer_id: item.peer_ref.lstrip("@") for item in payload.recipients},
             recipient_labels={item.peer_id: item.peer_label for item in payload.recipients},
             consent_verified=True,
+            runtime_config={
+                "delay_min_seconds": int(module_config["delay_min_seconds"]),
+                "delay_max_seconds": int(module_config["delay_max_seconds"]),
+                "daily_limit": int(module_config["daily_limit"]),
+            },
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
