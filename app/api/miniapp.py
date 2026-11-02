@@ -836,13 +836,13 @@ async def inbox_ai_draft(payload: InboxPeerInput, _: int = Depends(require_admin
     ).order_by(desc(Example.id)).limit(8))).all())
     style = persona.style_instructions if persona else ""
     if account.persona_style_override.strip():
-        style += "\\n\\nИндивидуальные правила аккаунта:\\n" + account.persona_style_override[:6000]
-    style += "\\n\\nЕсли собеседник спрашивает, является ли ответ автоматическим, отвечай честно."
+        style += "\n\nИндивидуальные правила аккаунта:\n" + account.persona_style_override[:6000]
+    if account.learning_prompt.strip():
+        style += "\n\nКонтекст стиля аккаунта:\n" + account.learning_prompt[:6000]
+    style += "\n\nЕсли собеседник спрашивает, является ли ответ автоматическим, отвечай честно."
     await db.rollback()
     try:
-        async with isolated_account_client(payload.account_id) as (live_account, client):
-            if not live_account.enabled or live_account.manual_pause:
-                raise HTTPException(409, "Аккаунт отключён или находится на паузе.")
+        async with isolated_account_client(payload.account_id) as (_live_account, client):
             entity = await _resolve_inbox_entity(client, payload.peer_id, payload.peer_ref)
             if getattr(entity, "broadcast", False) and not getattr(entity, "megagroup", False):
                 raise HTTPException(400, "Для вещательных каналов нельзя создавать ответ в личном inbox.")
@@ -898,7 +898,9 @@ async def inbox_send_reply(payload: InboxReplyInput, actor: int = Depends(requir
         raise HTTPException(409, "Аккаунт на паузе. Снимите паузу перед отправкой.")
     await db.rollback()
     try:
-        async with isolated_account_client(payload.account_id) as (_account, client):
+        async with isolated_account_client(payload.account_id) as (live_account, client):
+            if not live_account.enabled or live_account.manual_pause:
+                raise HTTPException(409, "Аккаунт отключён или находится на паузе.")
             entity = await _resolve_inbox_entity(client, payload.peer_id, payload.peer_ref)
             if getattr(entity, "broadcast", False) and not getattr(entity, "megagroup", False):
                 raise HTTPException(400, "Нельзя отправлять ответы в вещательный канал.")
