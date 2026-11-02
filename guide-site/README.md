@@ -36,3 +36,15 @@ Caddy автоматически запросит и обновит TLS-серт
 - `index.html` — интерактивное меню-руководство, поиск по функциям и адаптивный интерфейс.
 - `Caddyfile` — HTTPS и статическая раздача сайта на `guide.cloudre.store`.
 - `docker-compose.yml` — автономный Caddy для выделенного сервера.
+
+## Публикация Mini App на panel.cloudre.store
+
+Mini App приложения AtcivPerson обслуживается FastAPI-контейнером `api` на внутреннем порту 8080 и открывается по адресу `https://panel.cloudre.store/miniapp`. Caddy из этого каталога проксирует домен на `api:8080` через общую Docker-сеть `atcivperson-web`. Порт API по-прежнему опубликован только на localhost хоста.
+
+1. Создайте DNS A-запись `panel` для `cloudre.store`, направив её на публичный IPv4 того же сервера, где работает Caddy. В текущей инструкции для `guide.cloudre.store` указан `177.3.219.102`; используйте его, только если это всё ещё IP нужного сервера.
+2. Сначала из корня проекта AtcivPerson запустите `docker compose up -d --build`. Этот шаг создаёт общую сеть `atcivperson-web` и запускает API.
+3. Затем из каталога `guide-site` выполните `docker compose up -d`. Caddy подключится к общей сети и начнёт обслуживать оба домена.
+4. Проверьте `https://panel.cloudre.store/health` — ожидается JSON со статусом `ok`; затем откройте `https://panel.cloudre.store/miniapp`.
+5. После обновления перезапустите управляющего бота командой `docker compose restart bot`. При старте бот регистрирует постоянную кнопку Mini App в меню Telegram. Команда `/start` также показывает кнопку «Открыть Mini App».
+
+Если в существующем `.env` задан непустой старый `MINI_APP_URL`, замените его на `https://panel.cloudre.store/miniapp` до перезапуска бота. Не удаляйте Docker volumes: в них хранятся база и пользовательские Telegram-сессии.
