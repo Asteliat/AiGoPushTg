@@ -418,11 +418,19 @@ async def test_set_profile_photo_normalizes_image_to_jpeg_before_upload(monkeypa
     uploaded = {}
 
     class FakeClient:
-        async def upload_profile_photo(self, path):
+        async def upload_file(self, path):
             uploaded["path"] = path
             with Image.open(path) as image:
                 uploaded["format"] = image.format
                 uploaded["mode"] = image.mode
+            return "uploaded-file"
+
+        async def __call__(self, request):
+            from telethon.tl.functions.photos import UploadProfilePhotoRequest
+
+            assert isinstance(request, UploadProfilePhotoRequest)
+            assert request.file == "uploaded-file"
+            uploaded["request_sent"] = True
 
         async def get_profile_photos(self, _entity, limit):
             assert limit == 1
@@ -437,6 +445,7 @@ async def test_set_profile_photo_normalizes_image_to_jpeg_before_upload(monkeypa
 
     assert uploaded["format"] == "JPEG"
     assert uploaded["mode"] == "RGB"
+    assert uploaded["request_sent"] is True
 
 
 @pytest.mark.asyncio
