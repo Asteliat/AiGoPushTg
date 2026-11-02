@@ -379,7 +379,14 @@ async def main():
 
     async def on_message(event, *, aid, labels, allow_unbound: bool = False, forced_label: str | None = None, extra_context: str = "", force_addressed: bool = False):
         label = forced_label or labels.get(event.chat_id)
-        if (label is None and not allow_unbound and not event.is_private) or not event.message or not event.message.message:
+        if label is None and not allow_unbound and not event.is_private:
+            logging.info(
+                "Ignored group message because chat is not enabled in this account's Chats list: "
+                "account=%s chat=%s",
+                aid, event.chat_id,
+            )
+            return
+        if not event.message or not event.message.message:
             return
         incoming = event.message.message.strip()
         if not incoming or event.message.out:
