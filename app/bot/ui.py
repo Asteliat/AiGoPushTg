@@ -1596,6 +1596,17 @@ async def management_input_received(m: Message, state: FSMContext):
                     })
             if not contacts or len(contacts) > 1000:
                 raise ValueError("В файле должно быть от 1 до 1000 контактов.")
+            deduplicated = []
+            seen_phones = set()
+            for contact in contacts:
+                normalized_phone = re.sub(r"[^0-9+]", "", contact["phone"])
+                if not normalized_phone or normalized_phone in seen_phones:
+                    continue
+                seen_phones.add(normalized_phone)
+                deduplicated.append({**contact, "phone": normalized_phone})
+            contacts = deduplicated
+            if not contacts:
+                raise ValueError("После удаления дубликатов не осталось корректных номеров.")
             account_ids = [int(value) for value in (data.get("management_account_ids") or [aid])]
             results = []
             for account_id in account_ids:
