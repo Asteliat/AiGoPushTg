@@ -857,6 +857,7 @@ async def run_parser(account_id: int, kind: str, payload: ParserRunInput,
     if not await db.get(Account, account_id):
         raise HTTPException(404, "Аккаунт не найден.")
     settings = await _parser_settings(db, account_id, kind)
+    await db.rollback()  # Release the DB connection while Telegram parsing is in progress.
     import re
     keywords = [part.strip() for part in re.split(r"[,;\n]", settings.get("keywords", "")) if part.strip()]
     filters = {key: settings[key] for key in (
