@@ -183,13 +183,15 @@ def test_module_kind_mapping_is_explicit():
     assert _module_name_for_kind("reaction") == "reaction"
 
 
-def test_global_module_policy_defaults_and_batch_size():
+def test_module_policy_defaults_use_one_invite_interval_and_keep_other_batch_pauses():
     from app.services.automation import MODULE_POLICY_DEFAULTS
 
     assert MODULE_POLICY_DEFAULTS["invite"]["per_account_limit"] == 99
     assert MODULE_POLICY_DEFAULTS["invite"]["daily_account_limit"] == 25
-    assert MODULE_POLICY_DEFAULTS["invite"]["batch_pause_seconds"] >= 1
+    assert "batch_pause_seconds" not in MODULE_POLICY_DEFAULTS["invite"]
     assert MODULE_POLICY_DEFAULTS["broadcast"]["batch_size"] == 10
+    assert MODULE_POLICY_DEFAULTS["broadcast"]["batch_pause_seconds"] >= 1
+    assert MODULE_POLICY_DEFAULTS["subscription"]["batch_pause_seconds"] >= 1
     assert MODULE_POLICY_DEFAULTS["subscription"]["floodwait_threshold"] == 10
 
 
