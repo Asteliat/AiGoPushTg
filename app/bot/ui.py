@@ -324,12 +324,9 @@ async def cancel_cb(c: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "tool:menu")
 async def tools_menu(c: CallbackQuery):
     if not await check_cb(c): return
-    await edit(c, "🧰 Инструменты\n\nВыберите модуль. Его параметры настраиваются внутри самого модуля и не смешиваются с настройками других модулей.", kb([
-        [("📩 Инвайтинг", "tool:module:invite"), ("🔍 Парсинг", "tool:module:parser")],
-        [("📇 Контакты", "tool:module:contacts"), ("📤 Рассылка", "tool:module:broadcast")],
-        [("📢 Подписка и отписка", "tool:module:subscription"), ("❤️ Реакции", "tool:module:reaction")],
-        [("✏️ Редактирование профиля", "tool:module:profile")],
-        [("🔎 Поиск групп", "tool:groups"), ("📣 Поиск каналов", "tool:channels")],
+    await edit(c, "🧰 Инструменты\n\nПоиск и дополнительные инструменты для Telegram-аккаунтов.", kb([
+        [("🔎 Поиск групп", "tool:groups")],
+        [("📣 Поиск каналов", "tool:channels")],
         [("🎯 Глобальные триггеры", "trigger:global")],
         [("⬅️ Главное меню", "nav:home")],
     ]))
