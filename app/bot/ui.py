@@ -3532,6 +3532,10 @@ RUNTIME_KEYS = {
     "reply_cooldown_seconds": ("⏱ Пауза между ответами", "сек.", 0, 2147483647),
 }
 
+ACCOUNT_RUNTIME_KEYS = {
+    "reply_cooldown_seconds": RUNTIME_KEYS["reply_cooldown_seconds"],
+}
+
 AGENT_CHANNEL_RUNTIME_KEYS = {
     "channel_reply_probability": ("📡 Ответы в комментариях", "%", 0, 100, "channel_reply_probability_override"),
     "channel_reply_cooldown_seconds": ("⏳ Пауза в комментариях", "сек.", 0, 2147483647, "channel_reply_cooldown_seconds_override"),
@@ -3564,10 +3568,10 @@ async def runtime_settings_text():
         lines.append(f"{label}: {shown}")
     lines += [
         "",
-        "Приоритет значений: собственная настройка аккаунта → настройка назначенного ИИ-агента → глобальное значение. Пустые индивидуальные настройки наследуют следующий уровень.",
+        "Приоритет значений: настройка назначенного ИИ-агента → глобальное значение. Индивидуальные настройки агента можно оставить пустыми, чтобы использовать общий уровень.",
         "При изменении глобального значения бот спросит, перезаписать ли настройки всех агентов или изменить только значение по умолчанию для тех, кто наследует глобальные настройки.",
         "",
-        "Самостоятельное участие включайте только для аккаунтов, которые явно обозначены как управляемые ИИ. Для таких аккаунтов также включите отметку в карточке аккаунта.",
+        "Самостоятельные ответы в группах дополнительно включаются в карточке аккаунта. Используйте их только там, где участникам понятно, что аккаунт управляется ИИ.",
     ]
     return "\n".join(lines)
 
@@ -3607,7 +3611,14 @@ async def runtime_value_save(m: Message, state: FSMContext):
     data = await state.get_data()
     key = data.get("runtime_key")
     runtime_scope = data.get("runtime_scope")
-    if runtime_scope == "agent_channel":
+    if runtime_scope == "account":
+        meta = ACCOUNT_RUNTIME_KEYS.get(key)
+        if not meta:
+            await finish_prompt(m, state, "Для аккаунта доступна только настройка паузы. Вероятности задаются в ИИ-агенте или глобально.")
+            return
+        label, unit, minimum, maximum = meta
+        attr = key + "_override"
+    elif runtime_scope == "agent_channel":
         meta = AGENT_CHANNEL_RUNTIME_KEYS.get(key)
         if not meta:
             await finish_prompt(m, state, "Настройка не найдена.")
@@ -3748,21 +3759,21 @@ async def account_runtime_menu(c: CallbackQuery, aid: int):
         "Своя — значение задано для этого аккаунта.",
         "Наследует из глобальных — используется общее значение, если агент не задаёт своё.",
     ]
-    for key, (label, unit, _minimum, _maximum) in RUNTIME_KEYS.items():
+    lines = [
+        f"⏱ Пауза ответов · {account.display_name}",
+        "",
+        "Вероятности ответов больше не настраиваются отдельно для аккаунта. Они задаются в назначенном ИИ-агенте или в глобальных настройках.",
+    ]
+    for key, (label, unit, _minimum, _maximum) in ACCOUNT_RUNTIME_KEYS.items():
         account_override = getattr(account, key + "_override")
         agent_override = getattr(agent, key + "_override") if agent else None
-        effective = (
-            account_override if account_override is not None
-            else agent_override if agent_override is not None
-            else global_values[key]
-        )
+        effective = account_override if account_override is not None else agent_override if agent_override is not None else global_values[key]
         shown_value = format_duration(effective) if key.endswith("_seconds") else f"{effective}{unit}"
-        if account_override is not None:
-            source = f"Своя · {shown_value}"
-        elif agent_override is not None:
-            source = f"Из ИИ-агента · {shown_value}"
-        else:
-            source = f"Наследует глобальную · {shown_value}"
+        source = (
+            f"Своя пауза · {shown_value}" if account_override is not None
+            else f"Из ИИ-агента · {shown_value}" if agent_override is not None
+            else f"Глобальная · {shown_value}"
+        )
         lines.append(f"{label}: {source}")
         buttons.append([(f"✏️ {label}: {source}", f"acc:rt:input:{aid}:{key}")])
         if account_override is not None:
@@ -3784,10 +3795,10 @@ async def account_runtime_input(c: CallbackQuery, state: FSMContext):
         return
     parts = c.data.split(":")
     aid, key = int(parts[3]), parts[4]
-    if key not in RUNTIME_KEYS:
-        await c.answer("Неизвестная настройка.", show_alert=True)
+    if key not in ACCOUNT_RUNTIME_KEYS:
+        await c.answer("Вероятности задаются в ИИ-агенте или глобальных настройках. Для аккаунта доступна только пауза.", show_alert=True)
         return
-    label, unit, minimum, maximum = RUNTIME_KEYS[key]
+    label, unit, minimum, maximum = ACCOUNT_RUNTIME_KEYS[key]
     await state.clear()
     await state.update_data(
         runtime_key=key, runtime_scope="account", runtime_aid=aid,
@@ -3808,8 +3819,8 @@ async def account_runtime_inherit(c: CallbackQuery):
     if not await check_cb(c):
         return
     parts = c.data.split(":")
-    if len(parts) != 5 or parts[4] not in RUNTIME_KEYS:
-        await c.answer("Неизвестная настройка.", show_alert=True)
+    if len(parts) != 5 or parts[4] not in ACCOUNT_RUNTIME_KEYS:
+        await c.answer("Для аккаунта доступна только настройка паузы.", show_alert=True)
         return
     aid, key = int(parts[3]), parts[4]
     async with SessionFactory() as db:
@@ -4440,16 +4451,17 @@ async def acc_view(c, account_id: int | None = None):
         else:
             learning_text = "контекст сохранён вручную" if a.learning_prompt.strip() else "не запускалось"
     conn_label = {"connected": "подключён", "connecting": "подключается", "paused": "пауза", "disconnected": "отключён", "error": "ошибка подключения", "unauthorized": "сессия не авторизована"}.get(a.connection_status, a.connection_status)
-    txt=f"👤 {a.display_name} (@{a.username or 'нет username'})\nID: #{aid}\nАккаунт: {'включён' if a.enabled else 'выключен'}\nСоединение: {conn_label}\nРабота: {'⏸ на паузе' if a.manual_pause else ('активна' if a.enabled else 'отключена')}\nИИ для аккаунта: {'включён' if a.ai_enabled else 'выключен'}\nРежим ответов: {'автоматический' if a.reply_mode=='automatic' else 'ручной'}\nАгент: {agent.name if agent else 'не назначен'}\nПерсона: {persona.name if persona else 'не назначена'}\nАктивных чатов: {chats}\nОбучение: {learning_text}\nПрокси: {'настроен' if a.proxy_config_encrypted else 'нет'}\nИндивидуальные правила: {'заданы' if a.persona_style_override.strip() else 'нет'}"
+    txt=f"👤 {a.display_name} (@{a.username or 'нет username'})\nID: #{aid}\nАккаунт: {'включён' if a.enabled else 'выключен'}\nСоединение: {conn_label}\nРабота: {'⏸ на паузе' if a.manual_pause else ('активна' if a.enabled else 'отключена')}\nИИ для аккаунта: {'включён' if a.ai_enabled else 'выключен'}\nСамостоятельное участие в группах: {'включено' if a.ai_identity_disclosed else 'выключено'}\nРежим ответов: {'автоматический' if a.reply_mode=='automatic' else 'ручной'}\nАгент: {agent.name if agent else 'не назначен'}\nПерсона: {persona.name if persona else 'не назначена'}\nАктивных чатов: {chats}\nОбучение: {learning_text}\nПрокси: {'настроен' if a.proxy_config_encrypted else 'нет'}\nИндивидуальные правила: {'заданы' if a.persona_style_override.strip() else 'нет'}"
     buttons=[
         [(("▶️ Возобновить" if a.manual_pause else "⏸ Пауза"),f"acc:pause:{aid}"),
          (("▶️ Включить" if not a.enabled else "⏸ Отключить"),f"acc:toggle:{aid}")],
         [("ИИ 🟢" if a.ai_enabled else "ИИ 🔴",f"acc:ai:{aid}"),
          ("Автомат" if a.reply_mode=="automatic" else "Ручной",f"acc:mode:{aid}")],
+        [("🤖 Самостоятельные ответы: " + ("ВКЛ" if a.ai_identity_disclosed else "ВЫКЛ"),f"acc:autonomous:{aid}")],
         [("🧠 ИИ Агент",f"acc:agents:{aid}"),("🎭 Персона",f"acc:personas:{aid}")],
         [("⚙️ Прокси",f"acc:proxysettings:{aid}"),("✏️ Правила",f"acc:personaoverride:{aid}")],
         [("💡 Примеры",f"example:account:{aid}"),("💬 Чаты",f"chat:account:{aid}")],
-        [("🎚 Вероятности ответов",f"acc:runtime:menu:{aid}")],
+        [("⏱ Пауза ответов",f"acc:runtime:menu:{aid}")],
         [("✉️ Отправить сообщение",f"acc:sendmessage:{aid}")],
         [("💬📣Встпуление",f"chat:joinlink:{aid}"),
          ((("⏳ Завершение" if a.learning_status == "stopping" else "⏹ Остановить") if learning else "🧠 Автообучение"),(f"learn:stop:{aid}" if learning else f"acc:learn:{aid}"))],
@@ -4690,6 +4702,26 @@ async def acc_ai(c):
         if not a: await c.answer("Аккаунт не найден",show_alert=True); return
         a.ai_enabled=not a.ai_enabled; await db.commit()
     await acc_view(c)
+@router.callback_query(F.data.startswith("acc:autonomous:"))
+async def acc_autonomous_toggle(c):
+    if not await check_cb(c):
+        return
+    aid = int(c.data.split(":")[2])
+    async with SessionFactory() as db:
+        account = await db.get(Account, aid)
+        if not account:
+            await c.answer("Аккаунт не найден.", show_alert=True)
+            return
+        account.ai_identity_disclosed = not account.ai_identity_disclosed
+        enabled = account.ai_identity_disclosed
+        await db.commit()
+    await c.answer(
+        "Самостоятельные ответы в группах включены." if enabled
+        else "Самостоятельные ответы в группах выключены."
+    )
+    await acc_view(c)
+
+
 @router.callback_query(F.data.startswith("acc:mode:"))
 async def acc_mode(c):
     if not await check_cb(c): return
