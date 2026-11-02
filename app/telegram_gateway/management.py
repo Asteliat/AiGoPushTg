@@ -234,6 +234,27 @@ async def update_profile(
                     last_name=last_name if last_name is not None else (current.last_name or ""),
                     about=about if about is not None else (full.full_user.about or ""),
                 ))
+                # Telegram's UpdateProfile response is not enough to tell the user
+                # that the requested Bio is actually visible. Read it back from
+                # account.getFullUser and fail instead of reporting a false success.
+                if about is not None:
+                    # Telegram may apply profile changes asynchronously. Poll the
+                    # authoritative full-user profile for up to 20 seconds.
+                    deadline = time.monotonic() + 20
+                    actual_about = full.full_user.about or ""
+                    while True:
+                        await asyncio.sleep(1 if actual_about != about else 0)
+                        updated_full = await client(GetFullUserRequest(await client.get_me()))
+                        actual_about = updated_full.full_user.about or ""
+                        if actual_about == about:
+                            break
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise RuntimeError(
+                                "Telegram не подтвердил изменение Bio за 20 секунд. "
+                                f"Ожидалось {len(about)} символов, сохранено {len(actual_about)}."
+                            )
+                        await asyncio.sleep(min(2, remaining))
             if username is not None:
                 await client(UpdateUsernameRequest(username=username))
             me = await client.get_me()

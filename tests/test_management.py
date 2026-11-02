@@ -508,3 +508,55 @@ async def test_publish_story_photo_rejects_landscape_before_opening_account_sess
 
     with pytest.raises(ValueError, match="вертикальное"):
         await publish_story_photo(7, str(photo_path))
+
+@pytest.mark.asyncio
+async def test_update_profile_bio_fails_when_telegram_does_not_save_it(monkeypatch):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from app.telegram_gateway import management
+
+    class FakeClient:
+        def __init__(self):
+            self.full_user_reads = 0
+
+        async def get_me(self):
+            return SimpleNamespace(first_name="Test", last_name="", username=None)
+
+        async def __call__(self, request):
+            self.full_user_reads += 1
+            return SimpleNamespace(full_user=SimpleNamespace(about="old bio"))
+
+    fake_client = FakeClient()
+    fake_account = SimpleNamespace(proxy_config_encrypted=None)
+    clock = {"now": 0.0}
+
+    def fake_monotonic():
+        return clock["now"]
+
+    async def fake_sleep(seconds):
+        clock["now"] += seconds
+
+    monkeypatch.setattr(management, "time", SimpleNamespace(monotonic=fake_monotonic))
+    monkeypatch.setattr(management.asyncio, "sleep", fake_sleep)
+
+    @asynccontextmanager
+    async def fake_lock(_account_id):
+        yield
+
+    @asynccontextmanager
+    async def fake_isolated(_account_id):
+        yield fake_account, fake_client
+
+    async def no_sync(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(management, "_account_lock", lambda aid: fake_lock(aid))
+    monkeypatch.setattr(management, "isolated_account_client", fake_isolated)
+    monkeypatch.setattr(management, "_sync_cached_account_profile", no_sync)
+
+    with pytest.raises(RuntimeError, match="Telegram не подтвердил изменение Bio"):
+        await management.update_profile(1, about="new bio")
+
+    assert fake_client.full_user_reads > 2
+
