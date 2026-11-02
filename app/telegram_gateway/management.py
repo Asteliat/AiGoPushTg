@@ -976,22 +976,26 @@ async def parse_chat_participants(
             }
 
 
-async def preview_message_target(account_id: int, target: str) -> dict:
-    """Resolve one explicitly selected Telegram peer before a manual message is sent."""
+def _normalize_manual_message_target(target: str):
     value = str(target or "").strip()
     if not value or len(value) > 256:
         raise ValueError("Укажите @username, ссылку t.me или ID чата.")
-    if value.startswith("https://t.me/"):
-        value = value.rstrip("/")
-        path = value.removeprefix("https://t.me/")
-        if path.startswith(("+", "joinchat/")):
-            raise ValueError("Ссылки-приглашения не подходят. Сначала вступите в чат.")
-        value = "@" + path.split("/", 1)[0].lstrip("@")
-    elif value.startswith("t.me/"):
+    if value.startswith(("https://t.me/", "http://t.me/", "t.me/")):
+        value = value.removeprefix("https://").removeprefix("http://")
         path = value.removeprefix("t.me/").rstrip("/")
         if path.startswith(("+", "joinchat/")):
             raise ValueError("Ссылки-приглашения не подходят. Сначала вступите в чат.")
+        if path.startswith("c/"):
+            raise ValueError("Для приватной ссылки t.me/c укажите ID чата из списка диалогов.")
         value = "@" + path.split("/", 1)[0].lstrip("@")
+    if re.fullmatch(r"-?\\d+", value):
+        return int(value)
+    return value
+
+
+async def preview_message_target(account_id: int, target: str) -> dict:
+    """Resolve one explicitly selected Telegram peer before a manual message is sent."""
+    value = _normalize_manual_message_target(target)
     async with _account_lock(account_id):
         async with isolated_account_client(account_id) as (_account, client):
             entity = await client.get_entity(value)
@@ -1025,19 +1029,7 @@ async def send_message_to_chat(account_id: int, target: str, message: str) -> di
         raise ValueError("Текст сообщения не может быть пустым.")
     if len(value) > 4096:
         raise ValueError("Сообщение не должно превышать 4096 символов.")
-    peer = str(target or "").strip()
-    if not peer or len(peer) > 256:
-        raise ValueError("Не указан корректный чат.")
-    if peer.startswith("https://t.me/"):
-        path = peer.rstrip("/").removeprefix("https://t.me/")
-        if path.startswith(("+", "joinchat/")):
-            raise ValueError("Ссылки-приглашения не подходят. Укажите username или ID чата.")
-        peer = "@" + path.split("/", 1)[0].lstrip("@")
-    elif peer.startswith("t.me/"):
-        path = peer.rstrip("/").removeprefix("t.me/")
-        if path.startswith(("+", "joinchat/")):
-            raise ValueError("Ссылки-приглашения не подходят. Укажите username или ID чата.")
-        peer = "@" + path.split("/", 1)[0].lstrip("@")
+    peer = _normalize_manual_message_target(target)
     async with _account_lock(account_id):
         async with isolated_account_client(account_id) as (_account, client):
             entity = await client.get_entity(peer)
