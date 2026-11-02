@@ -183,7 +183,7 @@ class ExampleInput(BaseModel):
     title: str = Field(default="", max_length=160)
     incoming_text: str = Field(min_length=1, max_length=12000)
     preferred_reply: str = Field(min_length=1, max_length=12000)
-    consent_confirmed: bool
+    consent_confirmed: Literal[True]
 
 
 class TriggerInput(BaseModel):
@@ -270,7 +270,7 @@ class CampaignInput(BaseModel):
     text: str = Field(min_length=1, max_length=4096)
     recipients: list[CampaignRecipientInput] = Field(min_length=1, max_length=500)
     scheduled_at: datetime | None = None
-    confirm_scope: bool
+    confirm_scope: Literal[True]
 
 
 class ConsentInput(BaseModel):
