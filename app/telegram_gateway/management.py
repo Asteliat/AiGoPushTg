@@ -1038,7 +1038,7 @@ async def send_message_to_chat(account_id: int, target: str, message: str) -> di
             sent = await client.send_message(entity, value, parse_mode=None, link_preview=False)
             return {
                 "message_id": int(sent.id),
-                "peer_id": int(utils.get_peer_id(entity)),
+                "peer_id": int(entity.id),
                 "title": str(
                     getattr(entity, "title", None)
                     or " ".join(filter(None, [
@@ -1234,7 +1234,7 @@ async def resolve_group(account_id: int, group_ref: str) -> dict:
                 raise PermissionError("Аккаунт должен быть администратором группы.")
             username = getattr(entity, "username", None)
             return {
-                "peer_id": int(utils.get_peer_id(entity)),
+                "peer_id": int(entity.id),
                 "peer_ref": f"@{username}" if username else "",
                 "peer_label": str(getattr(entity, "title", None) or username or entity.id),
                 "is_megagroup": bool(getattr(entity, "megagroup", False)),
@@ -1287,7 +1287,7 @@ async def resolve_groups(account_id: int, group_refs: list[str]) -> list[dict]:
                 permissions = await client.get_permissions(entity, "me")
                 if not (getattr(permissions, "is_admin", False) or getattr(permissions, "is_creator", False)):
                     raise PermissionError(f"Аккаунт не является администратором группы @{value}.")
-                peer_id = int(utils.get_peer_id(entity))
+                peer_id = int(entity.id)
                 username = getattr(entity, "username", None)
                 result.append({
                     "peer_id": peer_id,
@@ -1316,7 +1316,7 @@ async def resolve_group_reference(account_id: int, group_ref: str) -> dict:
             )
             if not is_group:
                 raise ValueError("Это не группа.")
-            peer_id = int(utils.get_peer_id(entity))
+            peer_id = int(entity.id)
             username = getattr(entity, "username", None)
             return {"peer_id": peer_id, "peer_ref": f"@{username}" if username else "",
                     "peer_label": str(getattr(entity, "title", None) or username or entity.id)}
