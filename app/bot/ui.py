@@ -403,6 +403,37 @@ async def render_campaign_kind_selection(c: CallbackQuery, state: FSMContext, mo
         + ", ".join(f"#{aid}" for aid in ids) + "\n\nВыберите тип задачи:", kb(kinds))
 
 
+MULTI_ACCOUNT_MODULES = {"broadcast", "invite", "subscription", "reaction", "profile"}
+
+
+async def render_selected_module_actions(c: CallbackQuery, state: FSMContext, module: str, account_ids: list[int]):
+    async with SessionFactory() as db:
+        accounts = list((await db.scalars(
+            select(Account).where(Account.id.in_(account_ids), Account.enabled.is_(True)).order_by(Account.id)
+        )).all())
+    ids = [int(account.id) for account in accounts]
+    if not ids:
+        await c.answer("Выберите хотя бы один включённый аккаунт.", show_alert=True)
+        return
+    await state.update_data(
+        management_account_ids=ids, management_account_id=ids[0],
+        module_selection_module=module,
+    )
+    title, actions = MODULE_ACTIONS[module]
+    rows = [[(label, f"tool:mg:{action}:{ids[0]}")] for label, action in actions]
+    rows.extend([
+        [("⛔ Статус FloodWait", f"tool:quarantine:{module}:{ids[0]}")],
+        [("⚙️ Глобальные настройки", f"tool:policy:{module}")],
+        [("↩️ Выбрать аккаунты", f"tool:module:{module}")],
+    ])
+    await edit(
+        c,
+        f"{title}\n\nВыбрано аккаунтов: {len(ids)} · " + ", ".join(f"#{aid}" for aid in ids)
+        + "\nДействие будет создано отдельно для каждого выбранного аккаунта.",
+        kb(rows),
+    )
+
+
 @router.callback_query(F.data.startswith("tool:module:toggle:"))
 async def tool_module_toggle_account(c: CallbackQuery, state: FSMContext):
     if not await check_cb(c):
@@ -423,11 +454,15 @@ async def tool_module_select_all(c: CallbackQuery, state: FSMContext):
     if not await check_cb(c):
         return
     module = c.data.rsplit(":", 1)[-1]
-    if module not in {"broadcast", "invite"}:
-        await c.answer("Множественный выбор доступен для рассылки и инвайтинга.", show_alert=True)
+    if module not in MULTI_ACCOUNT_MODULES:
+        await c.answer("Для этого модуля выберите один аккаунт.", show_alert=True)
         return
     accounts = await _enabled_accounts_for_module()
-    await render_campaign_kind_selection(c, state, module, [int(account.id) for account in accounts])
+    ids = [int(account.id) for account in accounts]
+    if module in {"broadcast", "invite"}:
+        await render_campaign_kind_selection(c, state, module, ids)
+    else:
+        await render_selected_module_actions(c, state, module, ids)
 
 
 async def _enabled_accounts_for_module():
@@ -443,7 +478,13 @@ async def tool_module_continue_accounts(c: CallbackQuery, state: FSMContext):
         return
     module = c.data.rsplit(":", 1)[-1]
     data = await state.get_data()
-    await render_campaign_kind_selection(c, state, module, data.get("module_selected_accounts") or [])
+    selected = data.get("module_selected_accounts") or []
+    if module in {"broadcast", "invite"}:
+        await render_campaign_kind_selection(c, state, module, selected)
+    elif module in MULTI_ACCOUNT_MODULES:
+        await render_selected_module_actions(c, state, module, selected)
+    else:
+        await c.answer("Для этого модуля выберите один аккаунт.", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("tool:module:"))
@@ -465,6 +506,10 @@ async def tool_module_accounts(c: CallbackQuery, state: FSMContext):
             await state.clear()
             await render_campaign_kind_selection(c, state, module, [aid])
             return
+        if module in MULTI_ACCOUNT_MODULES:
+            await state.clear()
+            await render_selected_module_actions(c, state, module, [aid])
+            return
         title, actions = MODULE_ACTIONS[module]
         rows = [[(label, f"tool:mg:{action}:{aid}")] for label, action in actions]
         rows.extend([
@@ -483,7 +528,7 @@ async def tool_module_accounts(c: CallbackQuery, state: FSMContext):
             select(Account).where(Account.enabled.is_(True)).order_by(Account.id)
         )).all())
     title = MODULE_ACTIONS[module][0]
-    if module in {"broadcast", "invite"}:
+    if module in MULTI_ACCOUNT_MODULES:
         await state.clear()
         await render_module_account_selection(c, state, module, [])
         return
