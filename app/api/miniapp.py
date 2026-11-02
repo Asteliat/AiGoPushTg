@@ -815,12 +815,14 @@ async def search_groups(payload: SearchInput, actor: int = Depends(require_admin
         verified = await verify_group_candidates(client, web_candidates[:payload.limit * 2])
         merged = {str(item.get("link", "")).casefold(): item for item in [*telegram, *verified]}
         results = sorted(merged.values(), key=lambda item: (int(item.get("score") or 0), int(item.get("members") or 0)), reverse=True)
+        from telethon.tl.types import PeerChannel, PeerChat
         for item in results:
-            if item.get("username"):
-                entity = await client.get_entity(item["username"])
-                item["id"] = int(utils.get_peer_id(entity))
-            else:
+            raw_id = item.get("id")
+            if raw_id is None:
                 item["id"] = None
+            else:
+                peer = PeerChannel(int(raw_id)) if item.get("kind") == "supergroup" else PeerChat(int(raw_id))
+                item["id"] = int(utils.get_peer_id(peer))
     return {"results": results[:payload.limit], "count": len(results)}
 
 
@@ -835,10 +837,8 @@ async def search_channels(payload: SearchInput, actor: int = Depends(require_adm
         verified = await verify_channel_candidates(client, web_candidates[:payload.limit * 2])
         merged = {str(item.get("link", "")).casefold(): item for item in [*telegram, *verified]}
         results = sorted(merged.values(), key=lambda item: (int(item.get("score") or 0), int(item.get("members") or 0)), reverse=True)
+        from telethon.tl.types import PeerChannel
         for item in results:
-            if item.get("username"):
-                entity = await client.get_entity(item["username"])
-                item["id"] = int(utils.get_peer_id(entity))
-            else:
-                item["id"] = None
+            raw_id = item.get("id")
+            item["id"] = int(utils.get_peer_id(PeerChannel(int(raw_id)))) if raw_id is not None else None
     return {"results": results[:payload.limit], "count": len(results)}
