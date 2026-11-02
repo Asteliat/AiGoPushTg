@@ -22,6 +22,13 @@ def resolve_agent_runtime_override(agent_override: int | None, global_value: int
     return int(agent_override) if agent_override is not None else int(global_value)
 
 
+def passes_reply_probability(probability: int, roll: int) -> bool:
+    """Return whether this incoming message passes the percentage gate (1..100)."""
+    probability = max(0, min(100, int(probability)))
+    roll = max(1, min(100, int(roll)))
+    return probability == 100 or (probability > 0 and roll <= probability)
+
+
 def build_reply_style_instructions(
     *,
     persona_style: str,

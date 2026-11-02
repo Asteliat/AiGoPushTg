@@ -16,7 +16,7 @@ from telethon.tl.functions.messages import GetDiscussionMessageRequest
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from app.ai.provider import AIUnavailableError, NoReplyNeeded, summarize_chat_context
-from app.services.ai_responses import generate_response, resolve_runtime_override, resolve_agent_runtime_override, global_ai_enabled
+from app.services.ai_responses import generate_response, resolve_runtime_override, resolve_agent_runtime_override, passes_reply_probability, global_ai_enabled
 from app.workers.channel_monitor import has_channel_post_content, install_channel_monitor
 from app.settings import get_settings
 from app.storage.db import SessionFactory
@@ -481,16 +481,11 @@ async def main():
                 addressed = force_addressed or mentioned or (reply_to and reply_to.sender_id == current.telegram_user_id)
                 if addressed:
                     probability_key = "mention_reply_probability"
-                elif current.ai_identity_disclosed:
+                else:
+                    # Autonomous group replies are controlled only by the configured
+                    # proactive probability (agent override -> global setting).
                     probability_key = "proactive_reply_probability"
                     proactive = True
-                else:
-                    logging.info(
-                        "Proactive group replies are disabled until AI-management disclosure is enabled: "
-                        "account=%s chat=%s",
-                        aid, event.chat_id,
-                    )
-                    return
             elif event.is_private:
                 probability_key = "dm_reply_probability"
             else:
@@ -502,7 +497,7 @@ async def main():
                 getattr(agent, probability_key + "_override"),
                 global_probability,
             )
-            if probability <= 0 or random.randint(1, 100) > min(probability, 100):
+            if not passes_reply_probability(probability, random.randint(1, 100)):
                 logging.info("Reply skipped by %s probability (%s%%) for account %s in chat %s", probability_key, probability, aid, event.chat_id)
                 return
 
