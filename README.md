@@ -360,3 +360,8 @@ The `content_drafts` table is created by the existing `Base.metadata.create_all`
 ### Retirement safety switch
 
 The legacy invite/broadcast/subscription/reaction dispatcher is disabled by default in the refreshed product through `LEGACY_AUTOMATION_ENABLED=false`. Historical task, schedule and consent rows are retained; they are not deleted. Setting the variable to `true` is an explicit rollback switch and should only be used if the operator intentionally restores the legacy tools.
+
+
+### Unified Inbox
+
+The refreshed Mini App includes a read-only dialog list and message history for a selected account, contextual AI reply drafts, and operator-approved replies. The API never starts a new conversation: a reply must reference the latest inbound message; group replies additionally require that the group is saved and enabled. Broadcast channels are read-only in this inbox. FloodWait is returned to the operator and is never bypassed or retried automatically.
