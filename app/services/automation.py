@@ -789,10 +789,10 @@ async def process_due_campaigns(*, max_tasks: int = 1) -> int:
                             current = await db.get(AutomationTask, task_id)
                             if current and current.status == "running":
                                 current.status = "queued"
-                                current.scheduled_at = utcnow() + timedelta(seconds=interval)
+                                current.scheduled_at = utcnow() + timedelta(seconds=int(policy.get("batch_pause_seconds", interval)))
                                 current.last_error = (
                                     f"Пакет {processed_in_batch}/{batch_size} обработан; "
-                                    "продолжение запланировано с учётом интервала."
+                                    f"следующий пакет через {int(policy.get('batch_pause_seconds', interval))} сек."
                                 )
                                 current.updated_at = utcnow()
                                 await db.commit()
@@ -847,10 +847,10 @@ __all__ = [
 
 
 MODULE_POLICY_DEFAULTS = {
-    "broadcast": {"interval_seconds": 30, "daily_limit": 50, "batch_size": 10, "per_account_limit": 50, "daily_account_limit": 50, "floodwait_wait_seconds": 9999, "floodwait_threshold": 10},
-    "invite": {"interval_seconds": 120, "daily_limit": 25, "batch_size": 1, "per_account_limit": 99, "daily_account_limit": 25, "floodwait_wait_seconds": 9999, "floodwait_threshold": 10},
-    "subscription": {"interval_seconds": 10, "daily_limit": 20, "batch_size": 1, "per_account_limit": 20, "daily_account_limit": 20, "floodwait_wait_seconds": 9999, "floodwait_threshold": 10},
-    "reaction": {"interval_seconds": 30, "daily_limit": 50, "batch_size": 1, "per_account_limit": 50, "daily_account_limit": 50, "floodwait_wait_seconds": 9999, "floodwait_threshold": 10},
+    "broadcast": {"interval_seconds": 30, "daily_limit": 50, "batch_size": 10, "batch_pause_seconds": 60, "per_account_limit": 50, "daily_account_limit": 50, "floodwait_wait_seconds": 9999, "floodwait_threshold": 10},
+    "invite": {"interval_seconds": 120, "daily_limit": 25, "batch_size": 1, "batch_pause_seconds": 60, "per_account_limit": 99, "daily_account_limit": 25, "floodwait_wait_seconds": 9999, "floodwait_threshold": 10},
+    "subscription": {"interval_seconds": 10, "daily_limit": 20, "batch_size": 1, "batch_pause_seconds": 60, "per_account_limit": 20, "daily_account_limit": 20, "floodwait_wait_seconds": 9999, "floodwait_threshold": 10},
+    "reaction": {"interval_seconds": 30, "daily_limit": 50, "batch_size": 1, "batch_pause_seconds": 60, "per_account_limit": 50, "daily_account_limit": 50, "floodwait_wait_seconds": 9999, "floodwait_threshold": 10},
 }
 
 
@@ -880,7 +880,7 @@ async def module_policy(module: str) -> dict:
             result[name] = int(values.get(name, default))
         except (TypeError, ValueError):
             result[name] = default
-    for name in ("interval_seconds", "daily_limit", "batch_size", "per_account_limit", "daily_account_limit", "floodwait_wait_seconds", "floodwait_threshold"):
+    for name in ("interval_seconds", "daily_limit", "batch_size", "batch_pause_seconds", "per_account_limit", "daily_account_limit", "floodwait_wait_seconds", "floodwait_threshold"):
         result[name] = max(1, min(9999 if name != "floodwait_threshold" else 100, result[name]))
     return result
 
@@ -1007,8 +1007,6 @@ async def create_schedule(
     recipient_labels: dict[int, str] | None = None,
 ) -> int:
     """Create a recurring campaign for explicitly selected Telegram peers."""
-    if kind == "direct_invite":
-        raise ValueError("Прямое добавление можно запланировать однократно, но не повторять автоматически.")
     normalized = _validate_payload(kind, payload)
     interval_seconds = _validate_schedule_interval(interval_seconds)
     if not 1 <= int(max_runs) <= 365:
