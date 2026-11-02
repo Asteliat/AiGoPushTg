@@ -4449,6 +4449,10 @@ async def acc_send_message_confirm(c: CallbackQuery, state: FSMContext):
     ):
         await c.answer("Предпросмотр отправки истёк. Начните заново.", show_alert=True)
         return
+    if data.get("manual_message_sending"):
+        await c.answer("Отправка уже выполняется.", show_alert=True)
+        return
+    await state.update_data(manual_message_sending=True)
     await c.answer("Отправляю сообщение…")
     try:
         result = await telegram_management.send_message_to_chat(
