@@ -372,7 +372,8 @@ MODULE_ACTIONS = {
     "profile": ("✏️ Редактирование профиля", [
         ("👤 Посмотреть профиль", "profile"),
         ("✏️ Изменить имя, BIO и username", "editprofile"),
-        ("📷 Изменить фотографию", "photo"),
+        ("📷 Одно фото для выбранных аккаунтов", "photo"),
+        ("🖼 Отдельное фото каждому аккаунту", "photosequential"),
         ("🤖 Автоответчик (только при выключенном ИИ)", "autoresponder"),
     ]),
 }
@@ -1026,7 +1027,7 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         await state.set_state(Flow.management_input)
         await edit(c, prompts[action], CANCEL)
         return
-    if action == "photo":
+    if action in {"photo", "photosequential"}:
         previous = await state.get_data()
         selected_ids = previous.get("management_account_ids") or [aid]
         module = previous.get("module_selection_module")
@@ -1034,12 +1035,17 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         await state.update_data(
             management_action="photo", management_account_id=aid,
             management_account_ids=[int(value) for value in selected_ids],
+            photo_per_account=(action == "photosequential"),
+            photo_account_index=0, photo_results=[],
             module_selection_module=module,
             ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id,
             return_callback=f"tool:module:{module}" if module else f"tool:management:account:{aid}",
         )
         await state.set_state(Flow.management_photo)
-        await edit(c, "Отправьте фотографию, которую нужно установить на профиль аккаунта. Поддерживается фото или изображение-документ до 10 МБ.", CANCEL)
+        if action == "photosequential":
+            await edit(c, f"Отправьте фотографию для аккаунта #{int(selected_ids[0])}. После каждого фото бот попросит следующее. Поддерживается фото или изображение-документ до 10 МБ.", CANCEL)
+        else:
+            await edit(c, "Отправьте одно фото, которое нужно установить на все выбранные аккаунты. Поддерживается фото или изображение-документ до 10 МБ.", CANCEL)
         return
     if action in {"campaign", "schedule"}:
         mode = "once" if action == "campaign" else "recurring"
@@ -2152,13 +2158,30 @@ async def management_photo_received(m: Message, state: FSMContext):
     )
     try:
         await m.bot.download(photo, destination=path)
-        results = []
-        for account_id in account_ids:
+        if data.get("photo_per_account"):
+            index = int(data.get("photo_account_index") or 0)
+            if index >= len(account_ids):
+                raise ValueError("Список аккаунтов для фотографий уже завершён.")
+            account_id = account_ids[index]
+            results = list(data.get("photo_results") or [])
             try:
                 await telegram_management.set_profile_photo(account_id, path)
                 results.append(f"✅ #{account_id}: фото обновлено")
             except Exception as exc:
                 results.append(f"❌ #{account_id}: {type(exc).__name__}: {str(exc)[:120]}")
+            next_index = index + 1
+            if next_index < len(account_ids):
+                await state.update_data(photo_account_index=next_index, photo_results=results)
+                await prompt_message(m, state, f"Фото для аккаунта #{account_id} обработано. Теперь отправьте отдельное фото для аккаунта #{account_ids[next_index]}.")
+                return
+        else:
+            results = []
+            for account_id in account_ids:
+                try:
+                    await telegram_management.set_profile_photo(account_id, path)
+                    results.append(f"✅ #{account_id}: фото обновлено")
+                except Exception as exc:
+                    results.append(f"❌ #{account_id}: {type(exc).__name__}: {str(exc)[:120]}")
         await finish_prompt(m, state, "\\n".join(results), kb([
             [("↩️ К модулю", f"tool:module:{module}")],
             [("🏠 Главное меню", "nav:home")],
