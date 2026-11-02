@@ -461,6 +461,61 @@ async def parse_chat_history(
             }
 
 
+
+async def parse_account_history(
+    account_id: int, *, limit_per_chat: int = 100, days: int = 0,
+    keywords: list[str] | None = None, include_comments: bool = False,
+    comment_limit: int = 20, message_delay_seconds: int = 0,
+    chat_delay_seconds: int = 0, max_chats: int = 200,
+) -> dict:
+    """Parse visible history across this account's own dialogs, isolating each chat."""
+    max_chats = max(1, min(int(max_chats), 200))
+    chat_delay_seconds = max(0, min(int(chat_delay_seconds), 9999))
+    dialogs = await list_account_dialogs(account_id, limit=500, kind="all")
+    selected = dialogs[:max_chats]
+    results = []
+    errors = []
+    for index, dialog in enumerate(selected):
+        if index and chat_delay_seconds:
+            await asyncio.sleep(chat_delay_seconds)
+        target = dialog.get("peer_id") or dialog.get("id")
+        try:
+            parsed = await parse_chat_history(
+                account_id, str(target), limit=limit_per_chat, days=days,
+                keywords=keywords, include_comments=include_comments,
+                comment_limit=comment_limit,
+                message_delay_seconds=message_delay_seconds,
+            )
+            results.append(parsed)
+        except FloodWaitError:
+            raise
+        except Exception as exc:
+            logging.warning(
+                "History parser skipped account=%s chat=%s: %s",
+                account_id, target, type(exc).__name__,
+            )
+            errors.append({
+                "chat_id": int(dialog.get("id") or 0),
+                "title": str(dialog.get("title") or target),
+                "error": f"{type(exc).__name__}: {str(exc)[:180]}",
+            })
+    return {
+        "account_id": int(account_id),
+        "chats_scanned": len(selected),
+        "chats_parsed": len(results),
+        "messages_count": sum(len(item["posts"]) for item in results),
+        "results": results,
+        "errors": errors,
+        "filters": {
+            "days": max(0, min(int(days), 365)),
+            "keywords": [str(term).strip().casefold() for term in (keywords or []) if str(term).strip()],
+            "comments": bool(include_comments),
+            "message_delay_seconds": max(0, min(int(message_delay_seconds), 9999)),
+            "chat_delay_seconds": chat_delay_seconds,
+        },
+    }
+
+
 async def parse_chat_participants(
     account_id: int, chat: str, *, limit: int = 200,
     exclude_bots: bool = False, exclude_deleted: bool = False,
