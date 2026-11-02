@@ -707,8 +707,7 @@ async def test_bound_private_group_builds_input_peer_with_saved_access_hash():
     from telethon import utils
     from app.telegram_gateway.management import _bound_chat_input_peer
 
-    marked_id = utils.get_peer_id(type("ChannelPeer", (), {"id": 987654, "__class__": type("Channel", (), {})})())
-    # Use Telethon's canonical marked channel ID rather than a guessed negative ID.
+    # Telethon's canonical marked channel ID for raw channel ID 987654.
     marked_id = -1000000987654
     binding = SimpleNamespace(chat_id=marked_id, peer_type="channel", access_hash=123456789, title="Private group")
     peer = _bound_chat_input_peer(binding)
