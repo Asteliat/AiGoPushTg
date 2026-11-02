@@ -2642,9 +2642,12 @@ async def management_input_received(m: Message, state: FSMContext):
         module = data.get("module_selection_module")
         if action and action.startswith("policy-field-"):
             back_callback, back_label = f"tool:policy:{action.split('-', 3)[2]}", "↩️ К настройкам модуля"
+        elif data.get("module_return_callback"):
+            back_callback = data["module_return_callback"]
+            back_label = "↩️ К настройке аккаунтов" if back_callback.startswith("tool:account-settings") else "↩️ Назад"
         elif module:
-            back_callback = data.get("module_return_callback") or f"tool:module:{module}"
-            back_label = "↩️ К аккаунту модуля" if data.get("module_return_callback") else "↩️ К модулю"
+            back_callback = f"tool:module:{module}"
+            back_label = "↩️ К модулю"
         else:
             back_callback = f"tool:management:account:{aid}"
             back_label = "↩️ К инструментам аккаунта"
