@@ -130,7 +130,7 @@ async def create_subscription_task(
     policy = await module_policy("subscription")
     if len(normalized) > policy["per_account_limit"]:
         raise ValueError(
-            f"Глобальный лимит подписок: не более {policy['per_account_limit']} ссылок "
+            f"Лимит модуля «Подписка»: не более {policy['per_account_limit']} ссылок "
             "на один аккаунт в одной задаче."
         )
     async with SessionFactory() as db:
@@ -469,7 +469,7 @@ async def set_account_limits(
 ) -> None:
     """Deprecated compatibility shim: individual operation limits are no longer supported."""
     raise ValueError(
-        "Индивидуальные лимиты отключены. Измените глобальные настройки соответствующего модуля."
+        "Индивидуальные лимиты отключены. Измените настройки соответствующего модуля в его меню."
     )
 
 
@@ -964,9 +964,9 @@ async def set_operation_limits(
     account_id: int | None = None,
     quiet_start_utc: str | None = None, quiet_end_utc: str | None = None,
 ) -> None:
-    """Compatibility API; all module limits are global and shared by selected accounts."""
+    """Compatibility API; module policies are configured in each module menu and shared by selected accounts."""
     if account_id is not None:
-        raise ValueError("Индивидуальные лимиты отключены. Настройки задаются глобально.")
+        raise ValueError("Индивидуальные лимиты отключены. Настройки задаются в меню соответствующего модуля.")
     await set_module_policy(operation, interval_seconds=interval_seconds, daily_limit=daily_limit)
     quiet_start, quiet_end = _normalize_quiet_hours(quiet_start_utc, quiet_end_utc)
     async with SessionFactory() as db:
