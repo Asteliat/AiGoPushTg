@@ -1280,6 +1280,9 @@ async def reserve_operation_slot(account_id: int, operation: str) -> None:
     """Atomically reserve one local operation slot before touching Telegram."""
     if operation not in {"subscription", "reaction"}:
         raise ValueError("Для прямого резервирования поддерживаются subscription и reaction.")
+    quarantine = await module_quarantine_status(account_id, operation)
+    if quarantine["quarantined"]:
+        raise OperationRateLimitError(operation, 86400, f"Аккаунт в карантине модуля: {quarantine['reason']}")
     policy = await module_policy(operation)
     async with SessionFactory() as db:
         account = await db.scalar(select(Account).where(Account.id == account_id).with_for_update())
