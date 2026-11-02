@@ -30,7 +30,7 @@ from app.storage.models import (
     utcnow,
 )
 
-ALLOWED_KINDS = {"broadcast", "invite", "direct_invite", "group_broadcast"}
+ALLOWED_KINDS = {"broadcast", "invite", "direct_invite", "group_broadcast", "subscription_join", "subscription_leave"}
 MAX_RECIPIENTS = 500
 MAX_TEXT = 4096
 
@@ -73,6 +73,8 @@ async def _resolve_campaign_peer(client, peer_id: int, peer_ref: str = ""):
 def _validate_payload(kind: str, payload: dict) -> dict:
     if kind not in ALLOWED_KINDS:
         raise ValueError("Неизвестный тип кампании.")
+    if kind in {"subscription_join", "subscription_leave"}:
+        return {"action": "join" if kind == "subscription_join" else "leave"}
     normalized = {
         "text": str(payload.get("text") or "").strip(),
         "file_path": str(payload.get("file_path") or "").strip(),
