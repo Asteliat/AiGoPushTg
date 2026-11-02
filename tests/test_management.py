@@ -537,7 +537,7 @@ async def test_update_profile_bio_fails_when_telegram_does_not_save_it(monkeypat
     async def fake_sleep(seconds):
         clock["now"] += seconds
 
-    monkeypatch.setattr(management.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(management, "time", SimpleNamespace(monotonic=fake_monotonic))
     monkeypatch.setattr(management.asyncio, "sleep", fake_sleep)
 
     @asynccontextmanager
