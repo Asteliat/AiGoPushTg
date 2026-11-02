@@ -425,6 +425,7 @@ async def render_campaign_kind_selection(c: CallbackQuery, state: FSMContext, mo
     await state.update_data(
         campaign_account_ids=ids, management_account_id=ids[0],
         module_selection_module=module,
+        module_return_callback=f"tool:module:account:{module}:{ids[0]}",
     )
     if module == "invite":
         kinds = [
@@ -461,6 +462,7 @@ async def render_selected_module_actions(c: CallbackQuery, state: FSMContext, mo
     await state.update_data(
         management_account_ids=ids, management_account_id=ids[0],
         module_selection_module=module,
+        module_return_callback=f"tool:module:{module}",
     )
     title, actions = MODULE_ACTIONS[module]
     rows = [[(label, f"tool:mg:{action}:{ids[0]}")] for label, action in actions]
@@ -1272,8 +1274,12 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
         module_return = previous.get("module_return_callback") or f"tool:management:account:{aid}"
         mode = "once" if action == "campaign" else "recurring"
         await state.clear()
+        selected_account_ids = [
+            int(value) for value in (previous.get("management_account_ids") or previous.get("campaign_account_ids") or [aid])
+        ]
         await state.update_data(
             campaign_mode=mode, management_account_id=aid,
+            campaign_account_ids=selected_account_ids,
             module_selection_module=module,
             module_return_callback=module_return if module else None,
             ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id,
@@ -1395,7 +1401,10 @@ async def management_campaign_wizard_start(c: CallbackQuery, state: FSMContext):
         campaign_kind=kind, campaign_mode=mode,
         campaign_schedule_interval_seconds=0, campaign_schedule_max_runs=0,
         ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id,
-        return_callback=f"tool:module:{previous_data.get('module_selection_module') or 'broadcast'}",
+        return_callback=(
+            previous_data.get("module_return_callback")
+            or f"tool:module:{previous_data.get('module_selection_module') or 'broadcast'}"
+        ),
     )
     await state.set_state(Flow.management_input)
     await edit(c,
@@ -1662,7 +1671,6 @@ async def management_input_received(m: Message, state: FSMContext):
             kind, field = parts[2], parts[3]
             if kind not in PARSER_SETTING_DEFAULTS or field not in PARSER_SETTING_DEFAULTS[kind]:
                 raise ValueError("Неизвестный параметр парсера.")
-            default = PARSER_SETTING_DEFAULTS[kind][field]
             if field == "keywords":
                 value = "" if raw.strip().lower() in {"-", "нет", "off"} else raw.strip()
                 if len(value) > 1000:
