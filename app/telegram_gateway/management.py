@@ -165,12 +165,31 @@ def _account_lock(account_id: int) -> asyncio.Lock:
     return _ACCOUNT_LOCKS.setdefault(account_id, asyncio.Lock())
 
 
+async def _sync_cached_account_profile(account_id: int, profile: dict) -> None:
+    """Keep the account picker in sync with Telegram's authoritative profile."""
+    username = (profile.get("username") or "").strip().lstrip("@") or None
+    display_name = " ".join(
+        value.strip() for value in (
+            str(profile.get("first_name") or ""),
+            str(profile.get("last_name") or ""),
+        ) if value and value.strip()
+    ).strip()
+    if not display_name:
+        display_name = f"@{username}" if username else f"Аккаунт #{int(account_id)}"
+    async with SessionFactory() as db:
+        account = await db.get(Account, int(account_id))
+        if account:
+            account.username = username
+            account.display_name = display_name[:160]
+            await db.commit()
+
+
 async def get_profile(account_id: int) -> dict:
     async with _account_lock(account_id):
         async with isolated_account_client(account_id) as (_account, client):
             me = await client.get_me()
             full = await client(GetFullUserRequest(me))
-            return {
+            profile = {
                 "id": int(me.id),
                 "username": me.username,
                 "first_name": me.first_name or "",
@@ -178,6 +197,8 @@ async def get_profile(account_id: int) -> dict:
                 "phone": me.phone or "",
                 "about": full.full_user.about or "",
             }
+        await _sync_cached_account_profile(account_id, profile)
+        return profile
 
 
 async def update_profile(
@@ -215,22 +236,46 @@ async def update_profile(
             if username is not None:
                 await client(UpdateUsernameRequest(username=username))
             me = await client.get_me()
-            return {
+            profile = {
                 "username": me.username,
                 "first_name": me.first_name or "",
                 "last_name": me.last_name or "",
             }
+        await _sync_cached_account_profile(account_id, profile)
+        return profile
 
 
 async def set_profile_photo(account_id: int, photo_path: str) -> None:
-    """Upload one operator-selected profile photo through an isolated session."""
+    """Normalize the supplied image to JPEG and upload it as the Telegram profile photo."""
     if not os.path.isfile(photo_path):
         raise ValueError("Файл фотографии не найден.")
     if os.path.getsize(photo_path) > 10 * 1024 * 1024:
         raise ValueError("Размер фотографии не должен превышать 10 МБ.")
-    async with _account_lock(account_id):
-        async with isolated_account_client(account_id) as (_account, client):
-            await client.upload_profile_photo(photo_path)
+
+    from PIL import Image, ImageOps
+
+    with tempfile.TemporaryDirectory(prefix=f"atciv-profile-photo-{int(account_id)}-") as temp_dir:
+        jpeg_path = os.path.join(temp_dir, "profile.jpg")
+        try:
+            with Image.open(photo_path) as source:
+                image = ImageOps.exif_transpose(source)
+                if getattr(image, "is_animated", False):
+                    image.seek(0)
+                image.convert("RGB").save(
+                    jpeg_path, format="JPEG", quality=92, optimize=True,
+                )
+        except Exception as exc:
+            raise ValueError(f"Не удалось прочитать изображение: {type(exc).__name__}: {exc}") from exc
+
+        if os.path.getsize(jpeg_path) > 10 * 1024 * 1024:
+            raise ValueError("После обработки изображение превышает 10 МБ.")
+
+        async with _account_lock(account_id):
+            async with isolated_account_client(account_id) as (_account, client):
+                await client.upload_profile_photo(jpeg_path)
+                uploaded = await client.get_profile_photos("me", limit=1)
+                if not uploaded:
+                    raise RuntimeError("Telegram не подтвердил наличие фотографии профиля.")
 
 
 async def list_contacts(account_id: int, *, limit: int = 100) -> list[dict]:
