@@ -325,7 +325,7 @@ async def cancel_cb(c: CallbackQuery, state: FSMContext):
 async def tools_menu(c: CallbackQuery):
     if not await check_cb(c): return
     await edit(c, "🧰 Инструменты\n\nПоиск и дополнительные инструменты для Telegram-аккаунтов.", kb([
-        [("🔎 Поиск групп", "tool:groups")],
+        [("🔎 Поиск чатов", "tool:groups")],
         [("📣 Поиск каналов", "tool:channels")],
         [("🎯 Глобальные триггеры", "trigger:global")],
         [("⬅️ Главное меню", "nav:home")],
