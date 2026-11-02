@@ -371,3 +371,69 @@ def test_parser_profile_filters_use_explicit_telegram_fields_only():
     assert _profile_matches_parser_filters(user, username_only=True, photo_only=True, premium_only=True)
     assert not _profile_matches_parser_filters(user, active_days=7)
     assert not _profile_matches_parser_filters(user, exclude_blocked=True, blocked_ids={1})
+
+
+@pytest.mark.asyncio
+async def test_sync_cached_account_profile_updates_picker_name_and_username(monkeypatch):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from app.telegram_gateway import management
+
+    account = SimpleNamespace(username="oldname", display_name="Old Name")
+
+    class FakeDB:
+        async def get(self, _model, account_id):
+            assert account_id == 7
+            return account
+
+        async def commit(self):
+            return None
+
+    @asynccontextmanager
+    async def fake_session():
+        yield FakeDB()
+
+    monkeypatch.setattr(management, "SessionFactory", fake_session)
+    await management._sync_cached_account_profile(7, {
+        "username": "newname",
+        "first_name": "New",
+        "last_name": "Person",
+    })
+
+    assert account.username == "newname"
+    assert account.display_name == "New Person"
+
+
+@pytest.mark.asyncio
+async def test_set_profile_photo_normalizes_image_to_jpeg_before_upload(monkeypatch, tmp_path):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from PIL import Image
+    from app.telegram_gateway import management
+
+    source_path = tmp_path / "avatar.png"
+    Image.new("RGBA", (320, 320), (30, 120, 210, 255)).save(source_path)
+    uploaded = {}
+
+    class FakeClient:
+        async def upload_profile_photo(self, path):
+            uploaded["path"] = path
+            with Image.open(path) as image:
+                uploaded["format"] = image.format
+                uploaded["mode"] = image.mode
+
+        async def get_profile_photos(self, _entity, limit):
+            assert limit == 1
+            return [object()]
+
+    @asynccontextmanager
+    async def fake_client(_account_id):
+        yield SimpleNamespace(id=1), FakeClient()
+
+    monkeypatch.setattr(management, "isolated_account_client", fake_client)
+    await management.set_profile_photo(7, str(source_path))
+
+    assert uploaded["format"] == "JPEG"
+    assert uploaded["mode"] == "RGB"
