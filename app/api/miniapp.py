@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import time
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any, Literal
 from urllib.parse import parse_qsl
@@ -19,7 +20,7 @@ from app.storage.db import SessionFactory, get_session
 from app.storage.models import (
     Account, AIAgent, AppSetting, AuditEvent, ChannelBinding, ChatBinding,
     Example, Persona, TriggerRule, ChannelAnalysis, ContentDraft,
-    AutomationTask, AutomationTaskRecipient,
+    AutomationTask, AutomationTaskRecipient, AutomationConsent,
 )
 
 router = APIRouter(prefix="/v1/miniapp", tags=["miniapp"])
@@ -182,7 +183,7 @@ class ExampleInput(BaseModel):
     title: str = Field(default="", max_length=160)
     incoming_text: str = Field(min_length=1, max_length=12000)
     preferred_reply: str = Field(min_length=1, max_length=12000)
-    consent_confirmed: bool
+    consent_confirmed: Literal[True]
 
 
 class TriggerInput(BaseModel):
@@ -255,6 +256,30 @@ class ContentDraftPatch(BaseModel):
     title: str | None = Field(default=None, max_length=160)
     body: str | None = Field(default=None, min_length=1, max_length=12000)
     status: Literal["draft", "archived"] | None = None
+
+
+class CampaignRecipientInput(BaseModel):
+    peer_id: int
+    peer_ref: str = Field(default="", max_length=255)
+    peer_label: str = Field(default="", max_length=255)
+
+
+class CampaignInput(BaseModel):
+    account_id: int = Field(ge=1)
+    kind: Literal["broadcast", "group_broadcast"]
+    text: str = Field(min_length=1, max_length=4096)
+    recipients: list[CampaignRecipientInput] = Field(min_length=1, max_length=500)
+    scheduled_at: datetime | None = None
+    confirm_scope: Literal[True]
+
+
+class ConsentInput(BaseModel):
+    account_id: int = Field(ge=1)
+    peer_id: int = Field(gt=0)
+    peer_ref: str = Field(min_length=3, max_length=255)
+    peer_label: str = Field(default="", max_length=255)
+    consent_source: str = Field(min_length=4, max_length=255)
+    consent_confirmed: Literal[True]
 
 
 class ModuleSettingsInput(BaseModel):
@@ -1318,3 +1343,129 @@ async def _write_audit_event(actor: int, action: str, kind: str, object_id: Any)
     async with SessionFactory() as db:
         await _audit(db, actor, action, kind, object_id)
         await db.commit()
+
+
+@router.get("/automation/targets")
+async def get_automation_targets(account_id: int, kind: Literal["broadcast", "group_broadcast"],
+                                 _: int = Depends(require_admin), db: AsyncSession = Depends(get_session)):
+    account = await db.get(Account, account_id)
+    if not account or not account.enabled or account.manual_pause:
+        raise HTTPException(400, "Выберите включённый аккаунт без ручной паузы.")
+    if kind == "group_broadcast":
+        rows = (await db.scalars(select(ChatBinding).where(
+            ChatBinding.account_id == account_id, ChatBinding.enabled.is_(True)
+        ).order_by(ChatBinding.title, ChatBinding.chat_id))).all()
+        return [{"peer_id": row.chat_id, "peer_ref": "", "peer_label": row.title or str(row.chat_id)}
+                for row in rows]
+    rows = (await db.scalars(select(AutomationConsent).where(
+        AutomationConsent.account_id == account_id,
+        AutomationConsent.scope == "broadcast",
+        AutomationConsent.revoked_at.is_(None),
+    ).order_by(AutomationConsent.peer_label, AutomationConsent.peer_id))).all()
+    return [{"peer_id": row.peer_id, "peer_ref": row.peer_ref, "peer_label": row.peer_label}
+            for row in rows]
+
+
+@router.get("/automation/consents")
+async def get_automation_consents(account_id: int, _: int = Depends(require_admin),
+                                  db: AsyncSession = Depends(get_session)):
+    rows = (await db.scalars(select(AutomationConsent).where(
+        AutomationConsent.account_id == account_id
+    ).order_by(desc(AutomationConsent.granted_at)).limit(500))).all()
+    return [{"id": row.id, "account_id": row.account_id, "peer_id": row.peer_id,
+             "peer_ref": row.peer_ref, "peer_label": row.peer_label, "scope": row.scope,
+             "consent_source": row.consent_source, "granted_at": row.granted_at.isoformat(),
+             "revoked_at": row.revoked_at.isoformat() if row.revoked_at else None}
+            for row in rows]
+
+
+@router.post("/automation/consents")
+async def grant_automation_consent(payload: ConsentInput, actor: int = Depends(require_admin),
+                                   db: AsyncSession = Depends(get_session)):
+    if not payload.consent_confirmed:
+        raise HTTPException(400, "Подтвердите, что пользователь явно согласился получать сообщения.")
+    if not payload.peer_ref.strip().lstrip("@").replace("_", "").isalnum() or len(payload.peer_ref.strip().lstrip("@")) < 5:
+        raise HTTPException(400, "Укажите актуальный Telegram username получателя.")
+    account = await db.get(Account, payload.account_id)
+    if not account:
+        raise HTTPException(404, "Аккаунт не найден.")
+    row = await db.scalar(select(AutomationConsent).where(
+        AutomationConsent.account_id == payload.account_id,
+        AutomationConsent.peer_id == payload.peer_id,
+        AutomationConsent.scope == "broadcast",
+    ))
+    if row is None:
+        row = AutomationConsent(account_id=payload.account_id, peer_id=payload.peer_id,
+                                scope="broadcast")
+        db.add(row)
+    row.peer_ref = payload.peer_ref.strip().lstrip("@")
+    row.peer_label = payload.peer_label.strip() or payload.peer_ref.strip()
+    row.consent_source = payload.consent_source.strip()
+    row.granted_at = datetime.now(timezone.utc)
+    row.revoked_at = None
+    await _audit(db, actor, "automation.consent.grant", "automation_consent", row.peer_id)
+    await db.commit()
+    return {"ok": True, "id": row.id}
+
+
+@router.delete("/automation/consents/{consent_id}")
+async def revoke_automation_consent(consent_id: int, actor: int = Depends(require_admin),
+                                    db: AsyncSession = Depends(get_session)):
+    row = await db.get(AutomationConsent, consent_id)
+    if row is None:
+        raise HTTPException(404, "Согласие не найдено.")
+    row.revoked_at = datetime.now(timezone.utc)
+    await _audit(db, actor, "automation.consent.revoke", "automation_consent", consent_id)
+    await db.commit()
+    return {"ok": True}
+
+
+@router.post("/automation/campaigns")
+async def create_automation_campaign(payload: CampaignInput, actor: int = Depends(require_admin),
+                                     db: AsyncSession = Depends(get_session)):
+    if not payload.confirm_scope:
+        raise HTTPException(400, "Подтвердите, что выбраны только собственные площадки или получатели с явным согласием.")
+    account = await db.get(Account, payload.account_id)
+    if not account or not account.enabled or account.manual_pause:
+        raise HTTPException(400, "Аккаунт не найден, отключён или находится на паузе.")
+    unique = {item.peer_id: item for item in payload.recipients}
+    if len(unique) != len(payload.recipients):
+        raise HTTPException(400, "В списке есть повторяющиеся получатели.")
+    ids = list(unique)
+    if payload.kind == "broadcast":
+        consent_rows = (await db.scalars(select(AutomationConsent).where(
+            AutomationConsent.account_id == payload.account_id,
+            AutomationConsent.peer_id.in_(ids),
+            AutomationConsent.scope == "broadcast",
+            AutomationConsent.revoked_at.is_(None),
+        ))).all()
+        consent_refs = {row.peer_id: row.peer_ref for row in consent_rows}
+        if set(consent_refs) != set(ids):
+            raise HTTPException(403, "ЛС-рассылка разрешена только получателям с активным явным согласием.")
+        if any(not unique[peer_id].peer_ref or unique[peer_id].peer_ref.lstrip("@") != consent_refs[peer_id].lstrip("@") for peer_id in ids):
+            raise HTTPException(403, "Username получателя не совпадает с записью согласия. Обновите список.")
+    else:
+        allowed = set((await db.scalars(select(ChatBinding.chat_id).where(
+            ChatBinding.account_id == payload.account_id,
+            ChatBinding.chat_id.in_(ids),
+            ChatBinding.enabled.is_(True),
+        ))).all())
+        if allowed != set(ids):
+            raise HTTPException(403, "Публиковать можно только в выбранных и включённых группах аккаунта.")
+    from app.services.automation import create_campaign
+    scheduled = payload.scheduled_at
+    if scheduled is not None and scheduled.tzinfo is None:
+        scheduled = scheduled.replace(tzinfo=timezone.utc)
+    try:
+        task_id = await create_campaign(
+            payload.account_id, kind=payload.kind, recipients=ids,
+            payload={"text": payload.text}, scheduled_at=scheduled,
+            recipient_refs={item.peer_id: item.peer_ref.lstrip("@") for item in payload.recipients},
+            recipient_labels={item.peer_id: item.peer_label for item in payload.recipients},
+            consent_verified=True,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    await _audit(db, actor, "automation.campaign.create", "automation_task", task_id)
+    await db.commit()
+    return {"ok": True, "task_id": task_id}

@@ -55,7 +55,7 @@ def test_new_workspace_routes_exist_and_legacy_module_routes_are_retired():
     assert not any(
         marker in path
         for path in paths
-        for marker in ("/parser", "/campaigns", "/schedules", "/reactions", "/module-policies")
+        for marker in ("/parser", "/schedules", "/reactions", "/module-policies")
     )
 
 
@@ -173,6 +173,9 @@ def test_modules_and_automation_are_separate_routes():
     assert "/v1/miniapp/modules/{module_id}" in paths
     assert "/v1/miniapp/automation/tasks" in paths
     assert "/v1/miniapp/automation/tasks/{task_id}" in paths
+    assert "/v1/miniapp/automation/targets" in paths
+    assert "/v1/miniapp/automation/consents" in paths
+    assert "/v1/miniapp/automation/campaigns" in paths
 
 
 def test_module_catalog_does_not_enable_restricted_bulk_behaviour():
@@ -191,3 +194,29 @@ def test_miniapp_has_distinct_module_and_automation_navigation():
     assert 'data-page="automation"' in html
     assert "Модули автоматизации" not in html
     assert "function renderAutomation()" in html
+
+
+
+def test_opt_in_campaign_payload_requires_explicit_confirmation():
+    from app.api.miniapp import CampaignInput
+
+    base = {
+        "account_id": 1, "kind": "broadcast", "text": "Hello",
+        "recipients": [{"peer_id": 42, "peer_ref": "@person", "peer_label": "Person"}],
+    }
+    with pytest.raises(ValidationError):
+        CampaignInput(**base, confirm_scope=False)
+    payload = CampaignInput(**base, confirm_scope=True)
+    assert payload.kind == "broadcast"
+    assert payload.recipients[0].peer_ref == "@person"
+
+
+def test_opt_in_consent_requires_evidence_source():
+    from app.api.miniapp import ConsentInput
+
+    with pytest.raises(ValidationError):
+        ConsentInput(account_id=1, peer_id=42, peer_ref="@person",
+                     consent_source="", consent_confirmed=True)
+    with pytest.raises(ValidationError):
+        ConsentInput(account_id=1, peer_id=42, peer_ref="@person",
+                     consent_source="user opted in", consent_confirmed=False)

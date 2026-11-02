@@ -13,6 +13,10 @@ async def automation_dispatcher() -> None:
                 await dispatch_due_schedules(max_schedules=5)
                 await process_due_campaigns(max_tasks=1)
                 await process_due_reactions(max_jobs=3)
+            else:
+                # Only campaigns created through the consent-validated Mini App API
+                # are processed while legacy bulk automation remains disabled.
+                await process_due_campaigns(max_tasks=1, safe_only=True)
         except asyncio.CancelledError:
             raise
         except Exception:
