@@ -104,3 +104,31 @@ def test_ai_agent_snapshot_is_detached_from_orm_model():
     assert snapshot.api_key == "secret"
     assert snapshot.model == "example-model"
     assert snapshot.timeout_seconds == 45
+
+
+def test_ai_conversation_defaults_live_inside_their_module():
+    from pathlib import Path
+
+    html = (Path(__file__).parents[1] / "app" / "api" / "static" / "index.html").read_text(encoding="utf-8")
+    conversations = html.split("function renderConversationsModule(){", 1)[1].split(
+        "async function loadInboxDialogs(){", 1
+    )[0]
+    settings = html.split("function renderSettings(){", 1)[1].split(
+        "function logCard(", 1
+    )[0]
+
+    assert 'id="global-ai"' in conversations
+    assert 'id="save-settings"' in conversations
+    assert "mention_reply_probability" in conversations
+    assert 'id="global-ai"' not in settings
+    assert 'id="save-settings"' not in settings
+
+
+def test_inbox_frontend_ignores_stale_dialog_and_message_requests():
+    from pathlib import Path
+
+    html = (Path(__file__).parents[1] / "app" / "api" / "static" / "index.html").read_text(encoding="utf-8")
+    assert "inboxDialogsRequest" in html
+    assert "inboxMessagesRequest" in html
+    assert "aid!==state.inboxAccountId" in html
+    assert "state.inboxPeer?.peer_id!==peer.peer_id" in html
