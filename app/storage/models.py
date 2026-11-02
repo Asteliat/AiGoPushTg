@@ -388,20 +388,3 @@ class AutomationInviteConsent(Base):
     consent_source: Mapped[str] = mapped_column(String(255), default="", server_default="", nullable=False)
     granted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-
-class ContentDraft(Base):
-    """Saved AI-assisted content draft; publishing always requires an explicit operator action."""
-    __tablename__ = "content_drafts"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id", ondelete="SET NULL"), nullable=True, index=True)
-    agent_id: Mapped[int | None] = mapped_column(ForeignKey("ai_agents.id", ondelete="SET NULL"), nullable=True)
-    persona_id: Mapped[int | None] = mapped_column(ForeignKey("personas.id", ondelete="SET NULL"), nullable=True)
-    channel_binding_id: Mapped[int | None] = mapped_column(ForeignKey("channel_bindings.id", ondelete="SET NULL"), nullable=True)
-    title: Mapped[str] = mapped_column(String(160), default="", server_default="", nullable=False)
-    prompt: Mapped[str] = mapped_column(Text, nullable=False)
-    body: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(String(20), default="draft", server_default="draft", nullable=False, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
