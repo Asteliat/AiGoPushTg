@@ -17,7 +17,8 @@ from app.settings import get_settings
 from app.storage.db import SessionFactory, get_session
 from app.storage.models import (
     Account, AIAgent, AppSetting, AuditEvent, ChannelBinding, ChatBinding,
-    Example, Persona, TriggerRule, AutomationTask, AutomationTaskRecipient, AutomationSchedule, ScheduledReaction,\n    ChannelAnalysis, ContentDraft,
+    Example, Persona, TriggerRule, AutomationTask, AutomationTaskRecipient, AutomationSchedule, ScheduledReaction,
+    ChannelAnalysis, ContentDraft,
 )
 from app.services import automation as telegram_automation
 
@@ -445,7 +446,7 @@ async def update_trigger(trigger_id: int, payload: TriggerInput, actor: int = De
     if not parsed_terms or len(parsed_terms) > 30:
         raise HTTPException(400, "Добавьте от 1 до 30 слов или фраз для триггера.")
     values = payload.model_dump()
-    values["terms"] = "\\n".join(parsed_terms)
+    values["terms"] = "\n".join(parsed_terms)
     if values["account_id"] is not None:
         values["apply_mode"] = "account"
     for key, value in values.items():
@@ -1051,9 +1052,9 @@ async def generate_content_draft(payload: ContentGenerateInput, actor: int = Dep
     examples = list((await db.scalars(query.order_by(desc(Example.id)).limit(8))).all())
     style = persona.style_instructions if persona else ""
     if account and account.persona_style_override.strip():
-        style += "\\n\\nИндивидуальные правила аккаунта:\\n" + account.persona_style_override[:6000]
+        style += "\n\\nИндивидуальные правила аккаунта:\\n" + account.persona_style_override[:6000]
     if account and account.learning_prompt.strip():
-        style += "\\n\\nКонтекст стиля аккаунта:\\n" + account.learning_prompt[:6000]
+        style += "\n\\nКонтекст стиля аккаунта:\\n" + account.learning_prompt[:6000]
     from app.ai.provider import generate_reply
     try:
         body = await generate_reply(
