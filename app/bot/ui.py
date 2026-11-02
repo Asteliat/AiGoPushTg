@@ -647,8 +647,8 @@ async def tool_policy_edit(c: CallbackQuery, state: FSMContext):
         f"Пакет: {policy['batch_size']}\n"
         f"Ожидание FloodWait до: {policy['floodwait_wait_seconds']} сек.\n"
         f"FloodWait до карантина: {policy['floodwait_threshold']}\n\n"
-        "Отправьте 6 чисел через | в порядке: интервал | лимит на аккаунт | дневной лимит аккаунта | размер пакета | максимум ожидания FloodWait | FloodWait до карантина.\n"
-        "Все значения: 1–9999 (порог FloodWait: 1–100)."
+        "Отправьте 7 чисел через | в порядке: интервал между действиями | лимит на аккаунт за задачу | лимит за 24 часа на аккаунт | пользователей в пакете | пауза между пакетами | максимум ожидания FloodWait | FloodWait до карантина.\n"
+        "Все значения: 1–9999 (порог FloodWait: 1–100). Пример инвайтинга: 120 | 99 | 25 | 1 | 60 | 9999 | 10."
     )
     await edit(c, prompt, CANCEL)
 
@@ -1062,10 +1062,7 @@ async def management_campaign_wizard_start(c: CallbackQuery, state: FSMContext):
     if kind not in {"broadcast", "invite", "direct_invite", "group_broadcast"} or mode not in {"once", "recurring"}:
         await c.answer("Неизвестный тип задачи.", show_alert=True)
         return
-    if kind == "direct_invite" and mode == "recurring":
-        await c.answer("Прямое добавление можно запланировать один раз. Повторять его автоматически нельзя.", show_alert=True)
-        return
-    async with SessionFactory() as db:
+        async with SessionFactory() as db:
         account = await db.get(Account, aid)
         if not account or not account.enabled:
             await c.answer("Аккаунт не найден или выключен.", show_alert=True)
@@ -1377,16 +1374,17 @@ async def management_input_received(m: Message, state: FSMContext):
         elif action and action.startswith("policy-"):
             module = action.removeprefix("policy-")
             parts = [x.strip() for x in raw.split("|")]
-            if len(parts) != 6 or any(not item.isdigit() for item in parts):
-                raise ValueError("Формат: интервал | лимит на аккаунт | дневной лимит | размер пакета | максимум ожидания FloodWait | FloodWait до карантина.")
+            if len(parts) != 7 or any(not item.isdigit() for item in parts):
+                raise ValueError("Формат: интервал | лимит на аккаунт | дневной лимит | размер пакета | пауза между пакетами | максимум ожидания FloodWait | FloodWait до карантина.")
             await telegram_automation.set_module_policy(
                 module,
                 interval_seconds=int(parts[0]),
                 per_account_limit=int(parts[1]),
                 daily_account_limit=int(parts[2]),
                 batch_size=int(parts[3]),
-                floodwait_wait_seconds=int(parts[4]),
-                floodwait_threshold=int(parts[5]),
+                batch_pause_seconds=int(parts[4]),
+                floodwait_wait_seconds=int(parts[5]),
+                floodwait_threshold=int(parts[6]),
             )
             message = f"Глобальные настройки модуля «{module}» сохранены и будут общими для всех выбранных аккаунтов."
         elif action in {"broadcastlimits", "invitelimits", "subscriptionlimits", "reactionlimits", "global-broadcast", "global-invite", "global-subscription", "global-reaction"}:
@@ -1454,15 +1452,27 @@ async def management_input_received(m: Message, state: FSMContext):
         elif action == "campaign_runs":
             if not raw.isdigit() or not 1 <= int(raw) <= 365:
                 raise ValueError("Количество запусков должно быть от 1 до 365.")
-            next_action = "campaign_target_group" if data.get("campaign_kind") == "direct_invite" else "campaign_recipients"
             await state.update_data(
                 campaign_schedule_max_runs=int(raw),
-                management_action=next_action,
+                management_action="campaign_end_at",
             )
-            if next_action == "campaign_target_group":
-                await prompt_message(m, state, "Шаг 4 из 5 · Целевая группа\n\nУкажите peer ID или @username супергруппы, где аккаунт является администратором.")
+            await prompt_message(m, state, "Окончание расписания\n\nУкажите дату и время окончания в UTC: YYYY-MM-DD HH:MM, либо - без даты окончания. Расписание также завершится после заданного числа запусков.")
+            return
+        elif action == "campaign_end_at":
+            end_at = None
+            if raw not in {"-", "нет", "без даты"}:
+                try:
+                    end_at = datetime.strptime(raw, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+                except ValueError as exc:
+                    raise ValueError("Укажите окончание как YYYY-MM-DD HH:MM UTC или -.") from exc
+            await state.update_data(
+                campaign_schedule_ends_at=end_at.isoformat() if end_at else "",
+                management_action="campaign_target_group" if data.get("campaign_kind") == "direct_invite" else "campaign_recipients",
+            )
+            if data.get("campaign_kind") == "direct_invite":
+                await prompt_message(m, state, "Целевая группа\n\nУкажите peer ID или @username супергруппы, где аккаунт является администратором.")
             else:
-                await prompt_message(m, state, "Шаг 4 из 5 · Получатели\n\nОтправьте @username или ссылку каждого получателя через запятую или с новой строки. Укажите конкретных получателей через @username. Для публикации в группе укажите группы, где аккаунт администратор.")
+                await prompt_message(m, state, "Получатели\n\nОтправьте @username или ссылку каждого получателя через запятую или с новой строки. Укажите конкретных получателей через @username.")
             return
         elif action == "campaign_target_group":
             group = await telegram_management.resolve_group_for_direct_invite(aid, raw)
@@ -2061,6 +2071,7 @@ async def management_campaign_confirm(c: CallbackQuery, state: FSMContext):
                         account_id, kind=data["campaign_kind"],
                         recipients=data["campaign_recipients"], payload=data["campaign_payload"],
                         starts_at=datetime.fromisoformat(data["campaign_scheduled_at"]),
+                        ends_at=datetime.fromisoformat(data["campaign_schedule_ends_at"]) if data.get("campaign_schedule_ends_at") else None,
                         interval_seconds=int(data["campaign_schedule_interval_seconds"]),
                         max_runs=int(data.get("campaign_schedule_max_runs") or 1),
                         recipient_refs=recipient_refs, recipient_labels=recipient_labels,
