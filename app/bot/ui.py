@@ -864,7 +864,7 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
                 f"#{item['id']} · аккаунт #{account_id} · {item['emoji']} · {item['status']}",
                 f"tool:reaction:status:{item['id']}",
             )] for item in items)
-        rows.append([("↩️ К модулю", f"tool:module:reaction")])
+        rows.append([("↩️ К модулю", "tool:module:reaction")])
         await edit(c, "📆 Запланированные реакции\n\nВыберите запись." if rows[:-1] else "Запланированных реакций пока нет.", kb(rows))
         return
     if action == "schedules":
