@@ -94,6 +94,63 @@ async def main():
             for item in items if str(item.get("text", "")).strip()
         )[-7000:]
 
+    async def process_static_autoresponder(event, *, db, account, incoming: str, sender_id: int) -> bool:
+        """Private-chat autoresponder, strictly disabled whenever account AI is enabled."""
+        if not event.is_private or event.message.out or not incoming.strip():
+            return False
+        aid = int(account.id)
+        values = {}
+        keys = [
+            f"autoresponder.{aid}.enabled",
+            f"autoresponder.{aid}.keywords",
+            f"autoresponder.{aid}.response",
+            f"autoresponder.{aid}.cooldown_seconds",
+        ]
+        rows = (await db.scalars(select(AppSetting).where(AppSetting.key.in_(keys)))).all()
+        values = {row.key: row.value for row in rows}
+        if values.get(keys[0], "false").lower() not in {"1", "true", "yes", "on"}:
+            return False
+        response = (values.get(keys[2], "") or "").strip()
+        if not response:
+            return False
+        terms = [item.strip().casefold() for item in re.split(r"[,;\\n]", values.get(keys[1], "")) if item.strip()]
+        folded = incoming.casefold()
+        if terms and not any(term in folded for term in terms):
+            return False
+
+        # Reserve the message before sending so a worker reconnect cannot double-reply.
+        dedupe_key = f"atcivperson:autoresponder:message:{aid}:{int(event.chat_id)}:{int(event.message.id)}"
+        reserved = await redis.set(dedupe_key, "1", nx=True, ex=30 * 24 * 3600)
+        if not reserved:
+            return True
+
+        # Re-read the account immediately before the side effect. AI-enabled accounts
+        # must never receive this static responder, even if the setting changed mid-event.
+        async with SessionFactory() as check_db:
+            fresh = await check_db.get(Account, aid)
+            if not fresh or not fresh.enabled or fresh.manual_pause or fresh.ai_enabled:
+                await redis.delete(dedupe_key)
+                return False
+
+        try:
+            cooldown = max(0, min(86400, int(values.get(keys[3], "0") or 0)))
+        except ValueError:
+            cooldown = 0
+        if cooldown:
+            cooldown_key = f"atcivperson:autoresponder:cooldown:{aid}:{sender_id}"
+            allowed = await redis.set(cooldown_key, "1", nx=True, ex=cooldown)
+            if not allowed:
+                return True
+        try:
+            await event.client.send_message(
+                int(event.chat_id), response[:4096], reply_to=int(event.message.id)
+            )
+        except Exception:
+            # Do not auto-retry a possibly accepted message; operator can inspect logs.
+            logging.exception("Static autoresponder failed: account=%s chat=%s", aid, event.chat_id)
+        return True
+
+
     async def process_trigger_message(event, *, db, account, label: str, incoming: str, sender_id: int) -> bool:
         """Handle one matching trigger before the ordinary mention/DM/proactive reply flow."""
         if not event.is_group and not event.is_private:
@@ -348,10 +405,15 @@ async def main():
                 if linked_discussion:
                     return
             current = await db.get(Account, aid)
-            if (
-                not current or not current.enabled or current.manual_pause
-                or not current.ai_enabled or not await global_ai_enabled(db)
-            ):
+            if not current or not current.enabled or current.manual_pause:
+                return
+            if not current.ai_enabled:
+                if not allow_unbound:
+                    await process_static_autoresponder(
+                        event, db=db, account=current, incoming=incoming, sender_id=sender_id
+                    )
+                return
+            if not await global_ai_enabled(db):
                 return
             if current.learning_status in {"training", "stopping"}:
                 # Discussion-group replies routed from a published channel comment
