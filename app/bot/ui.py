@@ -347,8 +347,109 @@ MODULE_ACTIONS = {
 }
 
 
+async def render_module_account_selection(c: CallbackQuery, state: FSMContext, module: str, selected: list[int]):
+    async with SessionFactory() as db:
+        accounts = list((await db.scalars(
+            select(Account).where(Account.enabled.is_(True)).order_by(Account.id)
+        )).all())
+    selected = [int(aid) for aid in selected if any(int(account.id) == int(aid) for account in accounts)]
+    await state.update_data(module_selection_module=module, module_selected_accounts=selected)
+    rows = [
+        [("☑️ " if int(account.id) in selected else "▫️ ") + f"{account.display_name[:24]} · #{account.id}",
+          f"tool:module:toggle:{module}:{account.id}"]
+        for account in accounts
+    ]
+    rows.extend([
+        [("🌐 Выбрать все аккаунты", f"tool:module:all:{module}")],
+        [("➡️ Продолжить · " + str(len(selected)), f"tool:module:continue:{module}")],
+        [("↩️ Инструменты", "tool:menu")],
+    ])
+    await edit(c, f"{MODULE_ACTIONS[module][0]}\n\nОтметьте один или несколько аккаунтов. Настройки лимитов будут общими для всего модуля.", kb(rows))
+
+
+async def render_campaign_kind_selection(c: CallbackQuery, state: FSMContext, module: str, account_ids: list[int]):
+    if not account_ids:
+        await c.answer("Выберите хотя бы один аккаунт.", show_alert=True)
+        return
+    async with SessionFactory() as db:
+        valid = list((await db.scalars(
+            select(Account).where(Account.id.in_(account_ids), Account.enabled.is_(True)).order_by(Account.id)
+        )).all())
+    ids = [int(account.id) for account in valid]
+    if not ids:
+        await c.answer("Нет включённых выбранных аккаунтов.", show_alert=True)
+        return
+    await state.update_data(
+        campaign_account_ids=ids, management_account_id=ids[0],
+        module_selection_module=module,
+    )
+    if module == "invite":
+        kinds = [
+            [("🔗 Отправить ссылку-приглашение", f"tool:campaign:start:{ids[0]}:invite:once")],
+            [("👥 Пригласить выбранных пользователей в группу", f"tool:campaign:start:{ids[0]}:direct_invite:once")],
+        ]
+    else:
+        kinds = [
+            [("📨 Личные сообщения выбранным получателям", f"tool:campaign:start:{ids[0]}:broadcast:once")],
+            [("📣 Публикация в своих группах", f"tool:campaign:start:{ids[0]}:group_broadcast:once")],
+            [("🗓 Повторяющаяся рассылка", f"tool:campaign:start:{ids[0]}:broadcast:recurring")],
+        ]
+    kinds.extend([
+        [("↩️ Выбрать аккаунты", f"tool:module:{module}")],
+        [("🏠 Главное меню", "nav:home")],
+    ])
+    await edit(c, f"{MODULE_ACTIONS[module][0]}\n\nВыбрано аккаунтов: {len(ids)}\n"
+        + ", ".join(f"#{aid}" for aid in ids) + "\n\nВыберите тип задачи:", kb(kinds))
+
+
+@router.callback_query(F.data.startswith("tool:module:toggle:"))
+async def tool_module_toggle_account(c: CallbackQuery, state: FSMContext):
+    if not await check_cb(c):
+        return
+    _, _, _, module, aid_raw = c.data.split(":")
+    data = await state.get_data()
+    selected = list(data.get("module_selected_accounts") or [])
+    aid = int(aid_raw)
+    if aid in selected:
+        selected.remove(aid)
+    else:
+        selected.append(aid)
+    await render_module_account_selection(c, state, module, selected)
+
+
+@router.callback_query(F.data.startswith("tool:module:all:"))
+async def tool_module_select_all(c: CallbackQuery, state: FSMContext):
+    if not await check_cb(c):
+        return
+    module = c.data.rsplit(":", 1)[-1]
+    if module not in {"broadcast", "invite"}:
+        await c.answer("Множественный выбор доступен для рассылки и инвайтинга.", show_alert=True)
+        return
+    await render_module_account_selection(c, state, module, [])
+    data = await state.get_data()
+    await render_campaign_kind_selection(c, state, module, data.get("module_selected_accounts") or [] if False else [
+        int(account.id) for account in (await _enabled_accounts_for_module())
+    ])
+
+
+async def _enabled_accounts_for_module():
+    async with SessionFactory() as db:
+        return list((await db.scalars(
+            select(Account).where(Account.enabled.is_(True)).order_by(Account.id)
+        )).all())
+
+
+@router.callback_query(F.data.startswith("tool:module:continue:"))
+async def tool_module_continue_accounts(c: CallbackQuery, state: FSMContext):
+    if not await check_cb(c):
+        return
+    module = c.data.rsplit(":", 1)[-1]
+    data = await state.get_data()
+    await render_campaign_kind_selection(c, state, module, data.get("module_selected_accounts") or [])
+
+
 @router.callback_query(F.data.startswith("tool:module:"))
-async def tool_module_accounts(c: CallbackQuery):
+async def tool_module_accounts(c: CallbackQuery, state: FSMContext):
     if not await check_cb(c):
         return
     if ":account:" in c.data:
