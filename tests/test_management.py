@@ -548,5 +548,5 @@ async def test_update_profile_bio_fails_when_telegram_does_not_save_it(monkeypat
     with pytest.raises(RuntimeError, match="Telegram не подтвердил изменение Bio"):
         await management.update_profile(1, about="new bio")
 
-    assert fake_client.full_user_reads == 2
+    assert fake_client.full_user_reads == 3
 
