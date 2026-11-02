@@ -4,7 +4,7 @@ import hashlib
 import hmac
 import json
 import time
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import parse_qsl
 
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -112,7 +112,7 @@ class AccountPatch(BaseModel):
     ai_enabled: bool | None = None
     ai_agent_id: int | None = None
     persona_id: int | None = None
-    reply_mode: str | None = Field(default=None, pattern="^(manual|draft|auto)$")
+    reply_mode: str | None = Field(default=None, pattern="^(manual|automatic)$")
 
 
 class AgentInput(BaseModel):
@@ -126,7 +126,7 @@ class AgentInput(BaseModel):
     mention_reply_probability_override: int | None = Field(default=None, ge=0, le=100)
     dm_reply_probability_override: int | None = Field(default=None, ge=0, le=100)
     proactive_reply_probability_override: int | None = Field(default=None, ge=0, le=100)
-    reply_cooldown_seconds_override: int | None = Field(default=None, ge=0, le=604800)
+    reply_cooldown_seconds_override: int | None = Field(default=None, ge=0, le=2147483647)
     channel_reply_probability_override: int | None = Field(default=None, ge=0, le=100)
     channel_reply_cooldown_seconds_override: int | None = Field(default=None, ge=0, le=604800)
 
@@ -148,16 +148,17 @@ class ExampleInput(BaseModel):
 
 class TriggerInput(BaseModel):
     account_id: int | None = None
-    apply_mode: str = Field(default="empty_only", pattern="^(empty_only|always)$")
+    apply_mode: str = Field(default="empty_only", pattern="^(account|empty_only|all)$")
     terms: str = Field(min_length=1, max_length=4000)
     response_instructions: str = Field(default="", max_length=8000)
-    cooldown_seconds: int = Field(default=900, ge=0, le=604800)
-    message_cooldown_seconds: int = Field(default=0, ge=0, le=86400)
+    cooldown_seconds: int = Field(default=900, ge=0, le=31536000)
+    message_cooldown_seconds: int = Field(default=0, ge=0, le=31536000)
     enabled: bool = True
 
 
 class SettingsInput(BaseModel):
     values: dict[str, Any]
+    apply_to_agents: Literal["inherit", "all"] = "inherit"
 
 
 class SearchInput(BaseModel):
@@ -204,6 +205,8 @@ async def update_account(account_id: int, payload: AccountPatch, actor: int = De
     if not row:
         raise HTTPException(404, "Аккаунт не найден.")
     values = payload.model_dump(exclude_unset=True)
+    if values.get("reply_mode") == "automatic" and row.reply_mode == "manual" and row.learning_status in {"training", "stopping"}:
+        raise HTTPException(409, "Нельзя включить автоматические ответы во время обучения аккаунта.")
     if "ai_agent_id" in values and values["ai_agent_id"] is not None:
         if not await db.get(AIAgent, values["ai_agent_id"]):
             raise HTTPException(400, "ИИ-агент не найден.")
@@ -367,7 +370,15 @@ async def create_trigger(payload: TriggerInput, actor: int = Depends(require_adm
                          db: AsyncSession = Depends(get_session)):
     if payload.account_id is not None and not await db.get(Account, payload.account_id):
         raise HTTPException(400, "Аккаунт не найден.")
-    row = TriggerRule(**payload.model_dump())
+    from app.services.triggers import parse_trigger_terms
+    parsed_terms = parse_trigger_terms(payload.terms)
+    if not parsed_terms or len(parsed_terms) > 30:
+        raise HTTPException(400, "Добавьте от 1 до 30 слов или фраз для триггера.")
+    values = payload.model_dump()
+    values["terms"] = "\\n".join(parsed_terms)
+    if values["account_id"] is not None:
+        values["apply_mode"] = "account"
+    row = TriggerRule(**values)
     db.add(row)
     await db.flush()
     await _audit(db, actor, "trigger.create", "trigger", row.id)
@@ -383,7 +394,15 @@ async def update_trigger(trigger_id: int, payload: TriggerInput, actor: int = De
         raise HTTPException(404, "Триггер не найден.")
     if payload.account_id is not None and not await db.get(Account, payload.account_id):
         raise HTTPException(400, "Аккаунт не найден.")
-    for key, value in payload.model_dump().items():
+    from app.services.triggers import parse_trigger_terms
+    parsed_terms = parse_trigger_terms(payload.terms)
+    if not parsed_terms or len(parsed_terms) > 30:
+        raise HTTPException(400, "Добавьте от 1 до 30 слов или фраз для триггера.")
+    values = payload.model_dump()
+    values["terms"] = "\\n".join(parsed_terms)
+    if values["account_id"] is not None:
+        values["apply_mode"] = "account"
+    for key, value in values.items():
         setattr(row, key, value)
     await _audit(db, actor, "trigger.update", "trigger", trigger_id)
     await db.commit()
@@ -409,8 +428,7 @@ async def _read_settings(db: AsyncSession) -> dict[str, Any]:
         if row.key == "ai_global_enabled":
             result[row.key] = row.value.lower() == "true"
         elif row.key in {"mention_reply_probability", "dm_reply_probability",
-                         "proactive_reply_probability", "reply_cooldown_seconds",
-                         "channel_reply_probability", "channel_reply_cooldown_seconds"}:
+                         "proactive_reply_probability", "reply_cooldown_seconds"}:
             try:
                 result[row.key] = int(row.value)
             except (TypeError, ValueError):
@@ -427,8 +445,7 @@ async def get_global_settings(_: int = Depends(require_admin), db: AsyncSession 
 async def update_global_settings(payload: SettingsInput, actor: int = Depends(require_admin),
                                  db: AsyncSession = Depends(get_session)):
     allowed = {"ai_global_enabled", "mention_reply_probability", "dm_reply_probability",
-               "proactive_reply_probability", "reply_cooldown_seconds",
-               "channel_reply_probability", "channel_reply_cooldown_seconds"}
+               "proactive_reply_probability", "reply_cooldown_seconds"}
     for key, value in payload.values.items():
         if key not in allowed:
             raise HTTPException(400, f"Настройка {key} не поддерживается.")
@@ -439,14 +456,21 @@ async def update_global_settings(payload: SettingsInput, actor: int = Depends(re
             raise HTTPException(400, f"Некорректное значение {key}.")
         elif "probability" in key and not 0 <= value <= 100:
             raise HTTPException(400, "Вероятность должна быть от 0 до 100%.")
-        elif "cooldown" in key and not 0 <= value <= 604800:
-            raise HTTPException(400, "Интервал должен быть от 0 до 7 дней.")
+        elif "cooldown" in key and not 0 <= value <= 2147483647:
+            raise HTTPException(400, "Интервал превышает допустимое значение.")
         row = await db.get(AppSetting, key)
         stored = str(value).lower() if isinstance(value, bool) else str(value)
         if row:
             row.value = stored
         else:
             db.add(AppSetting(key=key, value=stored))
+    if payload.apply_to_agents == "all":
+        agents = (await db.scalars(select(AIAgent))).all()
+        for key, value in payload.values.items():
+            if key in {"mention_reply_probability", "dm_reply_probability",
+                       "proactive_reply_probability", "reply_cooldown_seconds"}:
+                for agent in agents:
+                    setattr(agent, key + "_override", int(value))
     await _audit(db, actor, "settings.update", "settings", "global")
     await db.commit()
     return await _read_settings(db)
