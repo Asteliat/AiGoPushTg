@@ -10,14 +10,14 @@ from urllib.parse import parse_qsl
 from aiogram import Bot
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import select, desc, func
+from sqlalchemy import and_, or_, select, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.settings import get_settings
 from app.storage.db import SessionFactory, get_session
 from app.storage.models import (
     Account, AIAgent, AppSetting, AuditEvent, ChannelBinding, ChatBinding,
-    Example, Persona, TriggerRule, AutomationTask, AutomationTaskRecipient, AutomationSchedule, ScheduledReaction,
+    Example, Persona, TriggerRule, AutomationTask, AutomationTaskRecipient, AutomationSchedule, ScheduledReaction,\n    ChannelAnalysis, ContentDraft,
 )
 from app.services import automation as telegram_automation
 
@@ -186,6 +186,34 @@ class LogDestinationInput(BaseModel):
 
 class ModulePolicyInput(BaseModel):
     values: dict[str, int]
+
+
+
+
+class ChannelAssistantPatch(BaseModel):
+    enabled: bool | None = None
+    reply_mode_override: Literal["manual", "automatic"] | None = None
+    chat_replies_enabled_override: bool | None = None
+    post_instructions_override: str | None = Field(default=None, max_length=6000)
+    comments_instructions_override: str | None = Field(default=None, max_length=6000)
+    restrictions_instructions_override: str | None = Field(default=None, max_length=6000)
+    reply_probability_override: int | None = Field(default=None, ge=0, le=100)
+    reply_cooldown_seconds_override: int | None = Field(default=None, ge=0, le=31536000)
+
+
+class ContentGenerateInput(BaseModel):
+    account_id: int | None = None
+    agent_id: int | None = None
+    persona_id: int | None = None
+    channel_binding_id: int | None = None
+    title: str = Field(default="", max_length=160)
+    brief: str = Field(min_length=5, max_length=6000)
+
+
+class ContentDraftPatch(BaseModel):
+    title: str | None = Field(default=None, max_length=160)
+    body: str | None = Field(default=None, min_length=1, max_length=12000)
+    status: Literal["draft", "archived"] | None = None
 
 
 class ParserSettingsInput(BaseModel):
@@ -919,6 +947,170 @@ async def run_parser(account_id: int, kind: str, payload: ParserRunInput,
     await _audit(db, actor, "parser.run", "parser", f"{account_id}:{kind}")
     await db.commit()
     return {"account_id": account_id, "kind": kind, "summary": summary, "items": items[:500]}
+
+
+
+
+@router.get("/channel-assistant")
+async def get_channel_assistant(_: int = Depends(require_admin), db: AsyncSession = Depends(get_session)):
+    rows = list((await db.scalars(
+        select(ChannelBinding).order_by(ChannelBinding.account_id, ChannelBinding.title)
+    )).all())
+    return [{
+        "id": row.id, "account_id": row.account_id, "channel_id": row.channel_id,
+        "title": row.title, "discussion_group_id": row.discussion_group_id,
+        "enabled": row.enabled, "reply_mode_override": row.reply_mode_override,
+        "chat_replies_enabled_override": row.chat_replies_enabled_override,
+        "post_instructions_override": row.post_instructions_override or "",
+        "comments_instructions_override": row.comments_instructions_override or "",
+        "restrictions_instructions_override": row.restrictions_instructions_override or "",
+        "reply_probability_override": row.reply_probability_override,
+        "reply_cooldown_seconds_override": row.reply_cooldown_seconds_override,
+        "learning_status": row.learning_status,
+    } for row in rows]
+
+
+@router.patch("/channel-assistant/{binding_id}")
+async def update_channel_assistant(binding_id: int, payload: ChannelAssistantPatch,
+                                   actor: int = Depends(require_admin), db: AsyncSession = Depends(get_session)):
+    row = await db.get(ChannelBinding, binding_id)
+    if not row:
+        raise HTTPException(404, "Канал не найден.")
+    for key, value in payload.model_dump(exclude_unset=True).items():
+        setattr(row, key, value)
+    await _audit(db, actor, "channel.assistant.update", "channel", binding_id)
+    await db.commit()
+    return {"ok": True, "id": row.id, "enabled": row.enabled}
+
+
+@router.get("/channel-activity")
+async def get_channel_activity(_: int = Depends(require_admin), db: AsyncSession = Depends(get_session)):
+    rows = list((await db.scalars(
+        select(ChannelAnalysis).order_by(desc(ChannelAnalysis.created_at)).limit(60)
+    )).all())
+    return [{
+        "id": row.id, "account_id": row.account_id, "channel_id": row.channel_id,
+        "channel_title": row.channel_title, "post_id": row.post_id,
+        "post_text": row.post_text[:1200], "comments_summary": row.comments_summary[:1200],
+        "suggested_response": row.suggested_response[:2000], "on_topic": row.on_topic,
+        "publication_status": row.publication_status, "publication_error": row.publication_error,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    } for row in rows]
+
+
+@router.get("/content/drafts")
+async def get_content_drafts(_: int = Depends(require_admin), db: AsyncSession = Depends(get_session)):
+    rows = list((await db.scalars(
+        select(ContentDraft).order_by(desc(ContentDraft.updated_at)).limit(100)
+    )).all())
+    return [{
+        "id": row.id, "account_id": row.account_id, "agent_id": row.agent_id,
+        "persona_id": row.persona_id, "channel_binding_id": row.channel_binding_id,
+        "title": row.title, "prompt": row.prompt, "body": row.body,
+        "status": row.status, "created_at": row.created_at.isoformat(),
+        "updated_at": row.updated_at.isoformat(),
+    } for row in rows]
+
+
+@router.post("/content/generate")
+async def generate_content_draft(payload: ContentGenerateInput, actor: int = Depends(require_admin),
+                                 db: AsyncSession = Depends(get_session)):
+    account = await db.get(Account, payload.account_id) if payload.account_id else None
+    if payload.account_id and not account:
+        raise HTTPException(404, "Аккаунт не найден.")
+    channel = await db.get(ChannelBinding, payload.channel_binding_id) if payload.channel_binding_id else None
+    if payload.channel_binding_id and not channel:
+        raise HTTPException(404, "Канал не найден.")
+    if channel and account and channel.account_id != account.id:
+        raise HTTPException(400, "Выбранный канал не принадлежит выбранному аккаунту.")
+    if channel and not account:
+        account = await db.get(Account, channel.account_id)
+    agent_id = payload.agent_id or (account.ai_agent_id if account else None)
+    agent = await db.get(AIAgent, agent_id) if agent_id else None
+    if agent is None:
+        agent = await db.scalar(select(AIAgent).where(
+            AIAgent.enabled.is_(True), AIAgent.is_default.is_(True)
+        ).order_by(AIAgent.id))
+    if agent is None:
+        agent = await db.scalar(select(AIAgent).where(
+            AIAgent.enabled.is_(True)
+        ).order_by(AIAgent.id))
+    if not agent or not agent.enabled or not agent.api_key.strip() or not agent.base_url.strip() or not agent.model.strip():
+        raise HTTPException(400, "Выберите активного ИИ-агента и заполните его API-ключ, адрес и модель.")
+    persona_id = payload.persona_id if payload.persona_id is not None else (account.persona_id if account else None)
+    persona = await db.get(Persona, persona_id) if persona_id else None
+    query = select(Example).where(Example.consent_confirmed.is_(True))
+    if account:
+        query = query.where(or_(Example.account_id == account.id, Example.account_id.is_(None)))
+    else:
+        query = query.where(Example.account_id.is_(None))
+    if persona_id:
+        query = query.where(or_(Example.persona_id == persona_id, Example.persona_id.is_(None)))
+    else:
+        query = query.where(Example.persona_id.is_(None))
+    examples = list((await db.scalars(query.order_by(desc(Example.id)).limit(8))).all())
+    style = persona.style_instructions if persona else ""
+    if account and account.persona_style_override.strip():
+        style += "\\n\\nИндивидуальные правила аккаунта:\\n" + account.persona_style_override[:6000]
+    if account and account.learning_prompt.strip():
+        style += "\\n\\nКонтекст стиля аккаунта:\\n" + account.learning_prompt[:6000]
+    from app.ai.provider import generate_reply
+    try:
+        body = await generate_reply(
+            agent=agent,
+            incoming_text=payload.brief,
+            style_instructions=(
+                "Ты редактор контента для официального Telegram-канала. Создай качественный, "
+                "понятный и естественный черновик публикации по заданию. Не выдумывай факты, "
+                "цифры, ссылки, отзывы или обещания. Если данных недостаточно, формулируй осторожно. "
+                "Не добавляй хештеги без необходимости. " + style
+            ),
+            examples=[(item.incoming_text, item.preferred_reply) for item in examples],
+        )
+    except Exception as exc:
+        raise HTTPException(502, f"Не удалось создать черновик: {type(exc).__name__}: {str(exc)[:220]}") from None
+    row = ContentDraft(
+        account_id=account.id if account else None, agent_id=agent.id,
+        persona_id=persona.id if persona else None,
+        channel_binding_id=channel.id if channel else None,
+        title=payload.title.strip(), prompt=payload.brief.strip(), body=body,
+        status="draft",
+    )
+    db.add(row)
+    await db.flush()
+    await _audit(db, actor, "content.draft.generate", "content_draft", row.id)
+    await db.commit()
+    return {
+        "id": row.id, "account_id": row.account_id, "agent_id": row.agent_id,
+        "persona_id": row.persona_id, "channel_binding_id": row.channel_binding_id,
+        "title": row.title, "prompt": row.prompt, "body": row.body, "status": row.status,
+        "created_at": row.created_at.isoformat(), "updated_at": row.updated_at.isoformat(),
+    }
+
+
+@router.patch("/content/drafts/{draft_id}")
+async def update_content_draft(draft_id: int, payload: ContentDraftPatch,
+                                actor: int = Depends(require_admin), db: AsyncSession = Depends(get_session)):
+    row = await db.get(ContentDraft, draft_id)
+    if not row:
+        raise HTTPException(404, "Черновик не найден.")
+    for key, value in payload.model_dump(exclude_unset=True).items():
+        setattr(row, key, value)
+    await _audit(db, actor, "content.draft.update", "content_draft", draft_id)
+    await db.commit()
+    return {"ok": True, "id": row.id, "status": row.status}
+
+
+@router.delete("/content/drafts/{draft_id}")
+async def delete_content_draft(draft_id: int, actor: int = Depends(require_admin),
+                               db: AsyncSession = Depends(get_session)):
+    row = await db.get(ContentDraft, draft_id)
+    if not row:
+        raise HTTPException(404, "Черновик не найден.")
+    await db.delete(row)
+    await _audit(db, actor, "content.draft.delete", "content_draft", draft_id)
+    await db.commit()
+    return {"ok": True}
 
 
 MODULE_LABELS = {
