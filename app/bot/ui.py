@@ -1935,13 +1935,30 @@ async def management_input_received(m: Message, state: FSMContext):
                     results.append(f"❌ #{account_id}: {type(exc).__name__}: {str(exc)[:120]}")
             message = "\\n".join(results)
         elif action == "editprofile":
-            parts = [x.strip() for x in raw.split("|")]
-            if len(parts) != 4: raise ValueError("Нужно четыре поля через |.")
-            values = [None if x == "-" else x for x in parts]
             account_ids = [int(value) for value in (data.get("management_account_ids") or [aid])]
             results = []
+            lines = [line.strip() for line in raw.splitlines() if line.strip()]
+            if len(lines) > 1 or (lines and len(lines[0].split("|")) == 5):
+                values_by_account = {}
+                for line in lines:
+                    fields = [value.strip() for value in line.split("|")]
+                    if len(fields) != 5 or not fields[0].isdigit():
+                        raise ValueError("Для разных профилей используйте строки: ID аккаунта | имя | фамилия | BIO | username. Для пропуска поля укажите -.")
+                    account_id = int(fields[0])
+                    if account_id not in account_ids or account_id in values_by_account:
+                        raise ValueError("Укажите каждый выбранный аккаунт не более одного раза.")
+                    values_by_account[account_id] = [None if value == "-" else value for value in fields[1:]]
+                if set(values_by_account) != set(account_ids):
+                    raise ValueError("Укажите отдельную строку для каждого выбранного аккаунта.")
+            else:
+                parts = [x.strip() for x in raw.split("|")]
+                if len(parts) != 4:
+                    raise ValueError("Для одинаковых данных: имя | фамилия | BIO | username.")
+                values = [None if x == "-" else x for x in parts]
+                values_by_account = {account_id: values for account_id in account_ids}
             for account_id in account_ids:
                 try:
+                    values = values_by_account[account_id]
                     await telegram_management.update_profile(
                         account_id, first_name=values[0], last_name=values[1], about=values[2], username=values[3]
                     )
