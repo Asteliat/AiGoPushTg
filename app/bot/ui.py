@@ -1150,6 +1150,10 @@ async def management_reaction_status(c: CallbackQuery):
         return
     rows = []
     if snapshot["status"] == "queued":
+        rows.append([("⏸ Приостановить", f"tool:reaction:pause:{reaction_id}")])
+        rows.append([("⛔ Отменить", f"tool:reaction:cancel:{reaction_id}")])
+    elif snapshot["status"] == "paused":
+        rows.append([("▶️ Возобновить", f"tool:reaction:resume:{reaction_id}")])
         rows.append([("⛔ Отменить", f"tool:reaction:cancel:{reaction_id}")])
     elif snapshot["status"] == "uncertain":
         rows.append([("✅ Проверил: реакция есть", f"tool:reaction:resolve:{reaction_id}:sent")])
@@ -1160,6 +1164,30 @@ async def management_reaction_status(c: CallbackQuery):
     if snapshot["last_error"]:
         detail += f"\nИнформация: {snapshot['last_error'][:500]}"
     await edit(c, detail, kb(rows))
+
+
+@router.callback_query(F.data.startswith("tool:reaction:pause:"))
+async def management_reaction_pause(c: CallbackQuery):
+    if not await check_cb(c):
+        return
+    reaction_id = int(c.data.rsplit(":", 1)[1])
+    try:
+        await telegram_automation.set_scheduled_reaction_status(reaction_id, "paused")
+        await management_reaction_status(c)
+    except Exception as exc:
+        await c.answer(str(exc)[:180], show_alert=True)
+
+
+@router.callback_query(F.data.startswith("tool:reaction:resume:"))
+async def management_reaction_resume(c: CallbackQuery):
+    if not await check_cb(c):
+        return
+    reaction_id = int(c.data.rsplit(":", 1)[1])
+    try:
+        await telegram_automation.set_scheduled_reaction_status(reaction_id, "queued")
+        await management_reaction_status(c)
+    except Exception as exc:
+        await c.answer(str(exc)[:180], show_alert=True)
 
 
 @router.callback_query(F.data.startswith("tool:reaction:cancel:"))
