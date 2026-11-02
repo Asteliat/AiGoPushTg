@@ -2739,9 +2739,12 @@ async def management_photo_received(m: Message, state: FSMContext):
             await finish_prompt(m, state, "\n".join(results), photo_keyboard)
     except telegram_management.FloodWaitError as exc:
         back_callback = data.get("module_return_callback") or f"tool:management:account:{aid}"
-        await finish_prompt(m, state, f"Telegram установил FloodWait: {int(exc.seconds)} сек. Фото не загружено.", kb([
-            [("↩️ Назад", back_callback)],
-        ]))
+        flood_text = f"Telegram установил FloodWait: {int(exc.seconds)} сек. Фото не загружено."
+        flood_keyboard = kb([[("↩️ Назад", back_callback)]])
+        if back_callback == "tool:account-settings:menu":
+            await finish_prompt_keep_state(m, state, flood_text, flood_keyboard)
+        else:
+            await finish_prompt(m, state, flood_text, flood_keyboard)
     except Exception as exc:
         await prompt_message(m, state, f"Не удалось обновить фото: {type(exc).__name__}: {str(exc)[:350]}")
     finally:
