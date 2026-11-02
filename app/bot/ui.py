@@ -1,5 +1,5 @@
 from __future__ import annotations
-import asyncio, csv, io, os, re, secrets, tempfile, logging, hashlib
+import asyncio, csv, io, os, re, secrets, tempfile, logging, hashlib, json
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from aiogram import F, Router
@@ -52,6 +52,30 @@ async def handle_unexpected_update_error(event: ErrorEvent):
     )
     return True
 cfg = get_settings()
+
+
+async def record_contact_operation(account_id: int, action: str, details: str) -> None:
+    key = f"contacts.log.{int(account_id)}"
+    async with SessionFactory() as db:
+        row = await db.get(AppSetting, key)
+        entries = []
+        if row and row.value:
+            try:
+                loaded = json.loads(row.value)
+                entries = loaded if isinstance(loaded, list) else []
+            except (TypeError, ValueError):
+                entries = []
+        entries.append({
+            "at": datetime.now(timezone.utc).isoformat(),
+            "action": str(action)[:40],
+            "details": str(details)[:500],
+        })
+        value = json.dumps(entries[-200:], ensure_ascii=False)
+        if row:
+            row.value = value
+        else:
+            db.add(AppSetting(key=key, value=value))
+        await db.commit()
 LOGIN_TASKS: dict[int, asyncio.Task] = {}
 PHONE_LOGIN_DATA: dict[int, dict] = {}
 QR_LOGIN_DATA: dict[int, dict] = {}
@@ -320,8 +344,10 @@ MODULE_ACTIONS = {
         ("📇 Просмотреть контакты", "contacts"),
         ("➕ Добавить контакт", "addcontact"),
         ("🗑 Удалить контакт", "delcontact"),
-        ("📥 Импорт TXT", "importcontacts"),
+        ("🧹 Проверить дубликаты", "dedupecontacts"),
+        ("📥 Импорт TXT/CSV", "importcontacts"),
         ("📤 Экспорт CSV", "exportcontacts"),
+        ("📜 Журнал операций", "contactlog"),
     ]),
     "broadcast": ("📤 Рассылка", [
         ("✉️ Создать рассылку", "campaign"),
