@@ -344,7 +344,7 @@ MODULE_ACTIONS = {
         ("📇 Просмотреть контакты", "contacts"),
         ("➕ Добавить контакт", "addcontact"),
         ("🗑 Удалить контакт", "delcontact"),
-        ("🧹 Проверить дубликаты", "dedupecontacts"),
+        ("🔎 Проверить дубликаты", "dedupecontacts"),
         ("📥 Импорт TXT/CSV", "importcontacts"),
         ("📤 Экспорт CSV", "exportcontacts"),
         ("📜 Журнал операций", "contactlog"),
@@ -902,13 +902,11 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
                         duplicate_ids.append(int(contact["id"]))
                     else:
                         seen.add(phone)
-                removed = 0
-                for user_id in duplicate_ids:
-                    await telegram_management.delete_contact(account_id, user_id)
-                    removed += 1
-                details = f"проверено {len(contacts)}, удалено дубликатов по номеру {removed}"
-                await record_contact_operation(account_id, "deduplicate", details)
-                results.append(f"✅ #{account_id}: {details}.")
+                details = f"проверено {len(contacts)}, найдено повторных контактов по номеру {len(duplicate_ids)}"
+                if duplicate_ids:
+                    details += "; ID: " + ", ".join(str(value) for value in duplicate_ids[:30])
+                await record_contact_operation(account_id, "duplicate_check", details)
+                results.append(f"✅ #{account_id}: {details}. Ничего не удалялось.")
             except Exception as exc:
                 results.append(f"❌ #{account_id}: {type(exc).__name__}: {str(exc)[:140]}")
         await edit(c, "\\n".join(results)[:3900], kb([[("↩️ К модулю", "tool:module:contacts")]]))
