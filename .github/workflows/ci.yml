@@ -1,7 +1,7 @@
 name: CI
 on:
   push:
-    branches: [main]
+    branches: [main, feature/telegram-miniapp-control-center, feature/atcivperson-modular-suite, feature/atcivperson-modular-suite-main]
   pull_request:
     branches: [main]
 jobs:
@@ -16,4 +16,16 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: pip install -e ".[dev]"
       - run: ruff check app tests --select F
+      - name: Check Mini App JavaScript syntax
+        run: |
+          python - <<'PY'
+          import re
+          from pathlib import Path
+          html = Path("app/api/static/index.html").read_text(encoding="utf-8")
+          scripts = re.findall(r"<script(?:\s[^>]*)?>(.*?)</script>", html, re.S)
+          if not scripts:
+              raise SystemExit("Mini App inline script was not found")
+          Path("/tmp/miniapp.js").write_text("\n".join(scripts), encoding="utf-8")
+          PY
+          node --check /tmp/miniapp.js
       - run: pytest -q
