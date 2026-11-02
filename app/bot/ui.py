@@ -924,6 +924,7 @@ async def management_action_start(c: CallbackQuery, state: FSMContext):
                     writer.writerow([item["id"], item["username"] or "", item["first_name"], item["last_name"], item["phone"]])
                 document = BufferedInputFile(output.getvalue().encode("utf-8-sig"), filename=f"contacts-account-{account_id}.csv")
                 await c.message.answer_document(document, caption=f"Экспорт контактов аккаунта #{account_id}: {len(items)} записей")
+                await record_contact_operation(account_id, "export", f"экспортировано {len(items)} контактов")
                 sent += 1
             except Exception as exc:
                 await c.message.answer(f"❌ Аккаунт #{account_id}: {type(exc).__name__}: {str(exc)[:150]}")
