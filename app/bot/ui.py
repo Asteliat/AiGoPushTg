@@ -425,11 +425,8 @@ async def tool_module_select_all(c: CallbackQuery, state: FSMContext):
     if module not in {"broadcast", "invite"}:
         await c.answer("Множественный выбор доступен для рассылки и инвайтинга.", show_alert=True)
         return
-    await render_module_account_selection(c, state, module, [])
-    data = await state.get_data()
-    await render_campaign_kind_selection(c, state, module, data.get("module_selected_accounts") or [] if False else [
-        int(account.id) for account in (await _enabled_accounts_for_module())
-    ])
+    accounts = await _enabled_accounts_for_module()
+    await render_campaign_kind_selection(c, state, module, [int(account.id) for account in accounts])
 
 
 async def _enabled_accounts_for_module():
