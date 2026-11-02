@@ -216,6 +216,19 @@ class ContentGenerateInput(BaseModel):
     brief: str = Field(min_length=5, max_length=6000)
 
 
+
+
+class InboxPeerInput(BaseModel):
+    account_id: int = Field(ge=1)
+    peer_id: int
+    peer_ref: str = Field(default="", max_length=255)
+
+
+class InboxReplyInput(InboxPeerInput):
+    text: str = Field(min_length=1, max_length=4096)
+    reply_to_message_id: int = Field(gt=0)
+
+
 class ContentDraftPatch(BaseModel):
     title: str | None = Field(default=None, max_length=160)
     body: str | None = Field(default=None, min_length=1, max_length=12000)
@@ -713,6 +726,208 @@ async def create_binding(payload: BindingInput, actor: int = Depends(require_adm
     return {"ok": True, "id": row.id, "enabled": False}
 
 
+
+
+
+
+async def _resolve_inbox_entity(client, peer_id: int, peer_ref: str = ""):
+    from telethon import utils
+
+    entity = await client.get_entity(peer_ref if peer_ref else int(peer_id))
+    if int(utils.get_peer_id(entity)) != int(peer_id):
+        raise HTTPException(409, "Идентификатор диалога изменился. Обновите список диалогов.")
+    return entity
+
+
+async def _inbox_recent_messages(client, entity, limit: int = 30):
+    messages = []
+    async for message in client.iter_messages(entity, limit=limit):
+        messages.append({
+            "id": int(message.id),
+            "text": (message.message or "")[:5000],
+            "date": message.date.isoformat() if message.date else None,
+            "out": bool(message.out),
+            "sender_id": int(message.sender_id) if message.sender_id else None,
+            "has_media": bool(message.media),
+        })
+    messages.reverse()
+    return messages
+
+
+@router.get("/inbox/{account_id}/dialogs")
+async def inbox_dialogs(account_id: int, _: int = Depends(require_admin)):
+    from app.telegram_gateway.management import isolated_account_client
+
+    try:
+        async with isolated_account_client(account_id) as (account, client):
+            if not account.enabled:
+                raise HTTPException(400, "Аккаунт отключён.")
+            rows = []
+            async for dialog in client.iter_dialogs(limit=80):
+                entity = dialog.entity
+                username = getattr(entity, "username", None)
+                marked_id = int(dialog.id)
+                kind = (
+                    "channel" if getattr(entity, "broadcast", False) else
+                    "group" if getattr(entity, "megagroup", False) or getattr(entity, "gigagroup", False)
+                    or entity.__class__.__name__ == "Chat" else "private"
+                )
+                last = dialog.message
+                rows.append({
+                    "peer_id": marked_id,
+                    "peer_ref": ("@" + username) if username else "",
+                    "title": str(dialog.name or "Без названия")[:160],
+                    "username": username,
+                    "kind": kind,
+                    "unread_count": int(dialog.unread_count or 0),
+                    "last_message_id": int(last.id) if last else None,
+                    "last_message": ((last.message or "")[:240] if last else ""),
+                    "last_message_out": bool(last.out) if last else False,
+                    "last_message_at": last.date.isoformat() if last and last.date else None,
+                })
+            return {"account_id": account_id, "dialogs": rows}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(502, f"Не удалось загрузить диалоги: {type(exc).__name__}: {str(exc)[:180]}") from None
+
+
+@router.get("/inbox/{account_id}/messages/{peer_id}")
+async def inbox_messages(account_id: int, peer_id: int, peer_ref: str = "",
+                         _: int = Depends(require_admin)):
+    from app.telegram_gateway.management import isolated_account_client
+
+    try:
+        async with isolated_account_client(account_id) as (_account, client):
+            entity = await _resolve_inbox_entity(client, peer_id, peer_ref)
+            if getattr(entity, "broadcast", False) and not getattr(entity, "megagroup", False):
+                raise HTTPException(400, "Просмотр сообщений вещательного канала здесь не поддерживается.")
+            messages = await _inbox_recent_messages(client, entity, limit=40)
+            return {"account_id": account_id, "peer_id": peer_id, "messages": messages}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(502, f"Не удалось загрузить переписку: {type(exc).__name__}: {str(exc)[:180]}") from None
+
+
+@router.post("/inbox/draft")
+async def inbox_ai_draft(payload: InboxPeerInput, _: int = Depends(require_admin),
+                         db: AsyncSession = Depends(get_session)):
+    from app.telegram_gateway.management import isolated_account_client
+    from app.ai.provider import generate_reply
+
+    account = await db.get(Account, payload.account_id)
+    if not account or not account.enabled:
+        raise HTTPException(404, "Аккаунт не найден или отключён.")
+    agent = await db.get(AIAgent, account.ai_agent_id) if account.ai_agent_id else None
+    if not agent:
+        agent = await db.scalar(select(AIAgent).where(
+            AIAgent.enabled.is_(True), AIAgent.is_default.is_(True)
+        ).order_by(AIAgent.id))
+    if not agent or not agent.enabled or not agent.api_key.strip():
+        raise HTTPException(400, "Назначьте активного ИИ-агента с API-ключом.")
+    persona = await db.get(Persona, account.persona_id) if account.persona_id else None
+    examples = list((await db.scalars(select(Example).where(
+        Example.consent_confirmed.is_(True),
+        or_(Example.account_id == account.id, Example.account_id.is_(None)),
+        or_(Example.persona_id == account.persona_id, Example.persona_id.is_(None))
+        if account.persona_id else Example.persona_id.is_(None),
+    ).order_by(desc(Example.id)).limit(8))).all())
+    style = persona.style_instructions if persona else ""
+    if account.persona_style_override.strip():
+        style += "\\n\\nИндивидуальные правила аккаунта:\\n" + account.persona_style_override[:6000]
+    style += "\\n\\nЕсли собеседник спрашивает, является ли ответ автоматическим, отвечай честно."
+    await db.rollback()
+    try:
+        async with isolated_account_client(payload.account_id) as (_account, client):
+            entity = await _resolve_inbox_entity(client, payload.peer_id, payload.peer_ref)
+            if getattr(entity, "broadcast", False) and not getattr(entity, "megagroup", False):
+                raise HTTPException(400, "Для вещательных каналов нельзя создавать ответ в личном inbox.")
+            if not isinstance(entity, __import__("telethon.tl.types", fromlist=["User"]).User):
+                async with SessionFactory() as check_db:
+                    binding = await check_db.scalar(select(ChatBinding).where(
+                        ChatBinding.account_id == payload.account_id,
+                        ChatBinding.chat_id == payload.peer_id,
+                        ChatBinding.enabled.is_(True),
+                    ))
+                if not binding:
+                    raise HTTPException(403, "Для ответа в группе сначала сохраните и включите её в своей базе.")
+            raw = []
+            async for item in client.iter_messages(entity, limit=15):
+                raw.append(item)
+            raw.reverse()
+            inbound = next((item for item in reversed(raw) if not item.out), None)
+            if inbound is None:
+                raise HTTPException(400, "В этом диалоге ещё нет входящего сообщения для ответа.")
+            context = "\\n".join(
+                ("Аккаунт: " if item.out else "Собеседник: ") + ((item.message or "[медиа/вложение]")[:1200])
+                for item in raw
+            )
+            draft = await generate_reply(
+                agent=agent,
+                incoming_text=(inbound.message or "Собеседник отправил медиа или вложение."),
+                style_instructions=(
+                    "Подготовь уместный ответ на последнее входящее сообщение в реальном диалоге. "
+                    "Учитывай всю историю, не выдумывай факты и не отправляй сообщение самостоятельно. "
+                    "Не используй навязчивые продажи. " + style
+                ),
+                examples=[(item.incoming_text, item.preferred_reply) for item in examples],
+                conversation_context=context,
+            )
+            return {"draft": draft, "reply_to_message_id": int(inbound.id)}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(502, f"Не удалось подготовить ответ: {type(exc).__name__}: {str(exc)[:180]}") from None
+
+
+@router.post("/inbox/reply")
+async def inbox_send_reply(payload: InboxReplyInput, actor: int = Depends(require_admin),
+                           db: AsyncSession = Depends(get_session)):
+    from app.telegram_gateway.management import isolated_account_client
+    from telethon.errors import FloodWaitError
+    from telethon.tl.types import User
+
+    account = await db.get(Account, payload.account_id)
+    if not account or not account.enabled:
+        raise HTTPException(404, "Аккаунт не найден или отключён.")
+    if account.manual_pause:
+        raise HTTPException(409, "Аккаунт на паузе. Снимите паузу перед отправкой.")
+    await db.rollback()
+    try:
+        async with isolated_account_client(payload.account_id) as (_account, client):
+            entity = await _resolve_inbox_entity(client, payload.peer_id, payload.peer_ref)
+            if getattr(entity, "broadcast", False) and not getattr(entity, "megagroup", False):
+                raise HTTPException(400, "Нельзя отправлять ответы в вещательный канал.")
+            if not isinstance(entity, User):
+                async with SessionFactory() as check_db:
+                    binding = await check_db.scalar(select(ChatBinding).where(
+                        ChatBinding.account_id == payload.account_id,
+                        ChatBinding.chat_id == payload.peer_id,
+                        ChatBinding.enabled.is_(True),
+                    ))
+                if not binding:
+                    raise HTTPException(403, "Ответ в группе разрешён только для включённой сохранённой группы.")
+            recent = []
+            async for item in client.iter_messages(entity, limit=30):
+                recent.append(item)
+            target = next((item for item in recent if int(item.id) == payload.reply_to_message_id), None)
+            if target is None or target.out:
+                raise HTTPException(409, "Ответ можно отправить только на существующее входящее сообщение. Обновите переписку.")
+            sent = await client.send_message(
+                entity, payload.text.strip(), reply_to=payload.reply_to_message_id,
+                link_preview=False,
+            )
+        async with SessionFactory() as audit_db:
+            await _audit(audit_db, actor, "inbox.reply.send", "telegram_message", int(sent.id))
+            await audit_db.commit()
+        return {"ok": True, "message_id": int(sent.id), "reply_to_message_id": payload.reply_to_message_id}
+    except FloodWaitError as exc:
+        raise HTTPException(429, f"Telegram просит подождать {int(exc.seconds)} сек. Повтор не запускается автоматически.") from None
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(502, f"Не удалось отправить ответ: {type(exc).__name__}: {str(exc)[:180]}") from None
 
 
 @router.get("/channel-assistant")
