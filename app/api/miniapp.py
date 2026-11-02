@@ -4,7 +4,6 @@ import hashlib
 import hmac
 import json
 import time
-from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import parse_qsl
 
@@ -17,7 +16,7 @@ from app.settings import get_settings
 from app.storage.db import get_session
 from app.storage.models import (
     Account, AIAgent, AppSetting, AuditEvent, ChannelBinding, ChatBinding,
-    Example, Persona, TriggerEvent, TriggerRule,
+    Example, Persona, TriggerRule,
 )
 
 router = APIRouter(prefix="/v1/miniapp", tags=["miniapp"])
@@ -506,12 +505,19 @@ async def create_binding(payload: BindingInput, actor: int = Depends(require_adm
 async def search_groups(payload: SearchInput, actor: int = Depends(require_admin)):
     from app.telegram_gateway.discovery import search_public_groups, search_web_groups, verify_group_candidates
     from app.telegram_gateway.management import isolated_account_client
+    from telethon import utils
     async with isolated_account_client(payload.account_id) as (_account, client):
         telegram = await search_public_groups(client, payload.query, limit=payload.limit)
         web_candidates = await search_web_groups(payload.query, limit=min(payload.limit * 3, 120), pages_per_query=1)
         verified = await verify_group_candidates(client, web_candidates[:payload.limit * 2])
-    merged = {str(item.get("link", "")).casefold(): item for item in [*telegram, *verified]}
-    results = sorted(merged.values(), key=lambda item: (int(item.get("score") or 0), int(item.get("members") or 0)), reverse=True)
+        merged = {str(item.get("link", "")).casefold(): item for item in [*telegram, *verified]}
+        results = sorted(merged.values(), key=lambda item: (int(item.get("score") or 0), int(item.get("members") or 0)), reverse=True)
+        for item in results:
+            if item.get("username"):
+                entity = await client.get_entity(item["username"])
+                item["id"] = int(utils.get_peer_id(entity))
+            else:
+                item["id"] = None
     return {"results": results[:payload.limit], "count": len(results)}
 
 
@@ -519,10 +525,17 @@ async def search_groups(payload: SearchInput, actor: int = Depends(require_admin
 async def search_channels(payload: SearchInput, actor: int = Depends(require_admin)):
     from app.telegram_gateway.discovery import search_public_channels, search_web_channels, verify_channel_candidates
     from app.telegram_gateway.management import isolated_account_client
+    from telethon import utils
     async with isolated_account_client(payload.account_id) as (_account, client):
         telegram = await search_public_channels(client, payload.query, limit=payload.limit)
         web_candidates = await search_web_channels(payload.query, limit=min(payload.limit * 3, 120), pages_per_query=1)
         verified = await verify_channel_candidates(client, web_candidates[:payload.limit * 2])
-    merged = {str(item.get("link", "")).casefold(): item for item in [*telegram, *verified]}
-    results = sorted(merged.values(), key=lambda item: (int(item.get("score") or 0), int(item.get("members") or 0)), reverse=True)
+        merged = {str(item.get("link", "")).casefold(): item for item in [*telegram, *verified]}
+        results = sorted(merged.values(), key=lambda item: (int(item.get("score") or 0), int(item.get("members") or 0)), reverse=True)
+        for item in results:
+            if item.get("username"):
+                entity = await client.get_entity(item["username"])
+                item["id"] = int(utils.get_peer_id(entity))
+            else:
+                item["id"] = None
     return {"results": results[:payload.limit], "count": len(results)}
