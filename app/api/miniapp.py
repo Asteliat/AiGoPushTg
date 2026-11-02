@@ -29,7 +29,10 @@ def _telegram_user_id(init_data: str | None) -> int:
     if not cfg.bot_token or not init_data:
         raise HTTPException(status_code=401, detail="Откройте Mini App через Telegram.")
     try:
-        pairs = dict(parse_qsl(init_data, keep_blank_values=True, strict_parsing=True))
+        raw_pairs = parse_qsl(init_data, keep_blank_values=True, strict_parsing=True)
+        if len(raw_pairs) != len({key for key, _ in raw_pairs}):
+            raise ValueError("Duplicate Telegram initData fields.")
+        pairs = dict(raw_pairs)
         received_hash = pairs.pop("hash", "")
         auth_date = int(pairs.get("auth_date", "0"))
         user = json.loads(pairs.get("user", "{}"))
