@@ -173,6 +173,14 @@ async def finish_prompt(m, state, text, keyboard=MAIN):
     await state.clear()
     if not await edit_anchor(m.bot, data, text, keyboard):
         await m.answer(text, reply_markup=keyboard)
+async def finish_prompt_keep_state(m, state, text, keyboard=MAIN):
+    """Finish an input step while retaining selected account IDs for the next menu."""
+    data = await state.get_data()
+    await delete_msg(m)
+    await state.set_state(None)
+    if not await edit_anchor(m.bot, data, text, keyboard):
+        await m.answer(text, reply_markup=keyboard)
+
 async def check_msg(m):
     if not admin(m.from_user.id if m.from_user else None):
         await m.answer("Доступ закрыт. Проверьте ADMIN_IDS."); return False
@@ -2651,10 +2659,14 @@ async def management_input_received(m: Message, state: FSMContext):
         else:
             back_callback = f"tool:management:account:{aid}"
             back_label = "↩️ К инструментам аккаунта"
-        await finish_prompt(m, state, message, kb([
+        result_keyboard = kb([
             [(back_label, back_callback)],
             [("🏠 Главное меню", "nav:home")],
-        ]))
+        ])
+        if action and action.startswith("profilefield_"):
+            await finish_prompt_keep_state(m, state, message, result_keyboard)
+        else:
+            await finish_prompt(m, state, message, result_keyboard)
     except telegram_management.FloodWaitError as exc:
         back_callback = data.get("module_return_callback") or f"tool:management:account:{aid}"
         await finish_prompt(
@@ -2717,10 +2729,14 @@ async def management_photo_received(m: Message, state: FSMContext):
                     results.append(f"✅ #{account_id}: фото обновлено")
                 except Exception as exc:
                     results.append(f"❌ #{account_id}: {type(exc).__name__}: {str(exc)[:120]}")
-        await finish_prompt(m, state, "\n".join(results), kb([
+        photo_keyboard = kb([
             [("↩️ К модулю", data.get("module_return_callback") or f"tool:module:{module}")],
             [("🏠 Главное меню", "nav:home")],
-        ]))
+        ])
+        if data.get("module_return_callback") == "tool:account-settings:menu":
+            await finish_prompt_keep_state(m, state, "\n".join(results), photo_keyboard)
+        else:
+            await finish_prompt(m, state, "\n".join(results), photo_keyboard)
     except telegram_management.FloodWaitError as exc:
         back_callback = data.get("module_return_callback") or f"tool:management:account:{aid}"
         await finish_prompt(m, state, f"Telegram установил FloodWait: {int(exc.seconds)} сек. Фото не загружено.", kb([
@@ -2770,7 +2786,7 @@ async def management_story_received(m: Message, state: FSMContext):
                 results.append(f"✅ #{account_id}: история опубликована для контактов")
             except Exception as exc:
                 results.append(f"❌ #{account_id}: {type(exc).__name__}: {str(exc)[:180]}")
-        await finish_prompt(m, state, "\n".join(results), kb([
+        await finish_prompt_keep_state(m, state, "\n".join(results), kb([
             [("↩️ К настройке аккаунтов", "tool:account-settings:menu")],
             [("🏠 Главное меню", "nav:home")],
         ]))
