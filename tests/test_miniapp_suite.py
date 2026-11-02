@@ -41,13 +41,13 @@ def test_retired_bulk_automation_is_disabled_by_default():
 
 def test_new_workspace_routes_exist_and_legacy_module_routes_are_retired():
     paths = {route.path for route in miniapp.router.routes}
-    assert "/channel-assistant" in paths
-    assert "/channel-assistant/{binding_id}" in paths
-    assert "/channel-activity" in paths
-    assert "/content/generate" in paths
-    assert "/content/drafts" in paths
-    assert "/search/groups" in paths
-    assert "/search/channels" in paths
+    assert "/v1/miniapp/channel-assistant" in paths
+    assert "/v1/miniapp/channel-assistant/{binding_id}" in paths
+    assert "/v1/miniapp/channel-activity" in paths
+    assert "/v1/miniapp/content/generate" in paths
+    assert "/v1/miniapp/content/drafts" in paths
+    assert "/v1/miniapp/search/groups" in paths
+    assert "/v1/miniapp/search/channels" in paths
     assert not any(
         marker in path
         for path in paths
