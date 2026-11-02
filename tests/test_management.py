@@ -437,3 +437,65 @@ async def test_set_profile_photo_normalizes_image_to_jpeg_before_upload(monkeypa
 
     assert uploaded["format"] == "JPEG"
     assert uploaded["mode"] == "RGB"
+
+
+@pytest.mark.asyncio
+async def test_publish_story_photo_checks_eligibility_and_limits_visibility_to_contacts(monkeypatch, tmp_path):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from PIL import Image
+    from telethon.tl.functions.stories import CanSendStoryRequest, SendStoryRequest
+    from telethon.tl.types import InputPrivacyValueAllowContacts
+
+    from app.telegram_gateway import management
+
+    photo_path = tmp_path / "story.jpg"
+    Image.new("RGB", (720, 1280), (40, 90, 150)).save(photo_path)
+    sent = {}
+    uploaded = object()
+
+    class FakeClient:
+        async def get_input_entity(self, peer):
+            assert peer == "me"
+            return "self-peer"
+
+        async def __call__(self, request):
+            if isinstance(request, CanSendStoryRequest):
+                sent["eligibility_checked"] = True
+                return SimpleNamespace(count_remains=1)
+            assert isinstance(request, SendStoryRequest)
+            sent["request"] = request
+            return SimpleNamespace()
+
+        async def upload_file(self, path):
+            assert path == str(photo_path)
+            return uploaded
+
+    @asynccontextmanager
+    async def fake_client(_account_id):
+        yield SimpleNamespace(id=1), FakeClient()
+
+    monkeypatch.setattr(management, "isolated_account_client", fake_client)
+    await management.publish_story_photo(7, str(photo_path), caption="Hello")
+
+    request = sent["request"]
+    assert sent["eligibility_checked"] is True
+    assert request.peer == "self-peer"
+    assert request.media.file is uploaded
+    assert request.caption == "Hello"
+    assert request.period == 86400
+    assert len(request.privacy_rules) == 1
+    assert isinstance(request.privacy_rules[0], InputPrivacyValueAllowContacts)
+
+
+@pytest.mark.asyncio
+async def test_publish_story_photo_rejects_landscape_before_opening_account_session(tmp_path):
+    from PIL import Image
+    from app.telegram_gateway.management import publish_story_photo
+
+    photo_path = tmp_path / "landscape.jpg"
+    Image.new("RGB", (1280, 720), (40, 90, 150)).save(photo_path)
+
+    with pytest.raises(ValueError, match="вертикальное"):
+        await publish_story_photo(7, str(photo_path))
