@@ -9,21 +9,21 @@ import re
 from collections.abc import Iterable
 
 _RU_PATTERNS = (
-    r"\\bне\\s+бот\\b",
-    r"нажми(?:те)?\\s+на\\s+кнопк",
-    r"пройдите?\\s+проверку",
-    r"проверка\\s+на\\s+бот",
-    r"выберите?\\s+(?:смайлик|эмодзи)",
-    r"выбери(?:те)?\\s+(?:смайлик|эмодзи)",
-    r"подтвердите?,?\\s+что\\s+вы\\s+человек",
+    r"\bне\s+бот\b",
+    r"нажми(?:те)?\s+на\s+кнопк",
+    r"пройдите?\s+проверку",
+    r"проверка\s+на\s+бот",
+    r"выберите?\s+(?:смайлик|эмодзи)",
+    r"выбери(?:те)?\s+(?:смайлик|эмодзи)",
+    r"подтвердите?,?\s+что\s+вы\s+человек",
     r"капч",
 )
 _EN_PATTERNS = (
-    r"\\bcaptcha\\b",
-    r"\\bverify\\s+(?:that\\s+)?you(?:'re|\\s+are)\\s+human\\b",
-    r"\\bclick\\s+(?:the\\s+)?button\\b",
-    r"\\bchoose\\s+(?:an?\\s+)?emoji\\b",
-    r"\\bselect\\s+(?:an?\\s+)?emoji\\b",
+    r"\bcaptcha\b",
+    r"\bverify\s+(?:that\s+)?you(?:'re|\s+are)\s+human\b",
+    r"\bclick\s+(?:the\s+)?button\b",
+    r"\bchoose\s+(?:an?\s+)?emoji\b",
+    r"\bselect\s+(?:an?\s+)?emoji\b",
 )
 _COMPILED = tuple(re.compile(pattern, re.IGNORECASE) for pattern in (*_RU_PATTERNS, *_EN_PATTERNS))
 
