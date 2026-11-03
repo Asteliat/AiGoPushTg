@@ -8,7 +8,6 @@ from __future__ import annotations
 import ast
 import json
 import operator
-import re
 from datetime import datetime, timezone
 
 from sqlalchemy import select
