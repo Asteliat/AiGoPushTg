@@ -27,6 +27,7 @@ from app.services.chat_bindings import discovered_binding_values
 from app.telegram_gateway.proxy import telethon_proxy
 from app.telegram_gateway.session import configure_telethon_sqlite_session
 from app.workers.automation import automation_dispatcher
+from app.services.learning_tasks import handle_lesson_message
 from app.services.challenge_monitor import (
     extract_button_labels,
     format_challenge_alert,
@@ -449,6 +450,8 @@ async def main():
         if not event.message or not event.message.message:
             return
         incoming = event.message.message.strip()
+        if incoming.startswith("ATCIV-LESSON/1"):
+            return
         if not incoming or event.message.out:
             return
         sender_id = int(event.sender_id or 0)
@@ -1180,6 +1183,21 @@ async def main():
                 lambda event, aid=account.id, name=account.display_name: inspect_challenge(
                     event, aid, name
                 ),
+                events.NewMessage(incoming=True),
+            )
+
+            async def route_learning_task(event, aid=account.id):
+                try:
+                    await handle_lesson_message(event, aid)
+                except Exception:
+                    logging.exception(
+                        "Learning task failed: account=%s chat=%s message=%s",
+                        aid, getattr(event, "chat_id", None),
+                        getattr(getattr(event, "message", None), "id", None),
+                    )
+
+            client.add_event_handler(
+                route_learning_task,
                 events.NewMessage(incoming=True),
             )
 
