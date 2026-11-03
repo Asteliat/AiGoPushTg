@@ -3333,9 +3333,53 @@ async def settings_cb(c: CallbackQuery):
     await edit(c, text, kb([
         [("🎚 Вероятность ответов", "runtime:menu")],
         [("⏳ Поведение при FloodWait", "joinpolicy:menu")],
+        [("🛡 Проверки Telegram", "challenge:settings")],
         [("🧾 Логи", "logs:menu")],
         [("⬅️ Главное меню", "nav:home")],
     ]))
+
+
+@router.callback_query(F.data == "challenge:settings")
+async def challenge_settings(c: CallbackQuery):
+    if not await check_cb(c):
+        return
+    async with SessionFactory() as db:
+        setting = await db.get(AppSetting, "challenge_monitor_enabled")
+    enabled = setting is None or setting.value.strip().lower() in {"1", "true", "yes", "on", "enabled"}
+    status = "включено" if enabled else "выключено"
+    await edit(
+        c,
+        "🛡 Обнаружение проверок Telegram\n\n"
+        f"Сейчас: {status}.\n\n"
+        "При обнаружении сообщения от бота с признаками проверки аккаунт отправит уведомление "
+        "в основной канал логов: аккаунт, группа, текст и подписи кнопок. "
+        "Проверка не нажимается автоматически — это помогает не отправить неверный ответ "
+        "и не обходить подтверждение человека.",
+        kb([
+            [("🟢 Включить", "challenge:set:on"), ("🔴 Выключить", "challenge:set:off")],
+            [("⬅️ Настройки", "nav:settings")],
+        ]),
+    )
+
+
+@router.callback_query(F.data.startswith("challenge:set:"))
+async def challenge_settings_save(c: CallbackQuery):
+    if not await check_cb(c):
+        return
+    value = c.data.rsplit(":", 1)[-1]
+    if value not in {"on", "off"}:
+        await c.answer("Неизвестное значение.", show_alert=True)
+        return
+    async with SessionFactory() as db:
+        setting = await db.get(AppSetting, "challenge_monitor_enabled")
+        stored = "true" if value == "on" else "false"
+        if setting:
+            setting.value = stored
+        else:
+            db.add(AppSetting(key="challenge_monitor_enabled", value=stored))
+        await db.commit()
+    await c.answer("Настройка сохранена.")
+    await challenge_settings(c)
 
 
 @router.callback_query(F.data == "joinpolicy:menu")

@@ -27,6 +27,11 @@ from app.services.chat_bindings import discovered_binding_values
 from app.telegram_gateway.proxy import telethon_proxy
 from app.telegram_gateway.session import configure_telethon_sqlite_session
 from app.workers.automation import automation_dispatcher
+from app.services.challenge_monitor import (
+    extract_button_labels,
+    format_challenge_alert,
+    is_challenge_prompt,
+)
 
 async def heartbeat(redis):
     while True:
@@ -65,6 +70,61 @@ async def main():
             except Exception:
                 logging.exception("Notification outbox dispatcher failed")
             await asyncio.sleep(5)
+
+    async def inspect_challenge(event, aid: int, account_name: str) -> None:
+        """Notify the operator about likely group verification prompts; never solve them."""
+        try:
+            if not event.is_group:
+                return
+            message = event.message
+            sender = await event.get_sender()
+            if sender is None or not bool(getattr(sender, "bot", False)):
+                return
+            button_labels = extract_button_labels(message)
+            body = message.message or ""
+            if not is_challenge_prompt(body, button_labels):
+                return
+
+            async with SessionFactory() as db:
+                setting = await db.get(AppSetting, "challenge_monitor_enabled")
+                enabled = setting is None or setting.value.strip().lower() in {
+                    "1", "true", "yes", "on", "enabled"
+                }
+            if not enabled:
+                return
+
+            chat_id = int(event.chat_id or 0)
+            message_id = int(message.id)
+            dedupe_key = f"atcivperson:challenge-alert:{aid}:{chat_id}:{message_id}"
+            first_seen = await redis.set(dedupe_key, "1", nx=True, ex=86400)
+            if not first_seen:
+                return
+
+            chat = await event.get_chat()
+            sender_name = (
+                getattr(sender, "username", None)
+                or getattr(sender, "first_name", None)
+                or str(getattr(sender, "id", "bot"))
+            )
+            alert = format_challenge_alert(
+                account_id=aid,
+                account_name=account_name,
+                chat_id=chat_id,
+                chat_title=getattr(chat, "title", "") or "",
+                message_id=message_id,
+                sender_name=sender_name,
+                text=body,
+                button_labels=button_labels,
+            )
+            await send_log(alert, category="main")
+            logging.warning(
+                "Telegram verification prompt detected: account=%s chat=%s message=%s sender=%s",
+                aid, chat_id, message_id, sender_name,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logging.exception("Challenge monitor failed for account %s", aid)
 
     async def remember_message(aid: int, chat_id: int, sender_id: int, item: dict) -> None:
         chat_key = f"atcivperson:memory:{aid}:{chat_id}:chat"
@@ -394,6 +454,14 @@ async def main():
         sender_id = int(event.sender_id or 0)
         try:
             sender = await event.get_sender()
+            if bool(getattr(sender, "bot", False)) and is_challenge_prompt(
+                incoming, extract_button_labels(event.message)
+            ):
+                logging.info(
+                    "Challenge prompt excluded from AI reply pipeline: account=%s chat=%s message=%s",
+                    aid, event.chat_id, event.message.id,
+                )
+                return
             speaker = " ".join(filter(None, [
                 getattr(sender, "first_name", None),
                 getattr(sender, "last_name", None),
@@ -1105,6 +1173,12 @@ async def main():
             client.add_event_handler(
                 lambda event, aid=account.id, labels=labels: on_message(
                     event, aid=aid, labels=labels
+                ),
+                events.NewMessage(incoming=True),
+            )
+            client.add_event_handler(
+                lambda event, aid=account.id, name=account.display_name: inspect_challenge(
+                    event, aid, name
                 ),
                 events.NewMessage(incoming=True),
             )
