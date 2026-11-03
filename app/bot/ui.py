@@ -7494,6 +7494,7 @@ async def learning_menu(c: CallbackQuery):
     rows = [[(f"{'🟢' if group.enabled else '⚪'} {group.title[:24]} · {group.chat_id}", f"training:group:{group.id}")] for group in groups]
     rows.extend([
         [("➕ Добавить учебную группу", "training:add")],
+        [("📘 Формат заданий", "training:format")],
         [("📊 Результаты", "training:stats")],
         [("🏠 Главное меню", "nav:home")],
     ])
@@ -7524,7 +7525,7 @@ async def learning_add_group_submit(m: Message, state: FSMContext):
     async with SessionFactory() as db:
         group = await db.scalar(select(LearningGroup).where(LearningGroup.chat_id == chat_id))
         if group is None:
-            group = LearningGroup(chat_id=chat_id, title=f"Учебная группа {chat_id}", enabled=False)
+            group = LearningGroup(chat_id=chat_id, title=f"Учебная группа {chat_id}", owner_user_id=int(m.from_user.id), enabled=False)
             db.add(group)
             await db.flush()
             accounts = list((await db.scalars(select(Account).where(Account.enabled.is_(True)))).all())
