@@ -454,6 +454,14 @@ async def main():
         sender_id = int(event.sender_id or 0)
         try:
             sender = await event.get_sender()
+            if bool(getattr(sender, "bot", False)) and is_challenge_prompt(
+                incoming, extract_button_labels(event.message)
+            ):
+                logging.info(
+                    "Challenge prompt excluded from AI reply pipeline: account=%s chat=%s message=%s",
+                    aid, event.chat_id, event.message.id,
+                )
+                return
             speaker = " ".join(filter(None, [
                 getattr(sender, "first_name", None),
                 getattr(sender, "last_name", None),
