@@ -87,7 +87,7 @@ def _spoiler_contains(message, needle: str) -> bool:
 
 def _button_target(question: str) -> str:
     match = re.fullmatch(
-        r"\s*(?:нажми|выбери)\s+кнопку\s*:?\s*(.+?)\s*",
+        r"\s*(?:нажми|выбери)\s+кнопку(?:\s*:\s*|\s+)(.+?)\s*",
         question,
         flags=re.IGNORECASE,
     )
