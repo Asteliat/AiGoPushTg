@@ -6331,9 +6331,9 @@ async def channel_settings_screen(c, scope, object_id):
     )
     chat_replies_icon = "🟢" if chat_replies_enabled else "🔴"
     chat_replies_label = "включены" if chat_replies_enabled else "выключены"
-    lines.append(f"Ответы коммент {chat_replies_icon}: {chat_replies_label} ({chat_replies_source})")
+    lines.append(f"Ответы людям коммент {chat_replies_icon}: {chat_replies_label} ({chat_replies_source})")
     rows.append([(
-        f"Ответы коммент {chat_replies_icon}",
+        f"Ответы людям коммент {chat_replies_icon}",
         f"channel:chatreplies:info:{prefix}:{object_id}",
     )])
 
@@ -6727,7 +6727,7 @@ async def channel_chat_replies_screen(c, scope, object_id):
     )
     subject = "в обсуждениях всех каналов аккаунта" if binding is None else f"в обсуждении канала «{binding.title}»"
     description = (
-        f"Ответы коммент {icon}\n"
+        f"Ответы людям коммент {icon}\n"
         f"Сейчас {status} · {source}.\n\n"
         f"Эта настройка управляет дальнейшим общением {subject}. "
         "Если пользователь отвечает на сообщение, отправленное аккаунтом, "
