@@ -26,7 +26,7 @@ from app.services.channels import (
 )
 from app.settings import get_settings
 from app.storage.db import SessionFactory
-from app.storage.models import Account, AIAgent, AppSetting, ChatBinding, ChannelBinding, ChannelAnalysis, Example, Persona, TriggerRule
+from app.storage.models import Account, AIAgent, AppSetting, ChatBinding, ChannelBinding, ChannelAnalysis, Example, Persona, TriggerRule, LearningGroup, LearningEnrollment, LearningResult
 from app.services.triggers import format_trigger_duration, parse_trigger_terms
 from app.telegram_gateway.proxy import ProxyConfigurationError, encrypt_proxy, telethon_proxy
 from app.telegram_gateway.session import configure_telethon_sqlite_session
@@ -130,6 +130,7 @@ def kb(rows):
 MAIN = kb([
     [("👤 Аккаунты", "acc:list"), ("🤖 ИИ-агенты", "agent:menu")],
     [("🎭 Персоны", "persona:menu"), ("💡 Примеры", "example:menu")],
+    [("🎓 Обучение аккаунтов", "training:menu")],
     [("🧰 Инструменты", "tool:menu"), ("⚙️ Настройки", "nav:settings")],
 ])
 CANCEL = kb([[("❌ Отмена", "nav:cancel")]])
@@ -7476,3 +7477,155 @@ async def channel_join_confirm(c: CallbackQuery):
             [("🏠 Главное меню", "nav:home")],
         ]),
     )
+
+
+class LearningUIStates(StatesGroup):
+    group_chat_id = State()
+
+
+@router.callback_query(F.data == "training:menu")
+async def learning_menu(c: CallbackQuery):
+    if not await check_cb(c):
+        return
+    async with SessionFactory() as db:
+        groups = list((await db.scalars(select(LearningGroup).order_by(LearningGroup.id.desc()))).all())
+        total = len(list((await db.scalars(select(LearningResult.id))).all()))
+        successful = len(list((await db.scalars(select(LearningResult.id).where(LearningResult.status == "answered"))).all()))
+    rows = [[(f"{'🟢' if group.enabled else '⚪'} {group.title[:24]} · {group.chat_id}", f"training:group:{group.id}")] for group in groups]
+    rows.extend([
+        [("➕ Добавить учебную группу", "training:add")],
+        [("📊 Результаты", "training:stats")],
+        [("🏠 Главное меню", "nav:home")],
+    ])
+    await edit(c, f"🎓 Обучение аккаунтов\n\nУчебных групп: {len(groups)}\nВыполнено заданий: {successful} из {total}\n\nДобавь свою группу и выбери аккаунты, которым разрешено выполнять задания.", kb(rows))
+
+
+@router.callback_query(F.data == "training:add")
+async def learning_add_group(c: CallbackQuery, state: FSMContext):
+    if not await check_cb(c):
+        return
+    await state.set_state(LearningUIStates.group_chat_id)
+    await state.update_data(return_callback="training:menu")
+    await edit(c, "Отправь ID своей учебной супергруппы (обычно начинается с -100).\n\nДобавляй только группу, которой управляешь.", CANCEL)
+
+
+@router.message(LearningUIStates.group_chat_id)
+async def learning_add_group_submit(m: Message, state: FSMContext):
+    if not await check_msg(m) or not await private(m):
+        return
+    raw = (m.text or "").strip()
+    try:
+        chat_id = int(raw)
+        if chat_id >= 0 or len(str(abs(chat_id))) < 10:
+            raise ValueError
+    except ValueError:
+        await prompt_message(m, state, "Нужен корректный отрицательный ID супергруппы, например -1001234567890.")
+        return
+    async with SessionFactory() as db:
+        group = await db.scalar(select(LearningGroup).where(LearningGroup.chat_id == chat_id))
+        if group is None:
+            group = LearningGroup(chat_id=chat_id, title=f"Учебная группа {chat_id}", enabled=False)
+            db.add(group)
+            await db.flush()
+            accounts = list((await db.scalars(select(Account).where(Account.enabled.is_(True)))).all())
+            for account in accounts:
+                db.add(LearningEnrollment(group_id=group.id, account_id=account.id, enabled=False))
+            await db.commit()
+        group_id = group.id
+    await finish_prompt(m, state, "✅ Учебная группа добавлена. Теперь включи её и отметь аккаунты.", kb([
+        [("⚙️ Настроить группу", f"training:group:{group_id}")],
+        [("🎓 К обучению", "training:menu")],
+    ]))
+
+
+@router.callback_query(F.data.startswith("training:group:"))
+async def learning_group_view(c: CallbackQuery):
+    if not await check_cb(c):
+        return
+    try:
+        group_id = int(c.data.rsplit(":", 1)[1])
+    except (TypeError, ValueError):
+        await c.answer("Некорректная группа", show_alert=True)
+        return
+    async with SessionFactory() as db:
+        group = await db.get(LearningGroup, group_id)
+        if group is None:
+            await edit(c, "Учебная группа не найдена.", kb([[("↩️ Назад", "training:menu")]]))
+            return
+        accounts = list((await db.scalars(select(Account).order_by(Account.id))).all())
+        enrollments = list((await db.scalars(select(LearningEnrollment).where(LearningEnrollment.group_id == group_id))).all())
+        by_account = {item.account_id: item for item in enrollments}
+        for account in accounts:
+            if account.id not in by_account:
+                item = LearningEnrollment(group_id=group_id, account_id=account.id, enabled=False)
+                db.add(item)
+                by_account[account.id] = item
+        await db.commit()
+        title, chat_id, enabled = group.title, group.chat_id, group.enabled
+    rows = [[(("🟢 " if enabled else "⚪ ") + ("Выключить группу" if enabled else "Включить группу"), f"training:toggle:{group_id}")]]
+    for account in accounts:
+        enrollment = by_account[account.id]
+        rows.append([(("☑️ " if enrollment.enabled else "▫️ ") + f"{account.display_name[:22]} · #{account.id}", f"training:account:{group_id}:{account.id}")])
+    rows.extend([[("📊 Результаты", f"training:groupstats:{group_id}")], [("↩️ К списку групп", "training:menu")]])
+    await edit(c, f"🎓 {title}\nID: {chat_id}\nСтатус: {'включена' if enabled else 'выключена'}\n\nОтметь аккаунты, которые будут выполнять задания в этой группе. Задания обрабатываются только при включённой группе и выбранном аккаунте.", kb(rows))
+
+
+@router.callback_query(F.data.startswith("training:toggle:"))
+async def learning_group_toggle(c: CallbackQuery):
+    if not await check_cb(c):
+        return
+    group_id = int(c.data.rsplit(":", 1)[1])
+    async with SessionFactory() as db:
+        group = await db.get(LearningGroup, group_id)
+        if group:
+            group.enabled = not group.enabled
+            await db.commit()
+    await learning_group_view(c)
+
+
+@router.callback_query(F.data.startswith("training:account:"))
+async def learning_account_toggle(c: CallbackQuery):
+    if not await check_cb(c):
+        return
+    _, _, group_id, account_id = c.data.split(":")
+    async with SessionFactory() as db:
+        item = await db.scalar(select(LearningEnrollment).where(
+            LearningEnrollment.group_id == int(group_id),
+            LearningEnrollment.account_id == int(account_id),
+        ))
+        if item:
+            item.enabled = not item.enabled
+            await db.commit()
+    await learning_group_view(c)
+
+
+@router.callback_query(F.data.startswith("training:groupstats:"))
+async def learning_group_stats(c: CallbackQuery):
+    if not await check_cb(c):
+        return
+    group_id = int(c.data.rsplit(":", 1)[1])
+    async with SessionFactory() as db:
+        group = await db.get(LearningGroup, group_id)
+        rows = list((await db.scalars(select(LearningResult).where(
+            LearningResult.group_chat_id == (group.chat_id if group else 0)
+        ).order_by(LearningResult.created_at.desc()).limit(30))).all())
+    lines = [f"🎓 Результаты · {group.title if group else group_id}", ""]
+    if not rows:
+        lines.append("Пока нет выполненных заданий.")
+    for item in rows:
+        lines.append(f"#{item.account_id} · {item.task_type} · {item.status} · {item.duration_ms} мс · {item.task_id}")
+    await edit(c, "\n".join(lines)[:3900], kb([[("↩️ К группе", f"training:group:{group_id}")]]))
+
+
+@router.callback_query(F.data == "training:stats")
+async def learning_stats(c: CallbackQuery):
+    if not await check_cb(c):
+        return
+    async with SessionFactory() as db:
+        rows = list((await db.scalars(select(LearningResult).order_by(LearningResult.created_at.desc()).limit(40))).all())
+    answered = sum(item.status == "answered" for item in rows)
+    failed = sum(item.status == "failed" for item in rows)
+    lines = ["📊 Последние результаты обучения", "", f"Успешно: {answered}", f"Ошибки: {failed}", ""]
+    for item in rows[:25]:
+        lines.append(f"#{item.account_id} · {item.task_type} · {item.status} · {item.duration_ms} мс")
+    await edit(c, "\n".join(lines)[:3900], kb([[("↩️ К обучению", "training:menu")]]))
