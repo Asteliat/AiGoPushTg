@@ -7481,6 +7481,7 @@ async def channel_join_confirm(c: CallbackQuery):
 
 class LearningUIStates(StatesGroup):
     group_chat_id = State()
+    task_sender_id = State()
 
 
 @router.callback_query(F.data == "training:menu")
