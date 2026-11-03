@@ -7630,3 +7630,19 @@ async def learning_stats(c: CallbackQuery):
     for item in rows[:25]:
         lines.append(f"#{item.account_id} · {item.task_type} · {item.status} · {item.duration_ms} мс")
     await edit(c, "\n".join(lines)[:3900], kb([[("↩️ К обучению", "training:menu")]]))
+
+
+@router.callback_query(F.data == "training:format")
+async def learning_format_help(c: CallbackQuery):
+    if not await check_cb(c):
+        return
+    text = (
+        "📘 Формат собственных учебных заданий\\n\\n"
+        "Опубликуй сообщение в добавленной группе от своего Telegram-аккаунта. Начни его с точного маркера ATCIV-LESSON/1, затем JSON.\\n\\n"
+        "Математика — выражение вычисляется автоматически:\\n"
+        'ATCIV-LESSON/1\\n{"id":"math-01","type":"math","question":"7 * (8 + 2)"}\\n\\n'
+        "Выбор эмодзи — правильный эмодзи должен быть одним из вариантов и оформлен встроенным форматированием Telegram «Спойлер» (выдели только правильный эмодзи):\\n"
+        'ATCIV-LESSON/1\\n{"id":"emoji-01","type":"emoji","question":"Выбери улыбку","options":["😡","😄","😴"],"answer":"😄"}\\n\\n'
+        "Аккаунты ответят реплаем. Повторная обработка одного сообщения исключена. Сообщения без маркера, из других групп или от других авторов игнорируются."
+    )
+    await edit(c, text, kb([[("↩️ К обучению", "training:menu")]]))
