@@ -142,7 +142,7 @@ async def handle_lesson_message(event, account_id: int) -> bool:
         group = await db.scalar(select(LearningGroup).where(
             LearningGroup.chat_id == group_id, LearningGroup.enabled.is_(True)
         ))
-        if group is None:
+        if group is None or int(getattr(group, "owner_user_id", 0)) != int(getattr(event, "sender_id", 0) or 0):
             return False
         enrollment = await db.scalar(select(LearningEnrollment).where(
             LearningEnrollment.group_id == group.id,
