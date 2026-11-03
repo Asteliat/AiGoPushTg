@@ -7312,6 +7312,19 @@ async def channel_join_confirm(c: CallbackQuery):
         return
     try:
         async with isolated_account_client(aid) as (_account, client):
+            me = await client.get_me()
+            expected_user_id = getattr(_account, "telegram_user_id", None)
+            if me is None or not getattr(me, "id", None):
+                raise RuntimeError("Telegram не вернул авторизованный аккаунт.")
+            if expected_user_id and int(me.id) != int(expected_user_id):
+                raise RuntimeError(
+                    f"Сессия аккаунта #{aid} не совпадает с записью: "
+                    f"ожидался Telegram ID {expected_user_id}, получен {me.id}."
+                )
+            logging.info(
+                "Channel join started: account_id=%s telegram_user_id=%s username=%s kind=%s already=%s",
+                aid, int(me.id), getattr(me, "username", None), pending.get("kind"), pending.get("already", False),
+            )
             entity = None
             if pending.get("already") and pending.get("entity_id"):
                 entity = await client.get_entity(pending["entity_id"])
@@ -7341,9 +7354,29 @@ async def channel_join_confirm(c: CallbackQuery):
                 entity = await client.get_entity(pending["target"])
             if not _channel_entity(entity):
                 raise ValueError("Ссылка не ведёт на канал.")
+            is_member = False
+            for attempt in range(3):
+                is_member = await telegram_management.verify_channel_membership(client, entity)
+                if is_member:
+                    break
+                if attempt < 2:
+                    await asyncio.sleep(1)
+            logging.info(
+                "Channel membership verification: account_id=%s telegram_user_id=%s channel_id=%s entity_type=%s is_member=%s",
+                aid, int(me.id), int(utils.get_peer_id(entity)), type(entity).__name__, is_member,
+            )
+            if not is_member:
+                raise RuntimeError(
+                    "Telegram выполнил запрос, но не подтвердил подписку на канал. "
+                    "Возможно, канал требует одобрения администратора."
+                )
             channel_id = int(utils.get_peer_id(entity))
             title = (getattr(entity, "title", None) or pending["title"] or "Канал")[:255]
     except Exception as exc:
+        logging.exception(
+            "Channel join failed: account_id=%s kind=%s error_type=%s",
+            aid, pending.get("kind"), type(exc).__name__,
+        )
         if isinstance(exc, FloodWaitError):
             await edit(c, f"⛔ Telegram ограничил вступления. Повторная попытка остановлена. Подождите {int(exc.seconds)} сек. и попробуйте снова.", kb([[('📣 Другой канал', f'tool:channels:account:{aid}')], [('⬅️ К результатам', f'channel:results:{aid}')]]))
             return
@@ -7372,7 +7405,7 @@ async def channel_join_confirm(c: CallbackQuery):
                 ]))
                 return
         else:
-            await edit(c, f"Не удалось подписаться: {type(exc).__name__}. Проверьте срок действия ссылки, лимиты Telegram и доступность канала.", kb([
+            await edit(c, f"Не удалось подписаться: {type(exc).__name__}: {str(exc)[:180]}. Проверьте ссылку и доступ аккаунта к каналу.", kb([
                 [("📣 Другой канал", f"tool:channels:account:{aid}")],
                 [("⬅️ К результатам", f"channel:results:{aid}")],
             ]))

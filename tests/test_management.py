@@ -821,3 +821,44 @@ def test_bound_basic_group_builds_input_peer():
     peer = _bound_chat_input_peer(binding)
     assert isinstance(peer, InputPeerChat)
     assert peer.chat_id == 42
+
+
+@pytest.mark.asyncio
+async def test_verify_channel_membership_uses_authenticated_user_permissions():
+    from types import SimpleNamespace
+    from app.telegram_gateway import management
+
+    class FakeClient:
+        async def get_me(self):
+            return SimpleNamespace(id=456)
+
+        async def get_permissions(self, entity, user):
+            assert entity.id == 123
+            assert user.id == 456
+            return object()
+
+    assert await management.verify_channel_membership(
+        FakeClient(), SimpleNamespace(id=123, broadcast=True)
+    ) is True
+
+
+@pytest.mark.asyncio
+async def test_verify_channel_membership_returns_false_for_non_member():
+    from types import SimpleNamespace
+    from app.telegram_gateway import management
+
+    class UserNotParticipantError(Exception):
+        pass
+
+    class FakeClient:
+        async def get_me(self):
+            return SimpleNamespace(id=456)
+
+        async def get_permissions(self, entity, user):
+            assert entity.id == 123
+            assert user.id == 456
+            raise UserNotParticipantError()
+
+    assert await management.verify_channel_membership(
+        FakeClient(), SimpleNamespace(id=123, broadcast=True)
+    ) is False
