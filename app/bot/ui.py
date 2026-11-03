@@ -5387,6 +5387,12 @@ def _parse_chat_link(raw: str) -> tuple[str, str]:
     value = (raw or "").strip().strip("<>[](){}.,;")
     if value.startswith("@") and re.fullmatch(r"@[A-Za-z][A-Za-z0-9_]{4,31}", value):
         return "public", value[1:]
+    if re.search(r"(?i)(?:https?://)?(?:www\.)?(?:t\.me|telegram\.me)/c/\d+", value):
+        raise ValueError(
+            "Это внутренняя ссылка t.me/c/... на сообщение, а не ссылка для вступления. "
+            "Попросите администратора прислать пригласительную ссылку t.me/+… "
+            "или t.me/joinchat/…"
+        )
     match = re.search(r"(?i)(?:https?://)?(?:www\.)?(?:t\.me|telegram\.me)/(joinchat/[A-Za-z0-9_-]+|\+?[A-Za-z0-9_+-]+)", value)
     if not match:
         raise ValueError("Пришлите публичную ссылку t.me/username или пригласительную ссылку t.me/+…")
@@ -5917,6 +5923,17 @@ async def chat_join_confirm(c):
         # Approval-only invite links are not equivalent to membership; explain that no binding was created.
         if isinstance(exc, FloodWaitError):
             await edit(c, f"⛔ Telegram ограничил вступления. Повторная попытка остановлена. Подождите {int(exc.seconds)} сек. и попробуйте снова.", kb([[('🔗 Другая ссылка', f'chat:joinlink:{aid}')], [('⬅️ К аккаунту', f'acc:view:{aid}')]]))
+            return
+        if type(exc).__name__ == "ChannelPrivateError":
+            await edit(
+                c,
+                "⛔ Telegram сообщил, что группа приватная или аккаунту закрыт доступ. "
+                "Ссылка t.me/username не даёт права вступить в такую группу. "
+                "Нужна действующая пригласительная ссылка t.me/+… или t.me/joinchat/… "
+                "именно для этого аккаунта. Если аккаунт заблокирован администраторами, "
+                "пригласительная ссылка тоже не поможет. В список чатов группа не добавлена.",
+                kb([[("🔗 Ввести пригласительную ссылку", f"chat:joinlink:{aid}")], [("⬅️ К аккаунту", f"acc:view:{aid}")]]),
+            )
             return
         if "InviteRequestSentError" in type(exc).__name__:
             await edit(c, "Запрос на вступление отправлен администраторам группы. Аккаунт пока не добавлен в активные чаты — повторите после одобрения.", kb([[("🔗 Проверить другую ссылку", f"chat:joinlink:{aid}")], [("⬅️ К аккаунту", f"acc:view:{aid}")]]))
