@@ -7481,6 +7481,7 @@ async def channel_join_confirm(c: CallbackQuery):
 
 class LearningUIStates(StatesGroup):
     group_chat_id = State()
+    task_sender_id = State()
 
 
 @router.callback_query(F.data == "training:menu")
@@ -7542,6 +7543,48 @@ async def learning_add_group_submit(m: Message, state: FSMContext):
     ]))
 
 
+@router.callback_query(F.data.startswith("training:sender:"))
+async def learning_sender_prompt(c: CallbackQuery, state: FSMContext):
+    if not await check_cb(c):
+        return
+    group_id = int(c.data.rsplit(":", 1)[1])
+    await state.set_state(LearningUIStates.task_sender_id)
+    await state.update_data(learning_group_id=group_id, return_callback=f"training:group:{group_id}")
+    await edit(
+        c,
+        "Отправь Telegram ID автора учебных заданий. Это может быть ID твоего бота (для сообщений, которые он публикует) или личного аккаунта. Узнать ID бота можно через getMe / @userinfobot. После сохранения задания будут приниматься только от этого отправителя.",
+        CANCEL,
+    )
+
+
+@router.message(LearningUIStates.task_sender_id)
+async def learning_sender_submit(m: Message, state: FSMContext):
+    if not await check_msg(m) or not await private(m):
+        return
+    raw = (m.text or "").strip()
+    try:
+        sender_id = int(raw)
+        if sender_id <= 0:
+            raise ValueError
+    except ValueError:
+        await prompt_message(m, state, "Нужен положительный числовой Telegram ID пользователя или бота.")
+        return
+    data = await state.get_data()
+    group_id = int(data.get("learning_group_id", 0))
+    async with SessionFactory() as db:
+        group = await db.get(LearningGroup, group_id)
+        if group is None:
+            await finish_prompt(m, state, "Учебная группа не найдена.", kb([[( "↩️ К обучению", "training:menu")]]))
+            return
+        group.owner_user_id = sender_id
+        await db.commit()
+    await finish_prompt(
+        m,
+        state,
+        f"✅ Автор учебных заданий установлен: {sender_id}.",
+        kb([[( "⚙️ К настройкам группы", f"training:group:{group_id}")]]),
+    )
+
 @router.callback_query(F.data.startswith("training:group:"))
 async def learning_group_view(c: CallbackQuery):
     if not await check_cb(c):
@@ -7566,12 +7609,16 @@ async def learning_group_view(c: CallbackQuery):
                 by_account[account.id] = item
         await db.commit()
         title, chat_id, enabled = group.title, group.chat_id, group.enabled
-    rows = [[(("🟢 " if enabled else "⚪ ") + ("Выключить группу" if enabled else "Включить группу"), f"training:toggle:{group_id}")]]
+        task_sender_id = int(group.owner_user_id or 0)
+    rows = [
+        [(("🟢 " if enabled else "⚪ ") + ("Выключить группу" if enabled else "Включить группу"), f"training:toggle:{group_id}")],
+        [("👤 Автор заданий · ID " + str(task_sender_id), f"training:sender:{group_id}")],
+    ]
     for account in accounts:
         enrollment = by_account[account.id]
         rows.append([(("☑️ " if enrollment.enabled else "▫️ ") + f"{account.display_name[:22]} · #{account.id}", f"training:account:{group_id}:{account.id}")])
     rows.extend([[("📊 Результаты", f"training:groupstats:{group_id}")], [("↩️ К списку групп", "training:menu")]])
-    await edit(c, f"🎓 {title}\nID: {chat_id}\nСтатус: {'включена' if enabled else 'выключена'}\n\nОтметь аккаунты, которые будут выполнять задания в этой группе. Задания обрабатываются только при включённой группе и выбранном аккаунте.", kb(rows))
+    await edit(c, f"🎓 {title}\nID: {chat_id}\nСтатус: {'включена' if enabled else 'выключена'}\nАвтор заданий: {task_sender_id}\n\nУкажи ID своего бота как автора, если он публикует задания. Отметь аккаунты, которые будут выполнять задания в этой группе.", kb(rows))
 
 
 @router.callback_query(F.data.startswith("training:toggle:"))
@@ -7641,11 +7688,13 @@ async def learning_format_help(c: CallbackQuery):
         return
     text = (
         "📘 Формат собственных учебных заданий\n\n"
-        "Опубликуй сообщение в добавленной группе от своего Telegram-аккаунта. Начни его с точного маркера ATCIV-LESSON/1, затем JSON.\n\n"
+        "Опубликуй сообщение в добавленной группе от автора, Telegram ID которого указан в настройках группы. Начни его с точного маркера ATCIV-LESSON/1, затем JSON.\n\n"
         "Математика — выражение вычисляется автоматически:\n"
         'ATCIV-LESSON/1\n{"id":"math-01","type":"math","question":"7 * (8 + 2)"}\n\n'
         "Выбор эмодзи — правильный эмодзи должен быть одним из вариантов и оформлен встроенным форматированием Telegram «Спойлер» (выдели только правильный эмодзи):\n"
         'ATCIV-LESSON/1\n{"id":"emoji-01","type":"emoji","question":"Выбери улыбку","options":["😡","😄","😴"],"answer":"😄"}\n\n'
-        "Аккаунты ответят реплаем. Повторная обработка одного сообщения исключена. Сообщения без маркера, из других групп или от других авторов игнорируются."
+        "Задание с кнопкой — добавь к сообщению inline-кнопки Telegram и укажи точную подпись нужной кнопки в question:\n"
+        'ATCIV-LESSON/1\n{"id":"button-01","type":"button","question":"Нажми кнопку: Я не бот"}\n\n'
+        "Аккаунт нажмёт только одну inline callback-кнопку с точным совпадением подписи. Если совпадения нет или одинаковых кнопок несколько, он не будет угадывать и запишет ошибку. Для math/emoji аккаунты отвечают реплаем. Повторная обработка одного сообщения исключена. Сообщения без маркера, из других групп или от других авторов игнорируются."
     )
     await edit(c, text, kb([[("↩️ К обучению", "training:menu")]]))
