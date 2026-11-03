@@ -399,6 +399,7 @@ class LearningGroup(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     chat_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
     title: Mapped[str] = mapped_column(String(255), default="", server_default="", nullable=False)
+    owner_user_id: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0", nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
