@@ -1077,9 +1077,19 @@ async def _resolve_manual_message_peer(client, account_id: int, peer):
             if binding:
                 input_peer = _bound_chat_input_peer(binding)
                 if input_peer is not None:
-                    return input_peer, binding.title
-                # Backfill old bindings created before access hashes were persisted.
-                # Telegram's dialog list carries fresh InputChannel access hashes.
+                    # Resolve the persisted InputPeer back to a full Telegram entity.
+                    # Returning InputPeerChannel directly is unsafe for callers that
+                    # need entity metadata (id/title/permissions) and can fail inside
+                    # Telethon's send_message path when the entity cache is stale.
+                    try:
+                        entity = await client.get_entity(input_peer)
+                        if entity is not None:
+                            return entity, binding.title
+                    except (ValueError, TypeError) as exc:
+                        resolution_error = exc
+
+                # Also refresh from the account's live dialogs. This repairs legacy
+                # bindings without an access hash and stale hashes after migrations.
                 async for dialog in client.iter_dialogs():
                     candidate = dialog.entity
                     if int(utils.get_peer_id(candidate)) != int(peer):
