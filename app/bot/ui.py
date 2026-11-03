@@ -7532,6 +7532,9 @@ async def learning_add_group_submit(m: Message, state: FSMContext):
             for account in accounts:
                 db.add(LearningEnrollment(group_id=group.id, account_id=account.id, enabled=False))
             await db.commit()
+        elif not group.owner_user_id:
+            group.owner_user_id = int(m.from_user.id)
+            await db.commit()
         group_id = group.id
     await finish_prompt(m, state, "✅ Учебная группа добавлена. Теперь включи её и отметь аккаунты.", kb([
         [("⚙️ Настроить группу", f"training:group:{group_id}")],
