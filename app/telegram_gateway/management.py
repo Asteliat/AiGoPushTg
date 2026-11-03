@@ -507,6 +507,24 @@ async def verify_chat_membership(client, entity) -> bool:
     return True
 
 
+async def verify_channel_membership(client, entity) -> bool:
+    """Verify broadcast-channel membership using the authenticated user entity.
+
+    Do not use InputPeerSelf here: Telegram's channel participant lookup can reject
+    that peer form for broadcast channels even when the account has joined.
+    """
+    me = await client.get_me()
+    if me is None or not getattr(me, "id", None):
+        raise RuntimeError("Telegram не вернул текущий аккаунт для проверки подписки.")
+    try:
+        await client.get_permissions(entity, me)
+        return True
+    except Exception as exc:
+        if type(exc).__name__ in {"UserNotParticipantError", "ParticipantIdInvalidError"}:
+            return False
+        raise
+
+
 async def leave_chat(account_id: int, link: str) -> None:
     """Leave one explicitly selected chat, respecting global subscription policy."""
     value = link.strip()
