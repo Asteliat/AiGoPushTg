@@ -2,7 +2,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.services.learning_tasks import LessonFormatError, _math_value, parse_lesson
+from app.services.learning_tasks import (
+    LessonFormatError,
+    _button_target,
+    _math_value,
+    parse_lesson,
+)
 
 
 def test_safe_math_parser():
@@ -26,6 +31,22 @@ def test_parses_math_task():
         entities=[],
     )
     assert parse_lesson(message)["answer"] == "84"
+
+
+def test_parses_explicit_inline_button_instruction():
+    message = SimpleNamespace(
+        message='ATCIV-LESSON/1\n{"id":"button-1","type":"button","question":"Нажми кнопку: Я не бот"}',
+        entities=[],
+    )
+    task = parse_lesson(message)
+    assert task["type"] == "button"
+    assert task["answer"] == "Я не бот"
+
+
+@pytest.mark.parametrize("question", ["Выбери правильную", "Нажми кнопку:", "Нажми кнопку: "])
+def test_rejects_ambiguous_button_instruction(question):
+    with pytest.raises(LessonFormatError):
+        _button_target(question)
 
 
 def test_rejects_unknown_task_type():
