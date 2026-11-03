@@ -764,6 +764,54 @@ async def test_bound_private_group_builds_input_peer_with_saved_access_hash():
     assert peer.access_hash == 123456789
 
 
+@pytest.mark.asyncio
+async def test_manual_message_resolves_saved_input_peer_to_full_entity(monkeypatch):
+    from types import SimpleNamespace
+    from telethon.tl.types import InputPeerChannel
+    from app.telegram_gateway import management
+
+    binding = SimpleNamespace(
+        chat_id=-1000000987654,
+        peer_type="channel",
+        access_hash=123456789,
+        title="Private group",
+    )
+    entity = SimpleNamespace(
+        id=987654,
+        title="Private group",
+        access_hash=123456789,
+        megagroup=True,
+        broadcast=False,
+    )
+
+    class FakeDB:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def scalar(self, _query):
+            return binding
+
+    class FakeClient:
+        async def get_entity(self, target):
+            if isinstance(target, int):
+                raise ValueError("Peer is not in the entity cache")
+            assert isinstance(target, InputPeerChannel)
+            return entity
+
+    monkeypatch.setattr(management, "SessionFactory", lambda: FakeDB())
+
+    resolved, title = await management._resolve_manual_message_peer(
+        FakeClient(), 1, -1000000987654
+    )
+
+    assert resolved is entity
+    assert resolved.id == 987654
+    assert title == "Private group"
+
+
 def test_bound_basic_group_builds_input_peer():
     from types import SimpleNamespace
     from telethon.tl.types import InputPeerChat
