@@ -26,7 +26,6 @@ from app.services.notifications import enqueue_notification, dispatch_pending_no
 from app.services.chat_bindings import discovered_binding_values
 from app.telegram_gateway.proxy import telethon_proxy
 from app.telegram_gateway.session import configure_telethon_sqlite_session
-from app.workers.automation import automation_dispatcher
 from app.services.learning_tasks import handle_lesson_message
 from app.services.challenge_monitor import (
     extract_button_labels,
@@ -1353,11 +1352,10 @@ async def main():
     heartbeat_task=asyncio.create_task(heartbeat(redis))
     manager_task=asyncio.create_task(manager())
     notification_task=asyncio.create_task(notification_dispatcher())
-    automation_task=asyncio.create_task(automation_dispatcher())
     try:
-        await asyncio.gather(heartbeat_task,manager_task,notification_task,automation_task)
+        await asyncio.gather(heartbeat_task,manager_task,notification_task)
     finally:
-        heartbeat_task.cancel(); manager_task.cancel(); notification_task.cancel(); automation_task.cancel()
+        heartbeat_task.cancel(); manager_task.cancel(); notification_task.cancel()
         for task in tasks.values():
             task.cancel()
         for task in learning_tasks.values():
