@@ -38,7 +38,6 @@ _ACCOUNT_LOCKS: dict[int, asyncio.Lock] = {}
 cfg = get_settings()
 
 
-@dataclass(frozen=True)
 def _copy_sqlite_session(source_path: str, snapshot_path: str) -> None:
     """Create and integrity-check a private SQLite session snapshot with bounded busy retries."""
     last_error: Exception | None = None
