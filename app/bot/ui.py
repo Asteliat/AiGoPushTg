@@ -654,7 +654,7 @@ async def management_input_received(m: Message, state: FSMContext):
         if action == "autoresponder":
             parts = [value.strip() for value in raw.split("|", 3)]
             if len(parts) != 4:
-                raise ValueError("Формат: ВКЛ/ВЫКЛ | ключевые слова или - | текст ответа | пауза в секундах.")
+        "Формат: ВКЛ/ВЫКЛ | ключевые слова или - | текст ответа | пауза в секундах.\n"
             flag = parts[0].lower()
             if flag not in {"вкл", "включить", "on", "true", "1", "выкл", "выключить", "off", "false", "0"}:
                 raise ValueError("Первое поле должно быть ВКЛ или ВЫКЛ.")
@@ -721,7 +721,7 @@ async def management_input_received(m: Message, state: FSMContext):
             kb([[("↩️ К настройкам аккаунтов", "tool:account-settings:menu")]]),
         )
     except Exception as exc:
-        await prompt_message(m, state, f"❌ {type(exc).__name__}: {str(exc)[:400]}\\n\\nПроверьте ввод и попробуйте ещё раз.")
+        await prompt_message(m, state, f"❌ {type(exc).__name__}: {str(exc)[:400]}\n\nПроверьте ввод и попробуйте ещё раз.")
 
 
 @router.message(Flow.management_photo)
