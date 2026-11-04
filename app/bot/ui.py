@@ -502,7 +502,7 @@ async def account_settings_autoresponder(c: CallbackQuery, state: FSMContext):
     await management_prompt(
         c, state, "autoresponder", ids[0],
         "Автоответчик работает только в личных сообщениях и только когда ИИ выключен на соответствующем аккаунте.\n\n"
-                raise ValueError("Формат: ВКЛ/ВЫКЛ | ключевые слова или - | текст ответа | пауза в секундах.")
+        "Формат: ВКЛ/ВЫКЛ | ключевые слова или - | текст ответа | пауза в секундах.\n"
         "Пример: ВКЛ | привет, цена | Привет! Чем помочь? | 60",
     )
 
@@ -654,7 +654,7 @@ async def management_input_received(m: Message, state: FSMContext):
         if action == "autoresponder":
             parts = [value.strip() for value in raw.split("|", 3)]
             if len(parts) != 4:
-        "Формат: ВКЛ/ВЫКЛ | ключевые слова или - | текст ответа | пауза в секундах.\n"
+                raise ValueError("Формат: ВКЛ/ВЫКЛ | ключевые слова или - | текст ответа | пауза в секундах.")
             flag = parts[0].lower()
             if flag not in {"вкл", "включить", "on", "true", "1", "выкл", "выключить", "off", "false", "0"}:
                 raise ValueError("Первое поле должно быть ВКЛ или ВЫКЛ.")
