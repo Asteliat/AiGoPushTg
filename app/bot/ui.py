@@ -465,7 +465,7 @@ async def management_prompt(c: CallbackQuery, state: FSMContext, action: str, ai
         return_callback="tool:account-settings:menu",
     )
     await state.set_state(Flow.management_input)
-    await edit(c, prompt + "\\n\\nОтмена — кнопкой ниже.", CANCEL)
+    await edit(c, prompt + "\n\nОтмена — кнопкой ниже.", CANCEL)
 
 
 @router.callback_query(F.data.startswith("tool:account-settings:field:"))
@@ -501,8 +501,8 @@ async def account_settings_autoresponder(c: CallbackQuery, state: FSMContext):
         return
     await management_prompt(
         c, state, "autoresponder", ids[0],
-        "Автоответчик работает только в личных сообщениях и только когда ИИ выключен на соответствующем аккаунте.\\n\\n"
-        "Формат: ВКЛ/ВЫКЛ | ключевые слова или - | текст ответа | пауза в секундах.\\n"
+        "Автоответчик работает только в личных сообщениях и только когда ИИ выключен на соответствующем аккаунте.\n\n"
+        "Формат: ВКЛ/ВЫКЛ | ключевые слова или - | текст ответа | пауза в секундах.\n"
         "Пример: ВКЛ | привет, цена | Привет! Чем помочь? | 60",
     )
 
@@ -702,7 +702,7 @@ async def management_input_received(m: Message, state: FSMContext):
                     results.append(f"✅ #{account_id}: поле «{field}» обновлено")
                 except Exception as exc:
                     results.append(f"❌ #{account_id}: {type(exc).__name__}: {str(exc)[:140]}")
-            message = "\\n".join(results)
+            message = "\n".join(results)
         else:
             raise ValueError("Неизвестное действие настройки аккаунта.")
 
