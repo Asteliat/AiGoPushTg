@@ -16,17 +16,14 @@ import sqlite3
 import tempfile
 import time
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
 from typing import AsyncIterator
 
 from telethon import TelegramClient, utils
 from telethon.errors import FloodWaitError
-from telethon.tl.functions.channels import GetParticipantRequest, JoinChannelRequest, LeaveChannelRequest
-from telethon.tl.functions.contacts import DeleteContactsRequest, GetBlockedRequest, ImportContactsRequest
-from telethon.tl.functions.messages import CheckChatInviteRequest, ImportChatInviteRequest, SendReactionRequest
+from telethon.tl.functions.channels import GetParticipantRequest
 from telethon.tl.functions.users import GetFullUserRequest
 from telethon.tl.functions.account import UpdateProfileRequest, UpdateUsernameRequest
-from telethon.tl.types import ChatInviteAlready, InputPeerChannel, InputPeerChat, InputPhoneContact, ReactionEmoji
+from telethon.tl.types import InputPeerChannel, InputPeerChat
 
 from app.settings import get_settings
 from sqlalchemy import select, text
