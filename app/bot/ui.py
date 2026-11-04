@@ -1,5 +1,5 @@
 from __future__ import annotations
-import asyncio, io, os, re, secrets, tempfile, logging, json, html
+import asyncio, io, os, re, secrets, tempfile, logging, html
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from aiogram import F, Router
