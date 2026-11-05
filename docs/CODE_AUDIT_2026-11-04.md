@@ -38,3 +38,10 @@ ORM-классы AutomationTask, AutomationTaskRecipient, AutomationSchedule, Sc
 ## Ограничения проверки
 
 CI (Ruff и pytest) должен быть запущен для этой ветки и проверен до слияния. После CI нужен серверный smoke-тест: запуск bot/worker, вход аккаунта, работа поиска групп/каналов, обновление профиля, AI/триггеры, обучение и уведомления. Сервер не обновлялся.
+
+
+## Дополнительная очистка · 2026-11-05
+
+По запросу удалён отдельный модуль «Обучение аккаунтов» (учебные группы и задания): пункт главного меню, все UI callback/message handlers, привязка обработчика к каждому Telegram-клиенту в Worker, парсер/исполнитель `ATCIV-LESSON/1`, ORM-модели `LearningGroup` / `LearningEnrollment` / `LearningResult` и тесты `tests/test_learning_tasks.py`. Удалён файл `app/services/learning_tasks.py`.
+
+Не затрагивались account chat-context learning (`Account.learning_*`, Redis-буфер и `run_learning`) и channel-context learning (`ChannelBinding.learning_*`): это самостоятельные действующие механизмы контекста для AI, не функции удалённого меню учебных заданий. Таблицы удалённого модуля в PostgreSQL не дропаются автоматически; оставлены как неиспользуемые данные до отдельного решения об очистке БД.
