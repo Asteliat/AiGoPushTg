@@ -3736,6 +3736,7 @@ async def chat_join_link_input(m: Message, state: FSMContext):
     CHAT_CANDIDATES[(m.from_user.id, aid)] = [{"title": raw[:80], "link": raw, "source": "Введено вручную"}]
     # Reuse the same guarded preview flow as search results.
     CHAT_PENDING_JOIN.pop((m.from_user.id, aid), None)
+    CHANNEL_PENDING_JOIN.pop((m.from_user.id, aid), None)
     try:
         async with isolated_account_client(aid) as (_account, client):
             already = False
