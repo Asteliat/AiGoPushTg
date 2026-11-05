@@ -2384,7 +2384,7 @@ async def acc_view(c, account_id: int | None = None):
         [("💡 Примеры",f"example:account:{aid}"),("💬 Чаты",f"chat:account:{aid}")],
         [("⏱ Пауза ответов",f"acc:runtime:menu:{aid}")],
         [("✉️ Отправить сообщение",f"acc:sendmessage:{aid}")],
-        [("💬📣Встпуление",f"chat:joinlink:{aid}"),
+        [("🔗 Вступить в группу/канал",f"chat:joinlink:{aid}"),
          ((("⏳ Завершение" if a.learning_status == "stopping" else "⏹ Остановить") if learning else "🧠 Автообучение"),(f"learn:stop:{aid}" if learning else f"acc:learn:{aid}"))],
         [("📡 Каналы",f"channel:account:{aid}")],
         [("🎯 Триггеры",f"trigger:account:{aid}")],
@@ -3716,7 +3716,7 @@ async def chat_join_link_start(c, state: FSMContext):
     await state.clear()
     await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data), chat_join_account_id=aid)
     await state.set_state(Flow.chat_join_link)
-    await edit(c, f"🔗 Вступление в группу · аккаунт #{aid}\n\nОтправьте ссылку-приглашение t.me/+… / t.me/joinchat/… или публичную ссылку t.me/username.\n\nСначала бот проверит ссылку и покажет название группы. Само вступление будет только после отдельного подтверждения.", CANCEL)
+    await edit(c, f"🔗 Вступление в группу или канал · аккаунт #{aid}\n\nОтправьте публичную ссылку t.me/username или пригласительную ссылку t.me/+… / t.me/joinchat/…. Поддерживаются группы, супергруппы и каналы — как публичные, так и приватные.\n\nЯ автоматически определю тип сообщества, проверю ссылку и покажу предпросмотр. Вступление или подписка произойдёт только после вашего отдельного подтверждения.", CANCEL)
 
 
 @router.message(Flow.chat_join_link)
@@ -3739,10 +3739,12 @@ async def chat_join_link_input(m: Message, state: FSMContext):
     try:
         async with isolated_account_client(aid) as (_account, client):
             already = False
+            is_channel = False
             if kind == "public":
                 entity = await client.get_entity(target)
-                if not _group_entity(entity):
-                    raise ValueError("Ссылка ведёт на канал или профиль, а не группу.")
+                is_channel = _channel_entity(entity)
+                if not is_channel and not _group_entity(entity):
+                    raise ValueError("Ссылка ведёт не на группу и не на канал Telegram.")
                 title = getattr(entity, "title", None) or target
                 members = int(getattr(entity, "participants_count", 0) or 0)
                 entity_id = utils.get_peer_id(entity)
@@ -3750,24 +3752,73 @@ async def chat_join_link_input(m: Message, state: FSMContext):
                 invite = await client(CheckChatInviteRequest(hash=target))
                 if isinstance(invite, ChatInviteAlready):
                     entity = invite.chat
-                    if not _group_entity(entity):
-                        raise ValueError("Ссылка ведёт не на группу.")
-                    title = getattr(entity, "title", None) or "Группа"
+                    is_channel = _channel_entity(entity)
+                    if not is_channel and not _group_entity(entity):
+                        raise ValueError("Пригласительная ссылка ведёт не на группу и не на канал.")
+                    title = getattr(entity, "title", None) or ("Канал" if is_channel else "Группа")
                     members = int(getattr(entity, "participants_count", 0) or 0)
                     entity_id = utils.get_peer_id(entity)
                     already = True
                 else:
-                    if getattr(invite, "channel", False) and not getattr(invite, "megagroup", False):
-                        raise ValueError("Ссылка ведёт на канал, а не группу.")
-                    title = getattr(invite, "title", None) or "Закрытая группа"
-                    members = len(getattr(invite, "participants", []) or []) or int(getattr(invite, "participants_count", 0) or 0)
+                    is_channel = bool(
+                        getattr(invite, "channel", False)
+                        and not getattr(invite, "megagroup", False)
+                    )
+                    title = getattr(invite, "title", None) or (
+                        "Приватный канал" if is_channel else "Закрытая группа"
+                    )
+                    members = (
+                        len(getattr(invite, "participants", []) or [])
+                        or int(getattr(invite, "participants_count", 0) or 0)
+                    )
                     entity_id = None
     except Exception as exc:
-        await edit_anchor(m.bot, anchor, f"Не удалось проверить ссылку:\n{str(exc)[:220]}", kb([[("🔗 Ввести другую ссылку", f"chat:joinlink:{aid}")], [("⬅️ К аккаунту", f"acc:view:{aid}")]]))
+        await edit_anchor(
+            m.bot, anchor, f"Не удалось проверить ссылку:\n{str(exc)[:220]}",
+            kb([
+                [("🔗 Ввести другую ссылку", f"chat:joinlink:{aid}")],
+                [("⬅️ К аккаунту", f"acc:view:{aid}")],
+            ]),
+        )
         return
-    CHAT_PENDING_JOIN[(m.from_user.id, aid)] = {"link": raw, "kind": kind, "target": target, "title": title, "members": members, "entity_id": entity_id, "already": already}
-    status = "Аккаунт уже состоит в группе." if already else "Вступление произойдёт только после подтверждения."
-    await edit_anchor(m.bot, anchor, f"👥 {title}\nУчастников: {members or 'неизвестно'}\nСсылка: {raw}\n\n{status}", kb([[("✅ Подтвердить вступление", f"chat:joinconfirm:{aid}")], [("🔗 Другая ссылка", f"chat:joinlink:{aid}")], [("⬅️ К аккаунту", f"acc:view:{aid}")]]))
+
+    if is_channel:
+        CHANNEL_PENDING_JOIN[(m.from_user.id, aid)] = {
+            "link": raw, "kind": kind, "target": target, "title": title,
+            "members": members, "entity_id": entity_id, "already": already,
+        }
+        status = (
+            "Аккаунт уже подписан на канал."
+            if already else "Подписка произойдёт только после отдельного подтверждения."
+        )
+        await edit_anchor(
+            m.bot, anchor,
+            f"📣 {title}\nПодписчиков: {members or 'неизвестно'}\nСсылка: {raw}\n\n{status}",
+            kb([
+                [("✅ Подтвердить подписку", f"channel:joinconfirm:{aid}")],
+                [("🔗 Другая ссылка", f"chat:joinlink:{aid}")],
+                [("⬅️ К аккаунту", f"acc:view:{aid}")],
+            ]),
+        )
+        return
+
+    CHAT_PENDING_JOIN[(m.from_user.id, aid)] = {
+        "link": raw, "kind": kind, "target": target, "title": title,
+        "members": members, "entity_id": entity_id, "already": already,
+    }
+    status = (
+        "Аккаунт уже состоит в группе."
+        if already else "Вступление произойдёт только после подтверждения."
+    )
+    await edit_anchor(
+        m.bot, anchor,
+        f"👥 {title}\nУчастников: {members or 'неизвестно'}\nСсылка: {raw}\n\n{status}",
+        kb([
+            [("✅ Подтвердить вступление", f"chat:joinconfirm:{aid}")],
+            [("🔗 Другая ссылка", f"chat:joinlink:{aid}")],
+            [("⬅️ К аккаунту", f"acc:view:{aid}")],
+        ]),
+    )
 
 
 @router.callback_query(F.data.startswith("chat:joinconfirm:"))
