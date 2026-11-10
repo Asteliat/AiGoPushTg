@@ -20,7 +20,7 @@ from app.settings import get_settings
 from app.storage.db import SessionFactory
 from app.storage.models import Account, AIAgent, AppSetting, ChatBinding, ChannelBinding, TriggerRule, TriggerEvent
 from app.services.triggers import select_matching_trigger
-from app.services.notifications import enqueue_notification, dispatch_pending_notifications
+from app.services.notifications import dispatch_pending_notifications
 from app.telegram_gateway.proxy import telethon_proxy
 from app.telegram_gateway.session import configure_telethon_sqlite_session
 from app.services.challenge_monitor import (
@@ -28,6 +28,7 @@ from app.services.challenge_monitor import (
     is_challenge_prompt,
 )
 from app.workers.challenge_watcher import ChallengeWatcher
+from app.workers.state import WorkerState
 from app.workers.learning import finalize_learning_buffer, run_learning
 from app.workers.dialogs_sync import sync_account_dialogs
 from app.workers.reconnect import reconnect_at
@@ -41,31 +42,19 @@ async def heartbeat(redis):
 
 async def main():
     from redis.asyncio import Redis
-    cfg=get_settings()
+
+    cfg = get_settings()
     logging.basicConfig(level=cfg.log_level.upper())
-    worker_instance_id = f"{os.getenv('HOSTNAME') or 'worker'}:{os.getpid()}"
-    redis=Redis.from_url(cfg.redis_url,decode_responses=True)
-    bot=Bot(token=cfg.bot_token) if cfg.bot_token else None
-    clients: dict[int,TelegramClient]={}
-    tasks: dict[int,asyncio.Task]={}
-    watched: dict[int,dict[int,str]]={}
-    account_snapshot: dict[int,Account]={}
-    learning_tasks: dict[int,asyncio.Task]={}
-    last_discovery: dict[int,datetime] = {}
-    reconnect_failures: dict[int, int] = {}
-    reconnect_after: dict[int, datetime] = {}
-    session_lease_tasks: dict[int, asyncio.Task] = {}
-    session_lease_tokens: dict[int, str] = {}
-
-    async def send_log(text: str, category: str = "main") -> bool:
-        # The outbox commit is the delivery guarantee; Telegram delivery is retried
-        # asynchronously and survives worker restarts.
-        return await enqueue_notification(bot, text, category, cfg.log_chat_id)
-
+    worker = WorkerState(
+        cfg=cfg,
+        worker_instance_id=f"{os.getenv('HOSTNAME') or 'worker'}:{os.getpid()}",
+        redis=Redis.from_url(cfg.redis_url, decode_responses=True),
+        bot=Bot(token=cfg.bot_token) if cfg.bot_token else None,
+    )
     async def notification_dispatcher():
         while True:
             try:
-                await dispatch_pending_notifications(bot, limit=100)
+                await dispatch_pending_notifications(worker.bot, limit=100)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -74,16 +63,16 @@ async def main():
 
     # Verification prompts are passed automatically for our own accounts only;
     # prompts addressed to other group members are ignored silently.
-    challenge_watcher = ChallengeWatcher(redis=redis, send_log=send_log)
+    challenge_watcher = ChallengeWatcher(redis=worker.redis, send_log=worker.send_log)
 
     async def remember_message(aid: int, chat_id: int, sender_id: int, item: dict) -> None:
         chat_key = redis_keys.chat_memory(aid, chat_id)
         person_key = redis_keys.person_memory(aid, chat_id, sender_id)
         raw = json.dumps(item, ensure_ascii=False)
         for key, limit in ((chat_key, 30), (person_key, 16)):
-            await redis.lpush(key, raw)
-            await redis.ltrim(key, 0, limit - 1)
-            await redis.expire(key, 30 * 24 * 3600)
+            await worker.redis.lpush(key, raw)
+            await worker.redis.ltrim(key, 0, limit - 1)
+            await worker.redis.expire(key, 30 * 24 * 3600)
 
     async def read_conversation_context(aid: int, chat_id: int, sender_id: int) -> str:
         keys = [
@@ -92,7 +81,7 @@ async def main():
         ]
         merged = {}
         for key in keys:
-            for raw in reversed(await redis.lrange(key, 0, 11)):
+            for raw in reversed(await worker.redis.lrange(key, 0, 11)):
                 try:
                     item = json.loads(raw)
                 except (TypeError, ValueError):
@@ -130,7 +119,7 @@ async def main():
 
         # Reserve the message before sending so a worker reconnect cannot double-reply.
         dedupe_key = redis_keys.autoresponder_message(aid, int(event.chat_id), int(event.message.id))
-        reserved = await redis.set(dedupe_key, "1", nx=True, ex=30 * 24 * 3600)
+        reserved = await worker.redis.set(dedupe_key, "1", nx=True, ex=30 * 24 * 3600)
         if not reserved:
             return True
 
@@ -139,7 +128,7 @@ async def main():
         async with SessionFactory() as check_db:
             fresh = await check_db.get(Account, aid)
             if not fresh or not fresh.enabled or fresh.manual_pause or fresh.ai_enabled:
-                await redis.delete(dedupe_key)
+                await worker.redis.delete(dedupe_key)
                 return False
 
         try:
@@ -148,7 +137,7 @@ async def main():
             cooldown = 0
         if cooldown:
             cooldown_key = redis_keys.autoresponder_cooldown(aid, sender_id)
-            allowed = await redis.set(cooldown_key, "1", nx=True, ex=cooldown)
+            allowed = await worker.redis.set(cooldown_key, "1", nx=True, ex=cooldown)
             if not allowed:
                 return True
         try:
@@ -209,11 +198,11 @@ async def main():
         lock_key = redis_keys.trigger_lock(aid)
         lock_token = secrets.token_urlsafe(18)
         try:
-            locked = bool(await redis.set(lock_key, lock_token, nx=True, ex=3600))
+            locked = bool(await worker.redis.set(lock_key, lock_token, nx=True, ex=3600))
             while not locked:
                 # Serialize trigger events instead of dropping a second distinct message.
                 await asyncio.sleep(0.5)
-                locked = bool(await redis.set(lock_key, lock_token, nx=True, ex=3600))
+                locked = bool(await worker.redis.set(lock_key, lock_token, nx=True, ex=3600))
         except Exception as exc:
             record.status = "failed"
             record.error = f"Redis lock error: {type(exc).__name__}: {str(exc)[:400]}"
@@ -231,7 +220,7 @@ async def main():
             # The account-wide message cooldown is checked for every trigger;
             # whichever trigger started it must block all other trigger replies too.
             cooldown_keys.append(message_cooldown_key)
-            if cooldown_keys and await redis.exists(*cooldown_keys):
+            if cooldown_keys and await worker.redis.exists(*cooldown_keys):
                 record.status = "skipped_cooldown"
                 await db.commit()
                 logging.info(
@@ -281,9 +270,9 @@ async def main():
             trigger_seconds = max(0, int(selected.cooldown_seconds or 0))
             message_seconds = max(0, int(selected.message_cooldown_seconds or 0))
             if trigger_seconds:
-                await redis.set(trigger_cooldown_key, "1", ex=trigger_seconds)
+                await worker.redis.set(trigger_cooldown_key, "1", ex=trigger_seconds)
             if message_seconds:
-                await redis.set(message_cooldown_key, "1", ex=message_seconds)
+                await worker.redis.set(message_cooldown_key, "1", ex=message_seconds)
 
             mode = account.reply_mode
             account_name = account.display_name
@@ -325,9 +314,9 @@ async def main():
                     f"🎯 Ответ по триггеру отправлен\nАккаунт: {account_name} (#{aid})\n"
                     f"Чат: {label}\nТриггер: {matched_term}\nОтвет: {draft.proposed_text[:1500]}"
                 )
-                await send_log(text, category="replies")
+                await worker.send_log(text, category="replies")
             elif mode != "automatic":
-                await send_log(
+                await worker.send_log(
                     f"🎯 Ответ по триггеру подготовлен\nАккаунт: {account_name} (#{aid})\n"
                     f"Чат: {label}\nТриггер: {matched_term}\n"
                     f"Входящее: {incoming[:700]}\nОтвет ИИ: {draft.proposed_text[:1300]}\n"
@@ -335,7 +324,7 @@ async def main():
                     category="replies",
                 )
             else:
-                await send_log(
+                await worker.send_log(
                     f"⚠️ Не удалось отправить ответ по триггеру\nАккаунт: {account_name} (#{aid})\n"
                     f"Чат: {label}\nТриггер: {matched_term}\nОшибка: {record.error or 'Настройки изменились во время генерации.'}",
                     category="errors",
@@ -349,7 +338,7 @@ async def main():
                 "Trigger response failed for account %s, trigger %s: %s",
                 aid, selected.id, exc,
             )
-            await send_log(
+            await worker.send_log(
                 f"⚠️ Ошибка ответа по триггеру\nАккаунт: {account.display_name} (#{aid})\n"
                 f"Чат: {label}\nТриггер: {matched_term}\n"
                 f"Ошибка: {type(exc).__name__}: {str(exc)[:700]}",
@@ -358,7 +347,7 @@ async def main():
             return True
         finally:
             try:
-                await redis.eval(release_script, 1, lock_key, lock_token)
+                await worker.redis.eval(release_script, 1, lock_key, lock_token)
             except Exception:
                 logging.exception("Could not release trigger lock for account %s", aid)
 
@@ -379,7 +368,7 @@ async def main():
         sender_id = int(event.sender_id or 0)
         try:
             sender = await event.get_sender()
-            if bool(getattr(sender, "bot", False)) and is_challenge_prompt(
+            if bool(getattr(sender, "worker.bot", False)) and is_challenge_prompt(
                 incoming, extract_button_labels(event.message)
             ):
                 logging.info(
@@ -434,9 +423,9 @@ async def main():
                         "outgoing": False,
                         "date": event.message.date.isoformat() if event.message.date else datetime.now(timezone.utc).isoformat(),
                     }
-                    await redis.lpush(learning_key, json.dumps(learning_item, ensure_ascii=False))
-                    await redis.ltrim(learning_key, 0, min(1000, max(500, int(current.learning_limit or 500))) - 1)
-                    await redis.expire(learning_key, 7 * 24 * 3600)
+                    await worker.redis.lpush(learning_key, json.dumps(learning_item, ensure_ascii=False))
+                    await worker.redis.ltrim(learning_key, 0, min(1000, max(500, int(current.learning_limit or 500))) - 1)
+                    await worker.redis.expire(learning_key, 7 * 24 * 3600)
                 return
             if not current.ai_agent_id:
                 logging.info("Account %s has AI enabled but no agent assigned", aid)
@@ -502,7 +491,7 @@ async def main():
                 global_cooldown,
             )
             if cooldown_seconds > 0:
-                allowed = await redis.set(
+                allowed = await worker.redis.set(
                     redis_keys.reply_cooldown(aid, int(event.chat_id)), "1",
                     ex=cooldown_seconds, nx=True,
                 )
@@ -520,11 +509,11 @@ async def main():
                 return
             except AIUnavailableError as exc:
                 logging.warning("AI generation failed for account %s: %s", aid, exc)
-                await send_log(f"⚠️ Ошибка генерации ИИ\nАккаунт: {current.display_name} (#{aid})\nЧат: {label}\nОшибка: {str(exc)[:900]}", category="errors")
+                await worker.send_log(f"⚠️ Ошибка генерации ИИ\nАккаунт: {current.display_name} (#{aid})\nЧат: {label}\nОшибка: {str(exc)[:900]}", category="errors")
                 return
             except Exception as exc:
                 logging.exception("Could not generate response for account %s", aid)
-                await send_log(f"⚠️ Не удалось создать ответ\nАккаунт: {current.display_name} (#{aid})\nЧат: {label}\nОшибка: {type(exc).__name__}: {str(exc)[:700]}", category="errors")
+                await worker.send_log(f"⚠️ Не удалось создать ответ\nАккаунт: {current.display_name} (#{aid})\nЧат: {label}\nОшибка: {type(exc).__name__}: {str(exc)[:700]}", category="errors")
                 return
             mode = current.reply_mode
             account_name = current.display_name
@@ -556,10 +545,10 @@ async def main():
                     sent = True
                 except Exception as retry_exc:
                     logging.exception("Automatic reply retry failed for account %s in chat %s", aid, event.chat_id)
-                    await send_log(f"⚠️ Повторная отправка ответа не удалась\\nАккаунт: {account_name} (#{aid})\\nЧат: {label}\\nОшибка: {type(retry_exc).__name__}: {str(retry_exc)[:700]}", category="errors")
+                    await worker.send_log(f"⚠️ Повторная отправка ответа не удалась\\nАккаунт: {account_name} (#{aid})\\nЧат: {label}\\nОшибка: {type(retry_exc).__name__}: {str(retry_exc)[:700]}", category="errors")
             except Exception as exc:
                 logging.exception("Automatic reply failed for account %s in chat %s", aid, event.chat_id)
-                await send_log(f"⚠️ Не удалось отправить ответ\nАккаунт: {account_name} (#{aid})\nЧат: {label}\nОшибка: {type(exc).__name__}: {str(exc)[:700]}", category="errors")
+                await worker.send_log(f"⚠️ Не удалось отправить ответ\nАккаунт: {account_name} (#{aid})\nЧат: {label}\nОшибка: {type(exc).__name__}: {str(exc)[:700]}", category="errors")
             if sent:
                 sent_item = {
                     "message_id": int(getattr(sent_message, "id", 0)),
@@ -576,7 +565,7 @@ async def main():
             text = f"⚠️ Ответ не отправлен\nАккаунт: {account_name} (#{aid})\nЧат: {label}\nТекст не сохранён; повторите обработку после проверки настроек."
         else:
             text = f"💬 Ответ подготовлен\nАккаунт: {account_name} (#{aid})\nЧат: {label}\nВходящее: {incoming[:900]}\nОтвет ИИ: {draft.proposed_text[:1400]}\nРучной режим: в чат ничего не отправлено; текст не сохраняется."
-        await send_log(text, category="replies")
+        await worker.send_log(text, category="replies")
 
     async def set_connection_status(aid: int, status: str) -> None:
         async with SessionFactory() as db:
@@ -586,9 +575,9 @@ async def main():
                 await db.commit()
 
     def schedule_reconnect(aid: int) -> None:
-        failures = reconnect_failures.get(aid, 0) + 1
-        reconnect_failures[aid] = failures
-        reconnect_after[aid] = reconnect_at(failures)
+        failures = worker.reconnect_failures.get(aid, 0) + 1
+        worker.reconnect_failures[aid] = failures
+        worker.reconnect_after[aid] = reconnect_at(failures)
         logging.warning(
             "Telegram account %s reconnect scheduled (attempt %s)", aid, failures
         )
@@ -599,7 +588,7 @@ async def main():
         while True:
             await asyncio.sleep(20)
             try:
-                renewed = await redis.eval(
+                renewed = await worker.redis.eval(
                 script, 1, key, token, redis_keys.SESSION_LEASE_TTL_SECONDS
             )
             except Exception:
@@ -608,28 +597,28 @@ async def main():
             if not renewed:
                 logging.error(
                     "Telegram session lease lost for account %s on worker %s; disconnecting",
-                    aid, worker_instance_id,
+                    aid, worker.worker_instance_id,
                 )
                 if client.is_connected():
                     await client.disconnect()
                 return
 
     async def release_session_lease(aid: int) -> None:
-        task = session_lease_tasks.pop(aid, None)
+        task = worker.session_lease_tasks.pop(aid, None)
         if task and not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
-        token = session_lease_tokens.pop(aid, None)
+        token = worker.session_lease_tokens.pop(aid, None)
         if token:
             key = redis_keys.session_lease(aid)
             script = redis_keys.CAS_DELETE
             try:
-                await redis.eval(script, 1, key, token)
+                await worker.redis.eval(script, 1, key, token)
             except Exception:
                 logging.exception("Could not release Telegram session lease for account %s", aid)
 
     async def connect_account(account, binding_rows):
-        if not cfg.telegram_api_id or not cfg.telegram_api_hash:
+        if not worker.cfg.telegram_api_id or not worker.cfg.telegram_api_hash:
             await set_connection_status(account.id, "error")
             schedule_reconnect(account.id)
             return
@@ -643,26 +632,26 @@ async def main():
                 logging.exception("Could not harden session file permissions for account %s", account.id)
 
         lease_key = redis_keys.session_lease(account.id)
-        lease_token = f"{worker_instance_id}|{secrets.token_urlsafe(24)}"
-        lease_acquired = bool(await redis.set(lease_key, lease_token, nx=True, ex=90))
+        lease_token = f"{worker.worker_instance_id}|{secrets.token_urlsafe(24)}"
+        lease_acquired = bool(await worker.redis.set(lease_key, lease_token, nx=True, ex=90))
         if not lease_acquired:
-            current_lease = await redis.get(lease_key)
+            current_lease = await worker.redis.get(lease_key)
             owner_text = str(current_lease or "")
             owner_id = owner_text.split("|", 1)[0] if "|" in owner_text else "unknown/legacy-worker"
-            lease_ttl = await redis.ttl(lease_key)
+            lease_ttl = await worker.redis.ttl(lease_key)
 
             # A failed connection in this same process must never strand its own lease.
             # Clear it only with compare-and-delete, and only when no local client owns it.
-            if owner_id == worker_instance_id and account.id not in clients and current_lease:
-                removed = await redis.eval(
+            if owner_id == worker.worker_instance_id and account.id not in worker.clients and current_lease:
+                removed = await worker.redis.eval(
                     redis_keys.CAS_DELETE, 1, lease_key, current_lease,
                 )
                 if removed:
                     logging.warning(
                         "Cleared stale self-owned Telegram session lease: account=%s worker=%s",
-                        account.id, worker_instance_id,
+                        account.id, worker.worker_instance_id,
                     )
-                    lease_acquired = bool(await redis.set(
+                    lease_acquired = bool(await worker.redis.set(
                         lease_key, lease_token, nx=True, ex=90
                     ))
 
@@ -670,7 +659,7 @@ async def main():
                 logging.warning(
                     "Telegram session for account %s is owned by another Worker: "
                     "owner=%s lease_ttl=%ss this_worker=%s",
-                    account.id, owner_id, lease_ttl, worker_instance_id,
+                    account.id, owner_id, lease_ttl, worker.worker_instance_id,
                 )
                 schedule_reconnect(account.id)
                 return
@@ -683,21 +672,21 @@ async def main():
                 lease_task.cancel()
                 await asyncio.gather(lease_task, return_exceptions=True)
             try:
-                await redis.eval(
+                await worker.redis.eval(
                     redis_keys.CAS_DELETE, 1, lease_key, lease_token,
                 )
             except Exception:
                 logging.exception(
                     "Could not release Telegram session lease for account %s on worker %s",
-                    account.id, worker_instance_id,
+                    account.id, worker.worker_instance_id,
                 )
 
         try:
             await set_connection_status(account.id, "connecting")
             client = TelegramClient(
                 account.session_path,
-                cfg.telegram_api_id,
-                cfg.telegram_api_hash,
+                worker.cfg.telegram_api_id,
+                worker.cfg.telegram_api_hash,
                 proxy=telethon_proxy(account.proxy_config_encrypted),
                 connection_retries=5,
                 retry_delay=2,
@@ -718,10 +707,10 @@ async def main():
                 return
 
             labels = await sync_account_dialogs(
-                client, account.id, last_discovery=last_discovery
+                client, account.id, last_discovery=worker.last_discovery
             )
             await set_connection_status(account.id, "connected")
-            watched[account.id] = labels
+            worker.watched[account.id] = labels
             client.add_event_handler(
                 lambda event, aid=account.id, labels=labels: on_message(
                     event, aid=aid, labels=labels
@@ -734,7 +723,7 @@ async def main():
                 await on_message(
                     event,
                     aid=account.id,
-                    labels=watched.get(account.id, {}),
+                    labels=worker.watched.get(account.id, {}),
                     allow_unbound=True,
                     forced_label=f"Обсуждение канала · {channel_title}",
                     extra_context=extra_context,
@@ -742,24 +731,24 @@ async def main():
                 )
 
             install_channel_monitor(
-                client, account.id, redis, send_log,
+                client, account.id, worker.redis, worker.send_log,
                 route_chat_reply=route_discussion_reply,
             )
-            await send_log(
+            await worker.send_log(
                 f"🟢 Аккаунт подключён: {account.display_name} (#{account.id}). "
                 f"Отслеживается чатов: {len(labels)}.",
                 category="main",
             )
-            clients[account.id] = client
-            tasks[account.id] = asyncio.create_task(client.run_until_disconnected())
-            session_lease_tasks[account.id] = lease_task
-            session_lease_tokens[account.id] = lease_token
-            account_snapshot[account.id] = account
-            reconnect_failures.pop(account.id, None)
-            reconnect_after.pop(account.id, None)
+            worker.clients[account.id] = client
+            worker.tasks[account.id] = asyncio.create_task(client.run_until_disconnected())
+            worker.session_lease_tasks[account.id] = lease_task
+            worker.session_lease_tokens[account.id] = lease_token
+            worker.account_snapshot[account.id] = account
+            worker.reconnect_failures.pop(account.id, None)
+            worker.reconnect_after.pop(account.id, None)
             logging.info(
                 "Connected account %s; watching %d eligible chats; worker=%s",
-                account.id, len(labels), worker_instance_id,
+                account.id, len(labels), worker.worker_instance_id,
             )
         except asyncio.CancelledError:
             if client and client.is_connected():
@@ -771,7 +760,7 @@ async def main():
             raise
         except Exception:
             logging.exception(
-                "Could not connect account %s on worker %s", account.id, worker_instance_id
+                "Could not connect account %s on worker %s", account.id, worker.worker_instance_id
             )
             schedule_reconnect(account.id)
             if client and client.is_connected():
@@ -799,7 +788,7 @@ async def main():
                     expires = account.learning_ends_at
                     if expires and expires.tzinfo is None:
                         expires = expires.replace(tzinfo=timezone.utc)
-                    if account.learning_status in {"training", "stopping"} and account.id not in clients:
+                    if account.learning_status in {"training", "stopping"} and account.id not in worker.clients:
                         should_finalize = (
                             account.learning_status == "stopping"
                             or account.learning_started_at is None
@@ -811,8 +800,8 @@ async def main():
                             if started:
                                 key = redis_keys.learning_buffer(account.id, int(started.timestamp()))
                                 await finalize_learning_buffer(
-                                redis=redis,
-                                send_log=send_log,
+                                redis=worker.redis,
+                                send_log=worker.send_log,
                                 aid=account.id,
                                 key=key,
                                 sample_limit=min(1000, max(500, account.learning_limit)),
@@ -828,9 +817,9 @@ async def main():
                             account.learning_status = "idle"
                             account.learning_started_at = None
                             account.learning_ends_at = None
-                for aid in list(clients):
-                    existing_task=tasks.get(aid)
-                    previous_snapshot = account_snapshot.get(aid)
+                for aid in list(worker.clients):
+                    existing_task=worker.tasks.get(aid)
+                    previous_snapshot = worker.account_snapshot.get(aid)
                     latest_account = all_by_id.get(aid)
                     runtime_config_changed = bool(
                         previous_snapshot and latest_account and (
@@ -841,17 +830,17 @@ async def main():
                     if existing_task is not None and existing_task.done():
                         schedule_reconnect(aid)
                     if aid not in active or runtime_config_changed or (existing_task is not None and existing_task.done()):
-                        learning = learning_tasks.pop(aid, None)
+                        learning = worker.learning_tasks.pop(aid, None)
                         if learning and not learning.done():
                             learning.cancel()
-                        task=tasks.pop(aid,None)
+                        task=worker.tasks.pop(aid,None)
                         if task and not task.done():
                             task.cancel()
-                        client=clients.pop(aid,None)
+                        client=worker.clients.pop(aid,None)
                         if client and client.is_connected():
                             await client.disconnect()
                         await release_session_lease(aid)
-                        watched.pop(aid,None); account_snapshot.pop(aid,None)
+                        worker.watched.pop(aid,None); worker.account_snapshot.pop(aid,None)
                         previous = all_by_id.get(aid)
                         status = "paused" if previous and previous.manual_pause else ("disconnected" if not previous or not previous.enabled else "error")
                         await set_connection_status(aid, status)
@@ -859,16 +848,16 @@ async def main():
                 for b in bindings:
                     by_account[b.account_id].append(b)
                 for aid,account in active.items():
-                    if aid not in clients:
-                        if now >= reconnect_after.get(aid, datetime.min.replace(tzinfo=timezone.utc)):
+                    if aid not in worker.clients:
+                        if now >= worker.reconnect_after.get(aid, datetime.min.replace(tzinfo=timezone.utc)):
                             await connect_account(account,by_account.get(aid,[]))
                     else:
-                        labels=watched.get(aid,{})
-                        if now - last_discovery.get(aid, datetime.min.replace(tzinfo=timezone.utc)) >= timedelta(minutes=5):
+                        labels=worker.watched.get(aid,{})
+                        if now - worker.last_discovery.get(aid, datetime.min.replace(tzinfo=timezone.utc)) >= timedelta(minutes=5):
                             labels.clear()
                             labels.update(
                                 await sync_account_dialogs(
-                                    clients[aid], aid, last_discovery=last_discovery
+                                    worker.clients[aid], aid, last_discovery=worker.last_discovery
                                 )
                             )
                         else:
@@ -877,38 +866,41 @@ async def main():
                         # UI actions such as resuming an account set the DB status to
                         # "connecting" immediately. If the Telethon client never disconnected,
                         # connect_account() won't run again, so reconcile the status here.
-                        if clients[aid].is_connected() and account.connection_status != "connected":
+                        if worker.clients[aid].is_connected() and account.connection_status != "connected":
                             await set_connection_status(aid, "connected")
-                    if account.learning_status in {"training", "stopping"} and aid in clients:
-                        learning = learning_tasks.get(aid)
+                    if account.learning_status in {"training", "stopping"} and aid in worker.clients:
+                        learning = worker.learning_tasks.get(aid)
                         if learning is None or learning.done():
-                            learning_tasks[aid] = asyncio.create_task(
-                                run_learning(redis=redis, send_log=send_log, aid=aid, client=clients[aid])
+                            worker.learning_tasks[aid] = asyncio.create_task(
+                                run_learning(redis=worker.redis, send_log=worker.send_log, aid=aid, client=worker.clients[aid])
                             )
-                if not clients:
-                    logging.info("No connected accounts yet; waiting for accounts to be added in the bot")
+                if not worker.clients:
+                    logging.info("No connected accounts yet; waiting for accounts to be added in the worker.bot")
             except Exception:
                 logging.exception("Account manager iteration failed")
             await asyncio.sleep(10)
 
-    heartbeat_task=asyncio.create_task(heartbeat(redis))
+    heartbeat_task=asyncio.create_task(heartbeat(worker.redis))
     manager_task=asyncio.create_task(manager())
     notification_task=asyncio.create_task(notification_dispatcher())
     try:
         await asyncio.gather(heartbeat_task,manager_task,notification_task)
     finally:
-        heartbeat_task.cancel(); manager_task.cancel(); notification_task.cancel()
-        for task in tasks.values():
+        # Cancel and await everything before touching connections: a handler that
+        # outlives shutdown would write into a closed Redis or a dead session.
+        for task in (heartbeat_task, manager_task, notification_task):
             task.cancel()
-        for task in learning_tasks.values():
-            task.cancel()
-        for aid, client in list(clients.items()):
+        await asyncio.gather(
+            heartbeat_task, manager_task, notification_task, return_exceptions=True
+        )
+        await worker.cancel_background_tasks()
+        for aid, client in list(worker.clients.items()):
             if client.is_connected():
                 await client.disconnect()
             await release_session_lease(aid)
-        if bot:
-            await bot.session.close()
-        await redis.aclose()
+        if worker.bot:
+            await worker.bot.session.close()
+        await worker.redis.aclose()
 
 if __name__=="__main__":
     asyncio.run(main())
