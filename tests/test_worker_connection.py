@@ -81,10 +81,22 @@ def make_worker(redis=None, **cfg_overrides) -> WorkerState:
     )
 
 
+class ReturningRecorder(Recorder):
+    """Records the call and returns a marker, like install_channel_monitor does."""
+
+    def __init__(self, result=None) -> None:
+        super().__init__()
+        self.result = result
+
+    def __call__(self, *args, **kwargs):
+        super().__call__(*args, **kwargs)
+        return self.result
+
+
 def make_connector(worker, client, *, on_message=None, challenge=None, monitor=None):
     on_message = on_message or Recorder()
     challenge = challenge or InstallRecorder()
-    monitor = monitor or Recorder()
+    monitor = monitor if monitor is not None else Recorder()
     connector = AccountConnector(
         worker,
         on_message=on_message,
@@ -101,7 +113,10 @@ async def test_connect_leases_session_wires_handlers_and_stores_state(
 ) -> None:
     worker = make_worker()
     client = FakeTelethonClient(authorized=True)
-    connector, on_message, challenge, monitor = make_connector(worker, client)
+    monitor_marker = object()
+    connector, on_message, challenge, monitor = make_connector(
+        worker, client, monitor=ReturningRecorder(monitor_marker)
+    )
     account = make_account(7)
 
     await connector.connect(account)
@@ -116,6 +131,7 @@ async def test_connect_leases_session_wires_handlers_and_stores_state(
         assert len(client.handlers) == 1
         assert challenge.calls and challenge.calls[0][0] is client
         assert monitor.calls and monitor.calls[0][0][0] is client
+        assert worker.monitors[7] is monitor.result
         assert logs and "Аккаунт подключён" in logs[0][1]
     finally:
         await worker.cancel_background_tasks()

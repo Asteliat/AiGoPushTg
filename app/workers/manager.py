@@ -107,6 +107,9 @@ async def manager_iteration(worker, connector, *, session_factory=SessionFactory
             if client and client.is_connected():
                 await client.disconnect()
             await release_session_lease(worker, aid)
+            monitor = worker.monitors.pop(aid, None)
+            if monitor is not None:
+                await monitor.cancel_background_tasks()
             worker.watched.pop(aid, None)
             worker.account_snapshot.pop(aid, None)
             previous = all_by_id.get(aid)

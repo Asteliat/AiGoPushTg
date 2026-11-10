@@ -228,3 +228,28 @@ async def test_training_account_starts_the_collector(no_side_effects) -> None:
 
     assert 1 in worker.learning_tasks
     await worker.cancel_background_tasks()
+
+
+class MonitorRecorder:
+    def __init__(self) -> None:
+        self.cancelled = 0
+
+    async def cancel_background_tasks(self) -> None:
+        self.cancelled += 1
+
+
+@pytest.mark.asyncio
+async def test_dropped_account_monitor_is_stopped(no_side_effects) -> None:
+    worker = make_worker()
+    worker.clients[1] = FakeTelethonClient(connected=True)
+    worker.watched[1] = {}
+    monitor = MonitorRecorder()
+    worker.monitors[1] = monitor
+    account = make_account(1, manual_pause=True)
+
+    await manager_iteration(
+        worker, ConnectorRecorder(), session_factory=make_factory([account]), now=NOW
+    )
+
+    assert monitor.cancelled == 1
+    assert 1 not in worker.monitors

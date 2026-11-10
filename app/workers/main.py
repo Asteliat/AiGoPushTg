@@ -46,6 +46,10 @@ async def shutdown(worker: WorkerState, tasks: list[asyncio.Task]) -> None:
         task.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)
     await worker.cancel_background_tasks()
+    for monitor in list(worker.monitors.values()):
+        if monitor is not None:
+            await monitor.cancel_background_tasks()
+    worker.monitors.clear()
     for account_id, client in list(worker.clients.items()):
         if client.is_connected():
             await client.disconnect()

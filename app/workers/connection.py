@@ -154,7 +154,7 @@ class AccountConnector:
                     force_addressed=True,
                 )
 
-            self._install_monitor(
+            worker.monitors[account.id] = self._install_monitor(
                 client, account.id, worker.redis, worker.send_log,
                 route_chat_reply=route_discussion_reply,
             )

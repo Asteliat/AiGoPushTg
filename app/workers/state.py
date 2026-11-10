@@ -39,6 +39,7 @@ class WorkerState:
     reconnect_after: dict[int, datetime] = field(default_factory=dict)
     session_lease_tasks: dict[int, asyncio.Task] = field(default_factory=dict)
     session_lease_tokens: dict[int, str] = field(default_factory=dict)
+    monitors: dict[int, object] = field(default_factory=dict)
 
     async def send_log(self, text: str, category: str = "main") -> bool:
         """Queue a notification durably.
