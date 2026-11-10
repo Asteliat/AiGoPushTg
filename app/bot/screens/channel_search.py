@@ -7,13 +7,13 @@ from app.bot.core import CHANNEL_CANDIDATES
 from app.bot.core import CHANNEL_PENDING_JOIN
 from app.bot.core import Flow
 from app.bot.candidates import candidate_at
+from app.bot.discovery_flow import collect_candidates
 from app.bot.core import check_cb
 from app.bot.core import check_msg
 from app.bot.core import delete_msg
 from app.bot.core import edit
 from app.bot.core import edit_anchor
 from app.bot.core import finish_prompt
-from app.bot.core import isolated_telegram_client
 from app.bot.core import kb
 from app.bot.core import perform_join_request
 from app.bot.core import private
@@ -211,60 +211,13 @@ async def channel_search_query(m: Message, state: FSMContext):
 
     try:
 
-        async def search_one_account(search_aid: int):
-            try:
-                async with SessionFactory() as db:
-                    search_account = await db.get(Account, search_aid)
-                if not search_account or not search_account.enabled:
-                    return []
-                async with isolated_telegram_client(search_account) as search_client:
-                    if not await search_client.is_user_authorized():
-                        return []
-                    return await search_public_channels(search_client, query, limit=100)
-            except Exception as exc:
-                logging.warning("Channel discovery failed for account %s: %s", search_aid, exc)
-                return []
-
-        async def search_accounts():
-            semaphore = asyncio.Semaphore(3)
-
-            async def limited(search_aid):
-                async with semaphore:
-                    return await search_one_account(search_aid)
-
-            batches = await asyncio.gather(
-                *(limited(search_aid) for search_aid in account_ids),
-                return_exceptions=True,
-            )
-            return [item for batch in batches if isinstance(batch, list) for item in batch]
-
-        native_task = asyncio.create_task(search_accounts())
-        web_task = asyncio.create_task(search_web_channels(query, limit=600, pages_per_query=5))
-        native_result, web_result = await asyncio.gather(
-            native_task, web_task, return_exceptions=True
+        raw_candidates = await collect_candidates(
+            account_ids,
+            query,
+            native_search=search_public_channels,
+            web_search=search_web_channels,
+            log_label="Channel",
         )
-        native_results = native_result if isinstance(native_result, list) else []
-        web_results = web_result if isinstance(web_result, list) else []
-        combined = {}
-        for item in native_results + web_results:
-            link = str(item.get("link") or "").strip()
-            if not link:
-                continue
-            key = link.casefold()
-            if key in combined:
-                current = combined[key]
-                current["score"] = max(int(current.get("score") or 0), int(item.get("score") or 0))
-                current["source"] = ", ".join(
-                    dict.fromkeys(
-                        (current.get("source", "") + ", " + item.get("source", ""))
-                        .strip(", ")
-                        .split(", ")
-                    )
-                )
-            else:
-                combined[key] = item
-
-        raw_candidates = list(combined.values())[:600]
         await edit_anchor(
             m.bot,
             anchor,
