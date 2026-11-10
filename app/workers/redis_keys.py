@@ -34,6 +34,10 @@ def challenge_cooldown(account_id: int, chat_id: int) -> str:
     return f"atcivperson:challenge:cooldown:{account_id}:{chat_id}"
 
 
+def challenge_bot_dm(account_id: int, bot_username: str) -> str:
+    return f"atcivperson:challenge:bot:{account_id}:{bot_username.lower()}"
+
+
 def chat_memory(account_id: int, chat_id: int) -> str:
     return f"atcivperson:memory:{account_id}:{chat_id}:chat"
 

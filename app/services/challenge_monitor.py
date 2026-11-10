@@ -45,6 +45,14 @@ _CHALLENGE_PATTERNS: tuple[str, ...] = (
     r"\bselect\s+(?:an?\s+)?(?:emoji|colour|color|number)\b",
     r"\bcaptcha\b",
     r"\bhuman\s+verification\b",
+    # Verification that continues in another bot's private chat.
+    r"перейд(?:и|ите)\s+в\s+(?:бота|@)",
+    r"(?:напиши|напишите|отправь|отправьте)\s+боту",
+    r"зайд(?:и|ите)\s+в\s+бота",
+    r"нажми(?:те)?\s+(?:start|старт)",
+    r"\bstart\s+(?:the\s+)?bot\b",
+    r"\bopen\s+the\s+bot\b",
+    r"\bverify\s+in\s+(?:the\s+)?bot\b",
 )
 _COMPILED_CHALLENGE = tuple(re.compile(pattern, re.IGNORECASE) for pattern in _CHALLENGE_PATTERNS)
 
@@ -216,7 +224,12 @@ def select_verification_index(
     """
     if not labels:
         return None
-    candidates = [index for index, label in enumerate(labels) if not _is_destructive(label)]
+    # Empty captions belong to URL buttons: a link is not pressable here.
+    candidates = [
+        index
+        for index, label in enumerate(labels)
+        if label.strip() and not _is_destructive(label)
+    ]
     if not candidates:
         return None
 
