@@ -355,9 +355,64 @@ async def search_web_groups(query: str, limit: int = 600, pages_per_query: int =
     return result
 
 
-async def verify_group_candidates(client, candidates: list[dict], concurrency: int = 4) -> list[dict]:
-    """Resolve every candidate with Telegram and discard anything that is not a group."""
+def _group_kind(entity) -> str:
+    return "supergroup" if getattr(entity, "megagroup", False) else "group"
+
+
+def _channel_kind(entity) -> str:
+    return "channel"
+
+
+def _invite_is_group(invite) -> bool:
+    """A not-yet-joined invite is a group only without channel/broadcast flags."""
+    return not (getattr(invite, "channel", False) or getattr(invite, "broadcast", False))
+
+
+def _invite_is_channel(invite) -> bool:
+    return bool(getattr(invite, "channel", False)) and not getattr(invite, "megagroup", False)
+
+
+async def _verify_candidates(
+    client,
+    candidates: list[dict],
+    *,
+    concurrency: int,
+    quality_fn,
+    kind_of,
+    invite_allowed,
+    invite_kind: str,
+    invite_title: str,
+    joined_invite_title: str,
+) -> list[dict]:
+    """Shared Telegram verification for groups and channels.
+
+    Only the quality rules, the reported ``kind`` and the invite acceptance rules
+    differ between the two searches, so the resolution, FloodWait retry and
+    de-duplication live here once.
+    """
     semaphore = asyncio.Semaphore(max(1, min(concurrency, 8)))
+
+    def resolved(item: dict, entity, link: str, *, require_username: bool, cap_score: bool):
+        quality = quality_fn(entity)
+        if quality is None:
+            return None
+        score, members = quality
+        username = getattr(entity, "username", None)
+        if require_username and not username:
+            return None
+        return {
+            **item,
+            "id": int(entity.id),
+            "title": (
+                getattr(entity, "title", None) or item.get("title") or username or joined_invite_title
+            )[:120],
+            "username": username,
+            "link": f"https://t.me/{username}" if username else link,
+            "members": members,
+            "verified": True,
+            "score": score if cap_score else max(score, int(item.get("score") or 0)),
+            "kind": kind_of(entity),
+        }
 
     async def verify(item: dict) -> dict | None:
         parsed = _normalize_telegram_link(str(item.get("link") or ""))
@@ -368,89 +423,34 @@ async def verify_group_candidates(client, candidates: list[dict], concurrency: i
             try:
                 if kind == "public":
                     entity = await client.get_entity(target)
-                    quality = _quality(entity)
-                    if quality is None:
-                        return None
-                    score, members = quality
-                    username = getattr(entity, "username", None)
-                    if not username:
-                        return None
-                    canonical = f"https://t.me/{username}"
-                    title = (getattr(entity, "title", None) or item.get("title") or username)[:120]
-                    return {
-                        **item,
-                        "id": int(entity.id),
-                        "title": title,
-                        "username": username,
-                        "link": canonical,
-                        "members": members,
-                        "verified": True,
-                        "score": max(score, int(item.get("score") or 0)),
-                        "kind": "supergroup" if getattr(entity, "megagroup", False) else "group",
-                    }
+                    return resolved(item, entity, link, require_username=True, cap_score=False)
 
                 invite = await client(CheckChatInviteRequest(hash=target))
                 if isinstance(invite, ChatInviteAlready):
-                    entity = invite.chat
-                    quality = _quality(entity)
-                    if quality is None:
-                        return None
-                    score, members = quality
-                    username = getattr(entity, "username", None)
-                    canonical = f"https://t.me/{username}" if username else link
-                    return {
-                        **item,
-                        "id": int(entity.id),
-                        "title": (getattr(entity, "title", None) or item.get("title") or "Группа")[:120],
-                        "username": username,
-                        "link": canonical,
-                        "members": members,
-                        "verified": True,
-                        "score": max(score, int(item.get("score") or 0)),
-                        "kind": "supergroup" if getattr(entity, "megagroup", False) else "group",
-                    }
+                    return resolved(item, invite.chat, link, require_username=False, cap_score=False)
 
-                # A not-yet-joined invite is a ChatInvite constructor. Telegram exposes
-                # channel/broadcast/megagroup flags; only non-channel invites are groups.
-                if getattr(invite, "channel", False) or getattr(invite, "broadcast", False):
+                if not invite_allowed(invite):
                     return None
-                if not getattr(invite, "megagroup", False) and getattr(invite, "channel", False):
-                    return None
-                title = (getattr(invite, "title", None) or item.get("title") or "Приватная группа")[:120]
-                members = int(getattr(invite, "participants_count", 0) or 0)
                 return {
                     **item,
                     "id": None,
-                    "title": title,
+                    "title": (getattr(invite, "title", None) or item.get("title") or invite_title)[:120],
                     "username": None,
                     "link": link,
-                    "members": members,
+                    "members": int(getattr(invite, "participants_count", 0) or 0),
                     "verified": True,
                     "score": max(35, int(item.get("score") or 0)),
-                    "kind": "invite",
+                    "kind": invite_kind,
                 }
             except FloodWaitError as exc:
                 await asyncio.sleep(min(max(int(exc.seconds), 1), 30))
+                if kind != "public":
+                    return None
                 try:
-                    if kind == "public":
-                        entity = await client.get_entity(target)
-                        quality = _quality(entity)
-                        if quality is None:
-                            return None
-                        score, members = quality
-                        username = getattr(entity, "username", None)
-                        if not username:
-                            return None
-                        return {
-                            **item, "id": int(entity.id),
-                            "title": (getattr(entity, "title", None) or username)[:120],
-                            "username": username, "link": f"https://t.me/{username}",
-                            "members": members, "verified": True, "score": score,
-                            "kind": "supergroup" if getattr(entity, "megagroup", False) else "group",
-                        }
+                    entity = await client.get_entity(target)
                 except Exception:
                     return None
-                return None
+                return resolved(item, entity, link, require_username=True, cap_score=True)
             except Exception:
                 return None
 
@@ -464,14 +464,48 @@ async def verify_group_candidates(client, candidates: list[dict], concurrency: i
             continue
         if key not in unique:
             unique[key] = item
-        else:
-            current = unique[key]
-            current["score"] = max(int(current.get("score") or 0), int(item.get("score") or 0))
-            current["members"] = max(int(current.get("members") or 0), int(item.get("members") or 0))
-            current["source"] = ", ".join(dict.fromkeys(
-                (current.get("source", "") + ", " + item.get("source", "")).strip(", ").split(", ")
-            ))
-    return sorted(unique.values(), key=lambda x: (int(x.get("score") or 0), int(x.get("members") or 0)), reverse=True)
+            continue
+        current = unique[key]
+        current["score"] = max(int(current.get("score") or 0), int(item.get("score") or 0))
+        current["members"] = max(int(current.get("members") or 0), int(item.get("members") or 0))
+        current["source"] = ", ".join(dict.fromkeys(
+            (current.get("source", "") + ", " + item.get("source", "")).strip(", ").split(", ")
+        ))
+    return sorted(
+        unique.values(),
+        key=lambda x: (int(x.get("score") or 0), int(x.get("members") or 0)),
+        reverse=True,
+    )
+
+
+async def verify_group_candidates(client, candidates: list[dict], concurrency: int = 4) -> list[dict]:
+    """Resolve every candidate with Telegram and discard anything that is not a group."""
+    return await _verify_candidates(
+        client,
+        candidates,
+        concurrency=concurrency,
+        quality_fn=_quality,
+        kind_of=_group_kind,
+        invite_allowed=_invite_is_group,
+        invite_kind="invite",
+        invite_title="Приватная группа",
+        joined_invite_title="Группа",
+    )
+
+
+async def verify_channel_candidates(client, candidates: list[dict], concurrency: int = 4) -> list[dict]:
+    """Resolve every candidate with Telegram and keep broadcast channels only."""
+    return await _verify_candidates(
+        client,
+        candidates,
+        concurrency=concurrency,
+        quality_fn=_channel_quality,
+        kind_of=_channel_kind,
+        invite_allowed=_invite_is_channel,
+        invite_kind="channel",
+        invite_title="Приватный канал",
+        joined_invite_title="Канал",
+    )
 
 
 async def find_invite_links_in_dialogs(
@@ -627,128 +661,3 @@ async def search_web_channels(query: str, limit: int = 600, pages_per_query: int
     return results
 
 
-async def verify_channel_candidates(
-    client, candidates: list[dict], concurrency: int = 4
-) -> list[dict]:
-    """Resolve every candidate with Telegram and keep broadcast channels only."""
-    semaphore = asyncio.Semaphore(max(1, min(concurrency, 8)))
-
-    async def verify(item: dict) -> dict | None:
-        parsed = _normalize_telegram_link(str(item.get("link") or ""))
-        if not parsed:
-            return None
-        link, kind, target = parsed
-        async with semaphore:
-            try:
-                if kind == "public":
-                    entity = await client.get_entity(target)
-                    quality = _channel_quality(entity)
-                    if quality is None:
-                        return None
-                    score, subscribers = quality
-                    username = getattr(entity, "username", None)
-                    if not username:
-                        return None
-                    return {
-                        **item,
-                        "id": int(entity.id),
-                        "title": (getattr(entity, "title", None) or item.get("title") or username)[:120],
-                        "username": username,
-                        "link": f"https://t.me/{username}",
-                        "members": subscribers,
-                        "verified": True,
-                        "score": max(score, int(item.get("score") or 0)),
-                        "kind": "channel",
-                    }
-
-                invite = await client(CheckChatInviteRequest(hash=target))
-                if isinstance(invite, ChatInviteAlready):
-                    entity = invite.chat
-                    quality = _channel_quality(entity)
-                    if quality is None:
-                        return None
-                    score, subscribers = quality
-                    username = getattr(entity, "username", None)
-                    canonical = f"https://t.me/{username}" if username else link
-                    return {
-                        **item,
-                        "id": int(entity.id),
-                        "title": (getattr(entity, "title", None) or item.get("title") or "Канал")[:120],
-                        "username": username,
-                        "link": canonical,
-                        "members": subscribers,
-                        "verified": True,
-                        "score": max(score, int(item.get("score") or 0)),
-                        "kind": "channel",
-                    }
-
-                # A private invite is accepted only when Telegram explicitly identifies
-                # it as a channel and not as a megagroup invite.
-                if not getattr(invite, "channel", False) or getattr(invite, "megagroup", False):
-                    return None
-                title = (getattr(invite, "title", None) or item.get("title") or "Приватный канал")[:120]
-                subscribers = int(getattr(invite, "participants_count", 0) or 0)
-                return {
-                    **item,
-                    "id": None,
-                    "title": title,
-                    "username": None,
-                    "link": link,
-                    "members": subscribers,
-                    "verified": True,
-                    "score": max(35, int(item.get("score") or 0)),
-                    "kind": "channel",
-                }
-            except FloodWaitError as exc:
-                await asyncio.sleep(min(max(int(exc.seconds), 1), 30))
-                try:
-                    if kind == "public":
-                        entity = await client.get_entity(target)
-                        quality = _channel_quality(entity)
-                        if quality is None:
-                            return None
-                        score, subscribers = quality
-                        username = getattr(entity, "username", None)
-                        if not username:
-                            return None
-                        return {
-                            **item,
-                            "id": int(entity.id),
-                            "title": (getattr(entity, "title", None) or username)[:120],
-                            "username": username,
-                            "link": f"https://t.me/{username}",
-                            "members": subscribers,
-                            "verified": True,
-                            "score": score,
-                            "kind": "channel",
-                        }
-                except Exception:
-                    return None
-                return None
-            except Exception:
-                return None
-
-    checked = await asyncio.gather(
-        *(verify(item) for item in candidates), return_exceptions=True
-    )
-    unique: dict[str, dict] = {}
-    for item in checked:
-        if not isinstance(item, dict) or not item.get("verified"):
-            continue
-        key = str(item.get("link") or "").casefold()
-        if not key:
-            continue
-        if key not in unique:
-            unique[key] = item
-        else:
-            current = unique[key]
-            current["score"] = max(int(current.get("score") or 0), int(item.get("score") or 0))
-            current["members"] = max(int(current.get("members") or 0), int(item.get("members") or 0))
-            current["source"] = ", ".join(dict.fromkeys(
-                (current.get("source", "") + ", " + item.get("source", "")).strip(", ").split(", ")
-            ))
-    return sorted(
-        unique.values(),
-        key=lambda x: (int(x.get("score") or 0), int(x.get("members") or 0)),
-        reverse=True,
-    )

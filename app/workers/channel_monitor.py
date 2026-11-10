@@ -7,7 +7,7 @@ import asyncio
 import base64
 import io
 import logging
-from datetime import timedelta, timezone
+from datetime import timedelta
 from types import SimpleNamespace
 
 from sqlalchemy import select
@@ -27,6 +27,10 @@ from app.services.channels import (
 from app.services.ai_responses import global_ai_enabled
 from app.storage.db import SessionFactory
 from app.storage.models import Account, AIAgent, ChannelAnalysis, ChannelBinding, ChannelPostState
+from app.workers.channel_recovery import (
+    is_stale_processing,
+    should_scan_recovered_post,
+)
 from app.workers.channel_filters import (
     channel_reply_probability_passes,
     fetch_discussion_comments,
@@ -40,7 +44,6 @@ _utcnow = utcnow
 
 SCAN_INTERVAL_SECONDS = 60
 RECOVERY_SCAN_LIMIT = 500
-PROCESSING_STALE_MINUTES = 20
 PUBLISHED_REPLY_POLL_LIMIT = 100
 PUBLISHED_REPLY_COMMENT_LIMIT = 100
 DISCUSSION_COMMENT_SCAN_LIMIT = 100
@@ -334,7 +337,9 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
                         and not (was_waiting and not comment_policy_enabled)
                     ):
                         return
-                    if state.status == "processing" and state.updated_at > now - timedelta(minutes=PROCESSING_STALE_MINUTES):
+                    if state.status == "processing" and not is_stale_processing(
+                        state.status, state.updated_at, now
+                    ):
                         return
                     state.status = "processing"
                     state.attempts += 1
@@ -1043,25 +1048,15 @@ def install_channel_monitor(client, account_id: int, redis, send_log, route_chat
                             if not has_channel_post_content(body, message):
                                 continue
                             previous = state_by_post.get(int(message.id))
-                            if previous:
-                                if previous.status == "done":
-                                    continue
-                                if previous.next_retry_at and previous.next_retry_at > now:
-                                    continue
-                                if (
-                                    previous.status == "processing"
-                                    and previous.updated_at > now - timedelta(minutes=PROCESSING_STALE_MINUTES)
-                                ):
-                                    continue
-                            else:
-                                # Never backfill posts from before this channel was added.
-                                created_at = binding.created_at
-                                msg_date = message.date
-                                if created_at and msg_date:
-                                    if created_at.tzinfo is None:
-                                        created_at = created_at.replace(tzinfo=timezone.utc)
-                                    if msg_date < created_at:
-                                        continue
+                            if not should_scan_recovered_post(
+                                status=previous.status if previous else None,
+                                next_retry_at=previous.next_retry_at if previous else None,
+                                updated_at=previous.updated_at if previous else None,
+                                message_date=message.date,
+                                binding_created_at=binding.created_at,
+                                now=now,
+                            ):
+                                continue
                             logging.info(
                                 "Channel recovery discovered post: account=%s channel_id=%s post_id=%s "
                                 "previous_state=%s",
