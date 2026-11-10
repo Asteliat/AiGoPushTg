@@ -111,6 +111,16 @@ class FakeResult:
         return list(self._rows)
 
 
+def _entity_name(statement) -> str | None:
+    """Model name of an ORM select, so fake sessions can answer per model."""
+    try:
+        description = statement.column_descriptions[0]
+    except (AttributeError, IndexError, TypeError):
+        return None
+    entity = description.get("entity") if isinstance(description, dict) else None
+    return getattr(entity, "__name__", None)
+
+
 class FakeSession:
     """Serves objects by ``(model name, primary key)``; queries return nothing."""
 
@@ -130,7 +140,17 @@ class FakeSession:
             normalized = key
         return self.factory.objects.get((model.__name__, normalized))
 
-    async def scalar(self, _statement):
+    async def scalar(self, statement):
+        entity = _entity_name(statement)
+        configured = self.factory.scalars_by_entity.get(entity) if entity else None
+        if isinstance(configured, list):
+            if configured:
+                return configured.pop(0)
+            return None
+        if configured is not None:
+            return configured
+        if self.factory.scalar_value_queue:
+            return self.factory.scalar_value_queue.pop(0)
         return self.factory.scalar_result
 
     async def scalars(self, _statement):
@@ -164,6 +184,8 @@ class FakeSessionFactory:
         self.scalar_result = None
         self.scalar_rows: list = []
         self.scalar_queue: list[list] = []
+        self.scalar_value_queue: list[object] = []
+        self.scalars_by_entity: dict[str, object] = {}
         self.execute_rows: list = []
         self.added: list = []
         self.deleted: list = []
@@ -209,6 +231,7 @@ class FakeTelethonClient:
         self.handlers: list[tuple[object, object]] = []
         self.requests: list[object] = []
         self.sent: list[tuple[object, str]] = []
+        self.comments: list = []
         self.disconnects = 0
         self.flood_sleep_threshold = 0
 
@@ -249,8 +272,8 @@ class FakeTelethonClient:
             yield dialog
 
     async def iter_messages(self, _peer, **_kwargs):
-        if False:  # pragma: no cover - empty async generator
-            yield None
+        for item in self.comments:
+            yield item
 
     async def get_entity(self, target):
         if target not in self.entities:
