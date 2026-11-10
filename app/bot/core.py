@@ -143,7 +143,6 @@ MAIN = kb(
         [("👤 Аккаунты", "acc:list"), ("🤖 ИИ-агенты", "agent:menu")],
         [("🎭 Персоны", "persona:menu"), ("💡 Примеры", "example:menu")],
         [("🧰 Инструменты", "tool:menu"), ("⚙️ Настройки", "nav:settings")],
-        [("🛡 Проверки", "challenge:settings"), ("🧾 Логи", "logs:menu")],
     ]
 )
 CANCEL = kb([[("❌ Отмена", "nav:cancel")]])

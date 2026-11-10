@@ -89,6 +89,16 @@ def test_every_literal_button_has_a_handler() -> None:
     assert unhandled == []
 
 
+def test_main_menu_has_no_duplicate_settings_entries() -> None:
+    """Checks and logs live inside Settings; the main menu must not repeat them."""
+    callbacks = [button.callback_data for row in MAIN.inline_keyboard for button in row]
+
+    assert len(callbacks) == len(set(callbacks))
+    assert "challenge:settings" not in callbacks
+    assert "logs:menu" not in callbacks
+    assert "nav:settings" in callbacks
+
+
 def test_main_menu_buttons_are_answered() -> None:
     patterns = _handler_patterns()
     callbacks = [button.callback_data for row in MAIN.inline_keyboard for button in row]
