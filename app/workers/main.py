@@ -26,7 +26,9 @@ from app.services.challenge_monitor import (
 )
 from app.workers.challenge_watcher import ChallengeWatcher
 from app.workers.account_status import set_connection_status
+from app.workers.autoresponder import process_static_autoresponder
 from app.workers.connection import AccountConnector
+from app.workers.memory import read_conversation_context, remember_message
 from app.workers.state import WorkerState
 from app.workers.learning import finalize_learning_buffer, run_learning
 from app.workers.dialogs_sync import sync_account_dialogs
@@ -66,91 +68,6 @@ async def main():
     # Verification prompts are passed automatically for our own accounts only;
     # prompts addressed to other group members are ignored silently.
     challenge_watcher = ChallengeWatcher(redis=worker.redis, send_log=worker.send_log)
-
-    async def remember_message(aid: int, chat_id: int, sender_id: int, item: dict) -> None:
-        chat_key = redis_keys.chat_memory(aid, chat_id)
-        person_key = redis_keys.person_memory(aid, chat_id, sender_id)
-        raw = json.dumps(item, ensure_ascii=False)
-        for key, limit in ((chat_key, 30), (person_key, 16)):
-            await worker.redis.lpush(key, raw)
-            await worker.redis.ltrim(key, 0, limit - 1)
-            await worker.redis.expire(key, 30 * 24 * 3600)
-
-    async def read_conversation_context(aid: int, chat_id: int, sender_id: int) -> str:
-        keys = [
-            redis_keys.chat_memory(aid, chat_id),
-            redis_keys.person_memory(aid, chat_id, sender_id),
-        ]
-        merged = {}
-        for key in keys:
-            for raw in reversed(await worker.redis.lrange(key, 0, 11)):
-                try:
-                    item = json.loads(raw)
-                except (TypeError, ValueError):
-                    continue
-                merged[(item.get("message_id"), item.get("sender_id"), item.get("text"))] = item
-        items = sorted(merged.values(), key=lambda x: x.get("date", ""))[-18:]
-        return "\n".join(
-            f"[{str(item.get('speaker', 'Участник'))[:60]}] {str(item.get('text', ''))[:500]}"
-            for item in items if str(item.get("text", "")).strip()
-        )[-7000:]
-
-    async def process_static_autoresponder(event, *, db, account, incoming: str, sender_id: int) -> bool:
-        """Private-chat autoresponder, strictly disabled whenever account AI is enabled."""
-        if not event.is_private or event.message.out or not incoming.strip():
-            return False
-        aid = int(account.id)
-        values = {}
-        keys = [
-            f"autoresponder.{aid}.enabled",
-            f"autoresponder.{aid}.keywords",
-            f"autoresponder.{aid}.response",
-            f"autoresponder.{aid}.cooldown_seconds",
-        ]
-        rows = (await db.scalars(select(AppSetting).where(AppSetting.key.in_(keys)))).all()
-        values = {row.key: row.value for row in rows}
-        if values.get(keys[0], "false").lower() not in {"1", "true", "yes", "on"}:
-            return False
-        response = (values.get(keys[2], "") or "").strip()
-        if not response:
-            return False
-        terms = [item.strip().casefold() for item in re.split(r"[,;\n]", values.get(keys[1], "")) if item.strip()]
-        folded = incoming.casefold()
-        if terms and not any(term in folded for term in terms):
-            return False
-
-        # Reserve the message before sending so a worker reconnect cannot double-reply.
-        dedupe_key = redis_keys.autoresponder_message(aid, int(event.chat_id), int(event.message.id))
-        reserved = await worker.redis.set(dedupe_key, "1", nx=True, ex=30 * 24 * 3600)
-        if not reserved:
-            return True
-
-        # Re-read the account immediately before the side effect. AI-enabled accounts
-        # must never receive this static responder, even if the setting changed mid-event.
-        async with SessionFactory() as check_db:
-            fresh = await check_db.get(Account, aid)
-            if not fresh or not fresh.enabled or fresh.manual_pause or fresh.ai_enabled:
-                await worker.redis.delete(dedupe_key)
-                return False
-
-        try:
-            cooldown = max(0, min(86400, int(values.get(keys[3], "0") or 0)))
-        except ValueError:
-            cooldown = 0
-        if cooldown:
-            cooldown_key = redis_keys.autoresponder_cooldown(aid, sender_id)
-            allowed = await worker.redis.set(cooldown_key, "1", nx=True, ex=cooldown)
-            if not allowed:
-                return True
-        try:
-            await event.client.send_message(
-                int(event.chat_id), response[:4096], reply_to=int(event.message.id)
-            )
-        except Exception:
-            # Do not auto-retry a possibly accepted message; operator can inspect logs.
-            logging.exception("Static autoresponder failed: account=%s chat=%s", aid, event.chat_id)
-        return True
-
 
     async def process_trigger_message(event, *, db, account, label: str, incoming: str, sender_id: int) -> bool:
         """Handle one matching trigger before the ordinary mention/DM/proactive reply flow."""
@@ -401,7 +318,12 @@ async def main():
             if not current.ai_enabled:
                 if not allow_unbound:
                     await process_static_autoresponder(
-                        event, db=db, account=current, incoming=incoming, sender_id=sender_id
+                        event,
+                        db=db,
+                        account=current,
+                        incoming=incoming,
+                        sender_id=sender_id,
+                        redis=worker.redis,
                     )
                 return
             if label is None and not allow_unbound:
@@ -435,7 +357,9 @@ async def main():
 
             # Store a rolling chat history and a separate history for each participant.
             # Redis expires conversation records after 30 days.
-            history_context = await read_conversation_context(aid, int(event.chat_id), sender_id)
+            history_context = await read_conversation_context(
+                worker.redis, aid, int(event.chat_id), sender_id
+            )
             context = "\n\n".join(part for part in (extra_context.strip(), history_context) if part)
             item = {
                 "message_id": int(event.message.id),
@@ -444,7 +368,7 @@ async def main():
                 "text": incoming[:700],
                 "date": event.message.date.isoformat() if event.message.date else "",
             }
-            await remember_message(aid, int(event.chat_id), sender_id, item)
+            await remember_message(worker.redis, aid, int(event.chat_id), sender_id, item)
 
             agent = await db.get(AIAgent, current.ai_agent_id)
             if not agent or not agent.enabled:
