@@ -13,6 +13,8 @@ def test_application_modules_import() -> None:
         "app.services.challenge_settings",
         "app.workers.challenge_watcher",
         "app.workers.redis_keys",
+        "app.workers.learning",
+        "app.workers.dialogs_sync",
         "app.workers.reconnect",
         "app.workers.send_policy",
             "app.workers.channel_monitor",

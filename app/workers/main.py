@@ -1,6 +1,5 @@
 """Dynamic account worker with per-account pause and automatic eligible-chat discovery."""
 import asyncio
-import heapq
 import json
 import logging
 import os
@@ -10,20 +9,18 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 from aiogram import Bot
-from telethon import TelegramClient, events, utils
-from telethon.errors import FloodWaitError, MsgIdInvalidError
-from telethon.tl.functions.messages import GetDiscussionMessageRequest
+from telethon import TelegramClient, events
+from telethon.errors import FloodWaitError
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
-from app.ai.provider import AIUnavailableError, NoReplyNeeded, summarize_chat_context
+from app.ai.provider import AIUnavailableError, NoReplyNeeded
 from app.services.ai_responses import generate_response, resolve_runtime_override, resolve_agent_runtime_override, passes_reply_probability, global_ai_enabled
-from app.workers.channel_monitor import has_channel_post_content, install_channel_monitor
+from app.workers.channel_monitor import install_channel_monitor
 from app.settings import get_settings
 from app.storage.db import SessionFactory
 from app.storage.models import Account, AIAgent, AppSetting, ChatBinding, ChannelBinding, TriggerRule, TriggerEvent
 from app.services.triggers import select_matching_trigger
 from app.services.notifications import enqueue_notification, dispatch_pending_notifications
-from app.services.chat_bindings import discovered_binding_values
 from app.telegram_gateway.proxy import telethon_proxy
 from app.telegram_gateway.session import configure_telethon_sqlite_session
 from app.services.challenge_monitor import (
@@ -31,6 +28,8 @@ from app.services.challenge_monitor import (
     is_challenge_prompt,
 )
 from app.workers.challenge_watcher import ChallengeWatcher
+from app.workers.learning import finalize_learning_buffer, run_learning
+from app.workers.dialogs_sync import sync_account_dialogs
 from app.workers.reconnect import reconnect_at
 from app.workers.send_policy import automatic_send_allowed
 from app.workers import redis_keys
@@ -579,388 +578,12 @@ async def main():
             text = f"💬 Ответ подготовлен\nАккаунт: {account_name} (#{aid})\nЧат: {label}\nВходящее: {incoming[:900]}\nОтвет ИИ: {draft.proposed_text[:1400]}\nРучной режим: в чат ничего не отправлено; текст не сохраняется."
         await send_log(text, category="replies")
 
-    async def finalize_learning_buffer(aid: int, key: str, sample_limit: int) -> None:
-        raw_items = await redis.lrange(key, 0, -1)
-        parsed = []
-        for raw in raw_items:
-            try:
-                parsed.append(json.loads(raw))
-            except (TypeError, ValueError):
-                continue
-        unique = {}
-        for item in parsed:
-            unique[(item.get("chat_id"), item.get("message_id"))] = item
-        samples = sorted(unique.values(), key=lambda item: item.get("date", ""))[-sample_limit:]
-        summary_saved = False
-        try:
-            async with SessionFactory() as db:
-                account = await db.get(Account, aid)
-                if not account:
-                    await redis.delete(key)
-                    return
-                if samples:
-                    agent = await db.get(AIAgent, account.ai_agent_id) if account.ai_agent_id else None
-                    if not agent or not agent.enabled or not agent.api_key.strip():
-                        agent = await db.scalar(select(AIAgent).where(
-                            AIAgent.enabled.is_(True), AIAgent.is_default.is_(True)
-                        ).order_by(AIAgent.id))
-                    if not agent:
-                        agent = await db.scalar(select(AIAgent).where(
-                            AIAgent.enabled.is_(True)
-                        ).order_by(AIAgent.id))
-                    if agent and agent.api_key.strip():
-                        account.learning_prompt = await summarize_chat_context(agent=agent, messages=samples)
-                        account.learning_completed_at = datetime.now(timezone.utc)
-                        summary_saved = True
-                account.learning_status = "idle"
-                account.learning_started_at = None
-                account.learning_ends_at = None
-                await db.commit()
-        except Exception:
-            logging.exception("Could not finalize learning buffer for account %s", aid)
-            async with SessionFactory() as db:
-                account = await db.get(Account, aid)
-                if account:
-                    account.learning_status = "idle"
-                    account.learning_started_at = None
-                    account.learning_ends_at = None
-                    await db.commit()
-        finally:
-            await redis.delete(key)
-        await send_log(
-            f"🧠 Обучение аккаунта #{aid} завершено. "
-            f"{'Краткий контекст сохранён для черновиков.' if summary_saved else 'Сводка не сохранена: нет подходящих сообщений или доступного ИИ-агента.'}",
-            category="learning",
-        )
-
-    async def run_learning(aid: int, client: TelegramClient) -> None:
-        handler = None
-        key = None
-        try:
-            async with SessionFactory() as db:
-                account = await db.get(Account, aid)
-                if not account or account.learning_status not in {"training", "stopping"}:
-                    return
-                started = account.learning_started_at or datetime.now(timezone.utc)
-                sample_limit = min(1000, max(500, account.learning_limit))
-                bindings = list((await db.scalars(
-                    select(ChatBinding).where(
-                        ChatBinding.account_id == aid,
-                        ChatBinding.enabled.is_(True),
-                    )
-                )).all())
-                discussion_ids = set((await db.scalars(
-                    select(ChannelBinding.discussion_group_id).where(
-                        ChannelBinding.account_id == aid,
-                        ChannelBinding.discussion_group_id.is_not(None),
-                    )
-                )).all())
-                channel_ids = set((await db.scalars(
-                    select(ChannelBinding.channel_id).where(ChannelBinding.account_id == aid)
-                )).all())
-                excluded_chat_ids = discussion_ids | channel_ids
-                bindings = [binding for binding in bindings if int(binding.chat_id) not in excluded_chat_ids]
-            if not bindings:
-                async with SessionFactory() as db:
-                    account = await db.get(Account, aid)
-                    if account:
-                        account.learning_status = "idle"
-                        account.learning_started_at = None
-                        account.learning_ends_at = None
-                        await db.commit()
-                logging.warning("Learning for account %s stopped: no selected chats", aid)
-                return
-
-            chat_ids = [binding.chat_id for binding in bindings]
-            labels = {binding.chat_id: f"Чат {index + 1}" for index, binding in enumerate(bindings)}
-            key = redis_keys.learning_buffer(aid, int(started.timestamp()))
-            had_buffer = bool(await redis.exists(key))
-
-            async def capture_training_message(event):
-                message = event.message
-                body = (message.message or "").strip()
-                if not body:
-                    return
-                item = {
-                    "chat_id": int(event.chat_id),
-                    "message_id": int(message.id),
-                    "chat": labels.get(event.chat_id, "выбранный чат"),
-                    "text": body[:450],
-                    "outgoing": bool(message.out),
-                    "date": message.date.isoformat() if message.date else "",
-                }
-                await redis.lpush(key, json.dumps(item, ensure_ascii=False))
-                await redis.ltrim(key, 0, sample_limit - 1)
-                await redis.expire(key, 7 * 24 * 3600)
-
-            client.add_event_handler(capture_training_message, events.NewMessage(chats=chat_ids))
-            handler = capture_training_message
-
-            if not had_buffer:
-                # Keep only the newest global sample while scanning many chats; avoid
-                # retaining sample_limit messages for every dialog in memory.
-                history_heap = []
-                for binding in bindings:
-                    try:
-                        async for message in client.iter_messages(binding.chat_id, limit=sample_limit):
-                            body = (message.message or "").strip()
-                            if not body:
-                                continue
-                            date = message.date.isoformat() if message.date else ""
-                            timestamp = message.date.timestamp() if message.date else 0.0
-                            item = {
-                                "chat_id": int(binding.chat_id),
-                                "message_id": int(message.id),
-                                "chat": labels.get(binding.chat_id, "чат"),
-                                "text": body[:450],
-                                "outgoing": bool(message.out),
-                                "date": date,
-                            }
-                            entry = (timestamp, int(binding.chat_id), int(message.id), item)
-                            if len(history_heap) < sample_limit:
-                                heapq.heappush(history_heap, entry)
-                            elif entry[:3] > history_heap[0][:3]:
-                                heapq.heapreplace(history_heap, entry)
-                    except Exception:
-                        logging.exception("Could not read training history for account %s, chat %s", aid, binding.chat_id)
-                history = [entry[3] for entry in history_heap]
-                history.sort(key=lambda item: item["date"], reverse=True)
-                for item in history[:sample_limit]:
-                    await redis.rpush(key, json.dumps(item, ensure_ascii=False))
-                await redis.ltrim(key, 0, sample_limit - 1)
-                await redis.expire(key, 7 * 24 * 3600)
-
-            while True:
-                await asyncio.sleep(10)
-                async with SessionFactory() as db:
-                    account = await db.get(Account, aid)
-                    if not account or account.learning_status != "training":
-                        break
-                    current_chat_ids = set((await db.scalars(select(ChatBinding.chat_id).where(
-                        ChatBinding.account_id == aid, ChatBinding.enabled.is_(True)
-                    ))).all())
-                    discussion_ids = set((await db.scalars(select(ChannelBinding.discussion_group_id).where(
-                        ChannelBinding.account_id == aid,
-                        ChannelBinding.discussion_group_id.is_not(None),
-                    ))).all())
-                    channel_ids = set((await db.scalars(select(ChannelBinding.channel_id).where(
-                        ChannelBinding.account_id == aid,
-                    ))).all())
-                    current_chat_ids -= discussion_ids | channel_ids
-                    if current_chat_ids != set(chat_ids):
-                        break
-                    expires = account.learning_ends_at
-                    if expires and expires.tzinfo is None:
-                        expires = expires.replace(tzinfo=timezone.utc)
-                    if expires and datetime.now(timezone.utc) >= expires:
-                        break
-
-            client.remove_event_handler(handler)
-            handler = None
-            raw_items = await redis.lrange(key, 0, -1)
-            parsed = []
-            for raw in raw_items:
-                try:
-                    parsed.append(json.loads(raw))
-                except (TypeError, ValueError):
-                    continue
-            unique = {}
-            for item in parsed:
-                unique[(item.get("chat_id"), item.get("message_id"))] = item
-            samples = sorted(unique.values(), key=lambda item: item.get("date", ""))[-sample_limit:]
-
-            summary_saved = False
-            async with SessionFactory() as db:
-                account = await db.get(Account, aid)
-                if not account:
-                    await redis.delete(key)
-                    return
-                if samples:
-                    agent = await db.get(AIAgent, account.ai_agent_id) if account.ai_agent_id else None
-                    if not agent or not agent.enabled or not agent.api_key.strip():
-                        agent = await db.scalar(
-                            select(AIAgent).where(
-                                AIAgent.enabled.is_(True),
-                                AIAgent.is_default.is_(True),
-                            ).order_by(AIAgent.id)
-                        )
-                    if not agent:
-                        agent = await db.scalar(
-                            select(AIAgent).where(AIAgent.enabled.is_(True)).order_by(AIAgent.id)
-                        )
-                    if agent:
-                        account.learning_prompt = await summarize_chat_context(agent=agent, messages=samples)
-                        account.learning_completed_at = datetime.now(timezone.utc)
-                        summary_saved = True
-                    else:
-                        logging.warning("No enabled AI agent for learning on account %s", aid)
-                account.learning_status = "idle"
-                account.learning_started_at = None
-                account.learning_ends_at = None
-                await db.commit()
-            await redis.delete(key)
-            await send_log(
-                f"🧠 Обучение аккаунта #{aid} завершено. "
-                f"{'Краткий контекст сохранён для черновиков.' if summary_saved else 'Сводка не сохранена: нет подходящих сообщений или доступного ИИ-агента.'}",
-                category="learning",
-            )
-        except asyncio.CancelledError:
-            if handler:
-                client.remove_event_handler(handler)
-            raise
-        except Exception:
-            if handler:
-                client.remove_event_handler(handler)
-            logging.exception("Learning failed for account %s", aid)
-            async with SessionFactory() as db:
-                account = await db.get(Account, aid)
-                if account:
-                    account.learning_status = "idle"
-                    account.learning_started_at = None
-                    account.learning_ends_at = None
-                    await db.commit()
-            if key:
-                await redis.delete(key)
-
     async def set_connection_status(aid: int, status: str) -> None:
         async with SessionFactory() as db:
             account = await db.get(Account, aid)
             if account:
                 account.connection_status = status
                 await db.commit()
-
-    async def sync_account_dialogs(client: TelegramClient, aid: int, attempt: int = 0) -> dict[int, str]:
-        discovered = []
-        try:
-            # Resolve linked discussion groups before dialog discovery so they never
-            # enter the ordinary Chats list or its auto-learning sample by accident.
-            async with SessionFactory() as db:
-                unresolved_channels = list((await db.scalars(
-                    select(ChannelBinding).where(
-                        ChannelBinding.account_id == aid,
-                        ChannelBinding.discussion_group_id.is_(None),
-                    )
-                )).all())
-            for channel_binding in unresolved_channels:
-                try:
-                    channel_entity = await client.get_entity(channel_binding.channel_id)
-                    async for channel_post in client.iter_messages(channel_entity, limit=5):
-                        if not has_channel_post_content(channel_post.message, channel_post):
-                            continue
-                        try:
-                            discussion = await client(GetDiscussionMessageRequest(
-                                peer=channel_entity, msg_id=int(channel_post.id)
-                            ))
-                        except MsgIdInvalidError:
-                            logging.debug(
-                                "No discussion thread on recent channel post; checking an older one: "
-                                "account=%s channel_id=%s post_id=%s",
-                                aid, int(channel_binding.channel_id), int(channel_post.id),
-                            )
-                            continue
-                        group = next((
-                            chat for chat in getattr(discussion, "chats", [])
-                            if getattr(chat, "megagroup", False)
-                        ), None)
-                        if not group:
-                            continue
-                        group_peer_id = int(utils.get_peer_id(group))
-                        async with SessionFactory() as db:
-                            current_binding = await db.get(ChannelBinding, channel_binding.id)
-                            if current_binding:
-                                current_binding.discussion_group_id = group_peer_id
-                                await db.commit()
-                        logging.info(
-                            "Linked channel discussion discovered before chat sync: "
-                            "account=%s channel_id=%s post_id=%s group_id=%s",
-                            aid, int(channel_binding.channel_id), int(channel_post.id), group_peer_id,
-                        )
-                        break
-                except FloodWaitError as exc:
-                    logging.warning(
-                        "FloodWait while resolving linked discussion before chat sync: "
-                        "account=%s channel_id=%s wait=%ss",
-                        aid, int(channel_binding.channel_id), int(getattr(exc, "seconds", 0)),
-                    )
-                except Exception:
-                    logging.exception(
-                        "Could not resolve linked discussion before chat sync: account=%s channel_id=%s",
-                        aid, int(channel_binding.channel_id),
-                    )
-            async for dialog in client.iter_dialogs():
-                entity = dialog.entity
-                if (
-                    getattr(entity, "deleted", False)
-                    or getattr(entity, "bot", False)
-                    or (getattr(entity, "broadcast", False) and not getattr(entity, "megagroup", False))
-                ):
-                    continue
-                title = (dialog.name or "").strip()
-                if not title:
-                    continue
-                discovered.append((int(dialog.id), title[:255]))
-            async with SessionFactory() as db:
-                discussion_ids = set((await db.scalars(
-                    select(ChannelBinding.discussion_group_id).where(
-                        ChannelBinding.account_id == aid,
-                        ChannelBinding.discussion_group_id.is_not(None),
-                    )
-                )).all())
-                channel_ids = set((await db.scalars(
-                    select(ChannelBinding.channel_id).where(ChannelBinding.account_id == aid)
-                )).all())
-            discovered = [
-                item for item in discovered
-                if item[0] not in discussion_ids and item[0] not in channel_ids
-            ]
-            async with SessionFactory() as db:
-                current_bindings = list((await db.scalars(
-                    select(ChatBinding).where(ChatBinding.account_id == aid)
-                )).all())
-                by_chat = {binding.chat_id: binding for binding in current_bindings}
-                for chat_id, title in discovered:
-                    binding = by_chat.get(chat_id)
-                    if binding:
-                        binding.title = title
-                    else:
-                        db.add(ChatBinding(
-                            account_id=aid, chat_id=chat_id,
-                            **discovered_binding_values(title),
-                        ))
-                await db.commit()
-            logging.info("Discovered %d eligible dialogs for account %s", len(discovered), aid)
-        except FloodWaitError as exc:
-            wait_seconds = max(1, int(getattr(exc, "seconds", 1))) + 1
-            if attempt < 2:
-                logging.warning("Telegram FloodWait while discovering dialogs for account %s; retry %s after %ss", aid, attempt + 1, wait_seconds)
-                await asyncio.sleep(min(wait_seconds, 300))
-                return await sync_account_dialogs(client, aid, attempt + 1)
-            logging.error("Dialog discovery paused after repeated Telegram FloodWait for account %s", aid)
-        except Exception:
-            # A transient history/dialogs failure must not take the whole account offline.
-            logging.exception("Could not refresh dialogs for account %s", aid)
-        finally:
-            last_discovery[aid] = datetime.now(timezone.utc)
-        async with SessionFactory() as db:
-            current_bindings = list((await db.scalars(
-                select(ChatBinding).where(
-                    ChatBinding.account_id == aid,
-                    ChatBinding.enabled.is_(True),
-                )
-            )).all())
-            discussion_ids = set((await db.scalars(
-                select(ChannelBinding.discussion_group_id).where(
-                    ChannelBinding.account_id == aid,
-                    ChannelBinding.discussion_group_id.is_not(None),
-                )
-            )).all())
-            channel_ids = set((await db.scalars(
-                select(ChannelBinding.channel_id).where(ChannelBinding.account_id == aid)
-            )).all())
-        return {
-            binding.chat_id: binding.title for binding in current_bindings
-            if int(binding.chat_id) not in discussion_ids and int(binding.chat_id) not in channel_ids
-        }
 
     def schedule_reconnect(aid: int) -> None:
         failures = reconnect_failures.get(aid, 0) + 1
@@ -1094,7 +717,9 @@ async def main():
                 schedule_reconnect(account.id)
                 return
 
-            labels = await sync_account_dialogs(client, account.id)
+            labels = await sync_account_dialogs(
+                client, account.id, last_discovery=last_discovery
+            )
             await set_connection_status(account.id, "connected")
             watched[account.id] = labels
             client.add_event_handler(
@@ -1185,7 +810,13 @@ async def main():
                             started = account.learning_started_at
                             if started:
                                 key = redis_keys.learning_buffer(account.id, int(started.timestamp()))
-                                await finalize_learning_buffer(account.id, key, min(1000, max(500, account.learning_limit)))
+                                await finalize_learning_buffer(
+                                redis=redis,
+                                send_log=send_log,
+                                aid=account.id,
+                                key=key,
+                                sample_limit=min(1000, max(500, account.learning_limit)),
+                            )
                             else:
                                 async with SessionFactory() as cleanup_db:
                                     current = await cleanup_db.get(Account, account.id)
@@ -1235,7 +866,11 @@ async def main():
                         labels=watched.get(aid,{})
                         if now - last_discovery.get(aid, datetime.min.replace(tzinfo=timezone.utc)) >= timedelta(minutes=5):
                             labels.clear()
-                            labels.update(await sync_account_dialogs(clients[aid], aid))
+                            labels.update(
+                                await sync_account_dialogs(
+                                    clients[aid], aid, last_discovery=last_discovery
+                                )
+                            )
                         else:
                             labels.clear()
                             labels.update({b.chat_id:b.title for b in by_account.get(aid,[])})
@@ -1247,7 +882,9 @@ async def main():
                     if account.learning_status in {"training", "stopping"} and aid in clients:
                         learning = learning_tasks.get(aid)
                         if learning is None or learning.done():
-                            learning_tasks[aid] = asyncio.create_task(run_learning(aid, clients[aid]))
+                            learning_tasks[aid] = asyncio.create_task(
+                                run_learning(redis=redis, send_log=send_log, aid=aid, client=clients[aid])
+                            )
                 if not clients:
                     logging.info("No connected accounts yet; waiting for accounts to be added in the bot")
             except Exception:
