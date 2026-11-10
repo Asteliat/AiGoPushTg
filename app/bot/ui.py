@@ -4,6 +4,7 @@ Handlers live in :mod:`app.bot.screens`; this module keeps ``app.bot.ui.router``
 working for :mod:`app.bot.main` and re-exports helpers that older code and tests
 import from here.
 """
+
 from __future__ import annotations
 
 from app.bot import screens  # noqa: F401  (importing registers every handler)

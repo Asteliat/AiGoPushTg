@@ -10,6 +10,7 @@ Everything that is not "press this inline button" (typing an answer, external ca
 services, web forms) is intentionally out of scope: those prompts are reported to the
 operator instead of being guessed.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -91,9 +92,7 @@ class ChallengeWatcher:
         except asyncio.CancelledError:
             raise
         except Exception:
-            self._logger.exception(
-                "Challenge handling failed for account %s", identity.account_id
-            )
+            self._logger.exception("Challenge handling failed for account %s", identity.account_id)
 
     async def _handle(self, event, identity: AccountIdentity) -> None:
         if not event.is_group:
@@ -118,7 +117,9 @@ class ChallengeWatcher:
             # Somebody else's verification. Never notify, never click.
             self._logger.debug(
                 "Ignored foreign verification prompt: account=%s chat=%s message=%s",
-                identity.account_id, event.chat_id, message.id,
+                identity.account_id,
+                event.chat_id,
+                message.id,
             )
             return
 
@@ -148,7 +149,9 @@ class ChallengeWatcher:
             )
             return
 
-        rows = [[str(getattr(button, "text", "")) for button in row] for row in (message.buttons or ())]
+        rows = [
+            [str(getattr(button, "text", "")) for button in row] for row in (message.buttons or ())
+        ]
         target = solve_verification(rows, body)
         if target is None:
             await self._send_log(
@@ -170,7 +173,9 @@ class ChallengeWatcher:
         if failure is None:
             self._logger.info(
                 "Passed Telegram verification: account=%s chat=%s button=%s",
-                identity.account_id, chat_id, button_text,
+                identity.account_id,
+                chat_id,
+                button_text,
             )
             await self._send_log(
                 format_solved_log(
@@ -214,7 +219,9 @@ class ChallengeWatcher:
         except Exception:
             self._logger.debug(
                 "Could not resolve replied message for challenge: account=%s chat=%s",
-                identity.account_id, event.chat_id, exc_info=True,
+                identity.account_id,
+                event.chat_id,
+                exc_info=True,
             )
             return False
         reply_sender_id = None if replied is None else getattr(replied, "sender_id", None)
@@ -223,9 +230,7 @@ class ChallengeWatcher:
     async def _press(self, message, row: int, column: int) -> str | None:
         """Click the inline button; return a short failure reason or ``None``."""
         try:
-            await asyncio.wait_for(
-                message.click(row, column), timeout=_CLICK_TIMEOUT_SECONDS
-            )
+            await asyncio.wait_for(message.click(row, column), timeout=_CLICK_TIMEOUT_SECONDS)
         except FloodWaitError as exc:
             return f"Telegram ограничил нажатие: подождать {int(getattr(exc, 'seconds', 0))} с"
         except asyncio.TimeoutError:

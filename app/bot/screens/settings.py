@@ -1,4 +1,5 @@
 """Settings hub, verification mode, FloodWait policy and logs."""
+
 from __future__ import annotations
 
 from app.bot.core import CANCEL
@@ -25,28 +26,29 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
 from aiogram.types import Message
 
-@router.callback_query(F.data=="nav:settings")
-async def settings_cb(c: CallbackQuery):
-    if not await check_cb(c): return
-    text = (
-        "⚙️ Настройки и справочник\n\n"
-        "👤 Аккаунты — подключение по QR или номеру, статус, пауза, прокси, чаты и обучение.\n"
-        "🤖 ИИ-агенты — провайдеры, API-ключи, модели, глобальный ИИ и назначение агента аккаунтам.\n"
-        "🎭 Персоны — общие стили ответов; изменения применяются ко всем назначенным аккаунтам.\n"
-        "💡 Примеры — образцы входящих сообщений и желаемых ответов для стиля.\n"
 
-        "📡 Каналы — управление каналами внутри карточки каждого аккаунта.\n"
-        "Ответы в ручном режиме показываются в уведомлении и не сохраняются.\n\n"
-        "В карточке аккаунта: «Пауза» временно останавливает работу; «ИИ» включает генерацию; «Режим» выбирает ручную или автоматическую отправку; «Агент» и «Персона» задают модель и стиль; «Прокси» меняет сетевое подключение; «Автообучение» обновляет контекст.\n\n"
-        "API ID/hash, токен бота и ключ шифрования задаются в .env на сервере. Сообщения с кодом и паролем входа удаляются ботом по возможности; не используйте бота, которому не доверяете."
+@router.callback_query(F.data == "nav:settings")
+async def settings_cb(c: CallbackQuery):
+    if not await check_cb(c):
+        return
+    await edit(
+        c,
+        "⚙️ Настройки\n\n"
+        "🎚 Вероятности и паузы — как часто аккаунты отвечают.\n"
+        "⏳ FloodWait — что делать, если Telegram задерживает вступление.\n"
+        "🛡 Проверки — как проходить подтверждения в группах.\n"
+        "🧾 Логи — куда присылать события.\n\n"
+        "Секреты (токен бота, API ID/hash, ключ шифрования) задаются в .env на сервере.",
+        kb(
+            [
+                [("🎚 Вероятности и паузы", "runtime:menu"), ("⏳ FloodWait", "joinpolicy:menu")],
+                [("🛡 Проверки Telegram", "challenge:settings"), ("🧾 Логи", "logs:menu")],
+                [("⬅️ Главное меню", "nav:home")],
+            ]
+        ),
     )
-    await edit(c, text, kb([
-        [("🎚 Вероятность ответов", "runtime:menu")],
-        [("⏳ Поведение при FloodWait", "joinpolicy:menu")],
-        [("🛡 Проверки Telegram", "challenge:settings")],
-        [("🧾 Логи", "logs:menu")],
-        [("⬅️ Главное меню", "nav:home")],
-    ]))
+
+
 @router.callback_query(F.data == "challenge:settings")
 async def challenge_settings(c: CallbackQuery):
     if not await check_cb(c):
@@ -55,23 +57,30 @@ async def challenge_settings(c: CallbackQuery):
     current = {
         ChallengeMode.AUTO: "Авто — проходить сам",
         ChallengeMode.NOTIFY: "Только уведомлять",
-        ChallengeMode.OFF: "Выключено",
+        ChallengeMode.OFF: "Не реагировать",
     }[mode]
-    mark = lambda value: " ✅" if mode is value else ""
+
+    def mark(value: ChallengeMode) -> str:
+        return " ✅" if mode is value else ""
+
     await edit(
         c,
         "🛡 Проверки Telegram\n\n"
         "В группах боты просят подтвердить, что вы человек, и присылают кнопку.\n"
-        "«Авто» — аккаунт сам нажимает нужную кнопку, если проверка адресована ему.\n"
-        "Чужие проверки (для других участников) пропускаются без уведомлений.\n\n"
+        "Авто — аккаунт сам нажимает нужную кнопку, если проверка адресована ему.\n"
+        "Чужие проверки пропускаются молча.\n\n"
         f"Сейчас: {current}",
-        kb([
-            [("🟢 Авто" + mark(ChallengeMode.AUTO), "challenge:set:auto")],
-            [("🔔 Только уведомлять" + mark(ChallengeMode.NOTIFY), "challenge:set:notify")],
-            [("⛔ Выключить" + mark(ChallengeMode.OFF), "challenge:set:off")],
-            [("⬅️ Настройки", "nav:settings")],
-        ]),
+        kb(
+            [
+                [("Авто" + mark(ChallengeMode.AUTO), "challenge:set:auto")],
+                [("Только уведомлять" + mark(ChallengeMode.NOTIFY), "challenge:set:notify")],
+                [("Не реагировать" + mark(ChallengeMode.OFF), "challenge:set:off")],
+                [("⬅️ Настройки", "nav:settings")],
+            ]
+        ),
     )
+
+
 @router.callback_query(F.data.startswith("challenge:set:"))
 async def challenge_settings_save(c: CallbackQuery):
     if not await check_cb(c):
@@ -84,25 +93,31 @@ async def challenge_settings_save(c: CallbackQuery):
     await write_challenge_mode(modes[value])
     await c.answer("Настройка сохранена.")
     await challenge_settings(c)
+
+
 @router.callback_query(F.data == "joinpolicy:menu")
 async def join_floodwait_settings(c: CallbackQuery):
     if not await check_cb(c):
         return
     mode = await get_join_floodwait_mode()
-    current = "Ждать и продолжать" if mode == "wait" else "Остановить вступление"
-    await edit(c,
-        "⏳ Поведение при ограничении Telegram\n\n"
-        f"Сейчас: {current}\n\n"
-        "Если Telegram временно ограничит вступление (FloodWait):\n"
-        "• «Ждать и продолжать» — бот дождётся указанного Telegram времени и повторит текущее вступление. Если ограничение повторится, снова подождёт.\n"
-        "• «Остановить вступление» — бот сразу прекратит текущую попытку и покажет длительность ограничения.\n\n"
-        "Настройка общая для вступления в группы и каналы. Каждое вступление по-прежнему требует отдельного подтверждения.",
-        kb([
-            [("⏳ Ждать и продолжать" + (" ✓" if mode == "wait" else ""), "joinpolicy:set:wait")],
-            [("⛔ Остановить вступление" + (" ✓" if mode == "stop" else ""), "joinpolicy:set:stop")],
-            [("⬅️ Настройки", "nav:settings")],
-        ]),
+    current = "ждать и продолжать" if mode == "wait" else "остановить вступление"
+    await edit(
+        c,
+        "⏳ FloodWait при вступлении\n\n"
+        f"Сейчас: {current}.\n\n"
+        "Ждать — дождаться срока Telegram и повторить попытку.\n"
+        "Остановить — прервать и показать срок ограничения.\n\n"
+        "Каждое вступление всё равно требует подтверждения.",
+        kb(
+            [
+                [("⏳ Ждать и продолжать" + (" ✓" if mode == "wait" else ""), "joinpolicy:set:wait")],
+                [("⛔ Остановить вступление" + (" ✓" if mode == "stop" else ""), "joinpolicy:set:stop")],
+                [("⬅️ Настройки", "nav:settings")],
+            ]
+        ),
     )
+
+
 @router.callback_query(F.data.startswith("joinpolicy:set:"))
 async def join_floodwait_settings_save(c: CallbackQuery):
     if not await check_cb(c):
@@ -120,6 +135,8 @@ async def join_floodwait_settings_save(c: CallbackQuery):
         await db.commit()
     await c.answer("Настройка сохранена.")
     await join_floodwait_settings(c)
+
+
 LOG_CATEGORIES = {
     "main": "📌 Основные логи",
     "replies": "💬 Ответы ИИ",
@@ -127,6 +144,8 @@ LOG_CATEGORIES = {
     "learning": "🧠 Обучение",
     "channels": "📡 Каналы и обсуждения",
 }
+
+
 def log_destinations_from_value(value: str | None) -> list[tuple[int, int | None]]:
     """Parse legacy chat IDs and chat_id:message_thread_id destinations."""
     result: list[tuple[int, int | None]] = []
@@ -143,9 +162,13 @@ def log_destinations_from_value(value: str | None) -> list[tuple[int, int | None
         if destination not in result:
             result.append(destination)
     return result
+
+
 def log_ids_from_value(value: str | None) -> list[int]:
     """Backward-compatible helper for code/tests that only need chat IDs."""
     return list(dict.fromkeys(chat_id for chat_id, _ in log_destinations_from_value(value)))
+
+
 async def logs_menu_text():
     async with SessionFactory() as db:
         rows = {}
@@ -155,63 +178,127 @@ async def logs_menu_text():
             if category == "main" and setting is None and cfg.log_chat_id:
                 destinations = [(cfg.log_chat_id, None)]
             rows[category] = destinations
-    lines = ["🧾 Настройка логов", "", "Для каждого типа событий можно задать несколько получателей. Формат: ID чата или ID чата:ID темы форума. Например: -1004351902275:108.", ""]
+    lines = [
+        "🧾 Логи",
+        "",
+        "Получатели: ID чата или ID чата:ID темы. Несколько — через запятую.",
+        "",
+    ]
     for category, label in LOG_CATEGORIES.items():
         destinations = rows[category]
-        shown = ", ".join(f"{chat_id}" + (f" · тема {thread_id}" if thread_id is not None else "") for chat_id, thread_id in destinations) if destinations else "не настроено"
+        shown = (
+            ", ".join(
+                f"{chat_id}" + (f" · тема {thread_id}" if thread_id is not None else "")
+                for chat_id, thread_id in destinations
+            )
+            if destinations
+            else "не настроено"
+        )
         lines.append(f"{label}: {shown}")
-    lines += ["", "Основные логи по умолчанию используют LOG_CHAT_ID из .env, если отдельный получатель не добавлен."]
+    lines += [
+        "",
+        "📌 Основные — берут LOG_CHAT_ID из .env, пока не добавлен свой получатель.",
+    ]
     return "\n".join(lines)
+
+
 @router.callback_query(F.data == "logs:menu")
 async def logs_menu(c: CallbackQuery):
-    if not await check_cb(c): return
+    if not await check_cb(c):
+        return
     rows = [[(label, f"logs:category:{category}")] for category, label in LOG_CATEGORIES.items()]
     rows += [[("⬅️ Настройки", "nav:settings"), ("🏠 Главное меню", "nav:home")]]
     await edit(c, await logs_menu_text(), kb(rows))
+
+
 @router.callback_query(F.data.startswith("logs:category:"))
 async def logs_category(c: CallbackQuery, category_override: str | None = None):
-    if not await check_cb(c): return
+    if not await check_cb(c):
+        return
     category = category_override or c.data.split(":")[2]
     if category not in LOG_CATEGORIES:
-        await c.answer("Неизвестная категория.", show_alert=True); return
+        await c.answer("Неизвестная категория.", show_alert=True)
+        return
     async with SessionFactory() as db:
         setting = await db.get(AppSetting, f"log_chat_ids_{category}")
         destinations = log_destinations_from_value(setting.value if setting else "")
     if category == "main" and setting is None and cfg.log_chat_id:
         destinations = [(cfg.log_chat_id, None)]
     lines = [LOG_CATEGORIES[category], "", "Получатели этой категории:"]
-    lines += [f"• {chat_id}" + (f" · тема {thread_id}" if thread_id is not None else " · общий чат") for chat_id, thread_id in destinations] if destinations else ["• пока не добавлены"]
+    lines += (
+        [
+            f"• {chat_id}" + (f" · тема {thread_id}" if thread_id is not None else " · общий чат")
+            for chat_id, thread_id in destinations
+        ]
+        if destinations
+        else ["• пока не добавлены"]
+    )
     rows = [[("➕ Добавить чат или тему", f"logs:add:{category}")]]
-    rows += [[(f"➖ Удалить {chat_id}" + (f" · тема {thread_id}" if thread_id is not None else ""), f"logs:remove:{category}:{chat_id}:{thread_id or 0}")] for chat_id, thread_id in destinations]
+    rows += [
+        [
+            (
+                f"➖ Удалить {chat_id}" + (f" · тема {thread_id}" if thread_id is not None else ""),
+                f"logs:remove:{category}:{chat_id}:{thread_id or 0}",
+            )
+        ]
+        for chat_id, thread_id in destinations
+    ]
     rows += [[("⬅️ К списку логов", "logs:menu")]]
     await edit(c, "\n".join(lines), kb(rows))
+
+
 @router.callback_query(F.data.startswith("logs:add:"))
 async def logs_add(c: CallbackQuery, state: FSMContext):
-    if not await check_cb(c): return
+    if not await check_cb(c):
+        return
     category = c.data.split(":")[2]
     if category not in LOG_CATEGORIES:
-        await c.answer("Неизвестная категория.", show_alert=True); return
+        await c.answer("Неизвестная категория.", show_alert=True)
+        return
     await state.clear()
-    await state.update_data(log_category=category, ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data))
+    await state.update_data(
+        log_category=category,
+        ui_chat_id=c.message.chat.id,
+        ui_message_id=c.message.message_id,
+        return_callback=cancel_return_for(c.data),
+    )
     await state.set_state(Flow.log_chat_id)
-    await edit(c, f"{LOG_CATEGORIES[category]}\n\nОтправьте ID чата или супергруппы. Чтобы направлять логи в тему форума, добавьте через двоеточие ID темы.\n\nПримеры:\n-1004351902275 — общий чат\n-1004351902275:108 — тема с ID 108.", CANCEL)
+    await edit(
+        c,
+        f"{LOG_CATEGORIES[category]}\n\nОтправьте ID чата или супергруппы. Чтобы направлять логи в тему форума, добавьте через двоеточие ID темы.\n\nПримеры:\n-1004351902275 — общий чат\n-1004351902275:108 — тема с ID 108.",
+        CANCEL,
+    )
+
+
 @router.message(Flow.log_chat_id)
 async def logs_add_save(m: Message, state: FSMContext):
-    if not await check_msg(m) or not await private(m): return
+    if not await check_msg(m) or not await private(m):
+        return
     data = await state.get_data()
     category = data.get("log_category")
     parsed = log_destinations_from_value(m.text or "")
     if len(parsed) != 1:
-        await prompt_message(m, state, "Неверный формат. Отправьте ID чата или пару ID_чата:ID_темы, например -1004351902275:108.")
+        await prompt_message(
+            m,
+            state,
+            "Неверный формат. Отправьте ID чата или пару ID_чата:ID_темы, например -1004351902275:108.",
+        )
         return
     chat_id, thread_id = parsed[0]
     await delete_msg(m)
     try:
         kwargs = {"message_thread_id": thread_id} if thread_id is not None else {}
-        await m.bot.send_message(chat_id, "✅ Проверка связи: этот получатель добавлен для логов AtcivPerson.", **kwargs)
+        await m.bot.send_message(
+            chat_id, "✅ Проверка связи: этот получатель добавлен для логов AtcivPerson.", **kwargs
+        )
     except Exception as exc:
         target = f"{chat_id}:{thread_id}" if thread_id is not None else str(chat_id)
-        await finish_prompt(m, state, f"Не удалось отправить тестовое сообщение получателю {target}. Проверьте ID, ID темы и права бота.\nОшибка: {type(exc).__name__}: {str(exc)[:300]}", kb([[("↩️ К категории", f"logs:category:{category}")], [("🧾 Все логи", "logs:menu")]]))
+        await finish_prompt(
+            m,
+            state,
+            f"Не удалось отправить тестовое сообщение получателю {target}. Проверьте ID, ID темы и права бота.\nОшибка: {type(exc).__name__}: {str(exc)[:300]}",
+            kb([[("↩️ К категории", f"logs:category:{category}")], [("🧾 Все логи", "logs:menu")]]),
+        )
         return
     async with SessionFactory() as db:
         key = f"log_chat_ids_{category}"
@@ -221,31 +308,50 @@ async def logs_add_save(m: Message, state: FSMContext):
             destinations = [(cfg.log_chat_id, None)]
         if (chat_id, thread_id) not in destinations:
             destinations.append((chat_id, thread_id))
-        value = ",".join(f"{target_chat}:{target_thread}" if target_thread is not None else str(target_chat) for target_chat, target_thread in destinations)
-        if setting: setting.value = value
-        else: db.add(AppSetting(key=key, value=value))
+        value = ",".join(
+            f"{target_chat}:{target_thread}" if target_thread is not None else str(target_chat)
+            for target_chat, target_thread in destinations
+        )
+        if setting:
+            setting.value = value
+        else:
+            db.add(AppSetting(key=key, value=value))
         await db.commit()
     target = f"{chat_id} · тема {thread_id}" if thread_id is not None else str(chat_id)
-    await finish_prompt(m, state, f"✅ Получатель {target} добавлен в категорию «{LOG_CATEGORIES[category]}».", kb([[("↩️ К категории", f"logs:category:{category}")], [("🧾 Все логи", "logs:menu")]]))
+    await finish_prompt(
+        m,
+        state,
+        f"✅ Получатель {target} добавлен в категорию «{LOG_CATEGORIES[category]}».",
+        kb([[("↩️ К категории", f"logs:category:{category}")], [("🧾 Все логи", "logs:menu")]]),
+    )
+
+
 @router.callback_query(F.data.startswith("logs:remove:"))
 async def logs_remove(c: CallbackQuery):
-    if not await check_cb(c): return
+    if not await check_cb(c):
+        return
     parts = c.data.split(":")
     if len(parts) != 5:
-        await c.answer("Некорректная команда.", show_alert=True); return
+        await c.answer("Некорректная команда.", show_alert=True)
+        return
     _, _, category, chat_raw, thread_raw = parts
     if category not in LOG_CATEGORIES:
-        await c.answer("Неизвестная категория.", show_alert=True); return
+        await c.answer("Неизвестная категория.", show_alert=True)
+        return
     try:
         destination = (int(chat_raw), int(thread_raw) or None)
     except ValueError:
-        await c.answer("Некорректный получатель.", show_alert=True); return
+        await c.answer("Некорректный получатель.", show_alert=True)
+        return
     async with SessionFactory() as db:
         key = f"log_chat_ids_{category}"
         setting = await db.get(AppSetting, key)
         destinations = log_destinations_from_value(setting.value if setting else "")
         destinations = [item for item in destinations if item != destination]
-        value = ",".join(f"{chat_id}:{thread_id}" if thread_id is not None else str(chat_id) for chat_id, thread_id in destinations)
+        value = ",".join(
+            f"{chat_id}:{thread_id}" if thread_id is not None else str(chat_id)
+            for chat_id, thread_id in destinations
+        )
         if setting:
             setting.value = value
         else:

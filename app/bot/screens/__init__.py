@@ -4,27 +4,31 @@ Every module registers its handlers on the shared router from
 :mod:`app.bot.core`. Import order is the handler priority order, so this file is the
 single place that decides which screen answers a callback first.
 """
+
 from __future__ import annotations
 
 from app.bot import navigation
 from app.bot.screens import (  # noqa: F401  (importing registers handlers)
-    account_messages,
-    account_network,
-    accounts,
-    agents,
-    channel_search,
-    channels,
-    chats,
-    examples,
-    learning,
-    login,
-    personas,
-    profile,
-    runtime,
-    settings,
     start,
     tools,
+    profile,
     triggers,
+    settings,
+    runtime,
+    accounts,
+    login,
+    account_card,
+    account_messages,
+    account_network,
+    account_controls,
+    account_menus,
+    learning,
+    agents,
+    personas,
+    examples,
+    chats,
+    channels,
+    channel_search,
 )
 
 
@@ -35,12 +39,16 @@ def _part(data: str | None, index: int) -> int:
 def _register_returns() -> None:
     """Screens reachable again after a cancelled input step."""
     navigation.register_screen("tool:menu", tools.tools_menu)
+    navigation.register_screen("tool:account-settings", tools.account_settings_start)
     navigation.register_screen("trigger:global", lambda c: triggers.trigger_screen(c, "global"))
     navigation.register_screen(
         "trigger:account:", lambda c: triggers.trigger_screen(c, "account", _part(c.data, 2))
     )
     navigation.register_screen("acc:list", accounts.acc_list)
-    navigation.register_screen("acc:view:", accounts.acc_view)
+    navigation.register_screen("acc:view:", account_card.acc_view)
+    navigation.register_screen("acc:menu:ai:", account_menus.acc_ai_menu)
+    navigation.register_screen("acc:menu:learn:", account_menus.acc_learn_menu)
+    navigation.register_screen("acc:profile:", account_menus.acc_profile)
     navigation.register_screen(
         "acc:runtime:menu:", lambda c: runtime.account_runtime_menu(c, _part(c.data, 3))
     )

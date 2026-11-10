@@ -1,4 +1,5 @@
 """Chat discovery, joining and per-account chat toggles."""
+
 from __future__ import annotations
 
 from app.bot.core import CANCEL
@@ -46,9 +47,10 @@ from telethon.tl.types import ChatInviteAlready
 import asyncio
 import logging
 
+
 def _candidate_keyboard(aid: int, candidates: list[dict], offset: int = 0):
     rows = []
-    page = candidates[offset:offset + 12]
+    page = candidates[offset : offset + 12]
     for i, item in enumerate(page, start=offset):
         title = str(item.get("title") or "Группа")[:30]
         members = int(item.get("members") or 0)
@@ -65,13 +67,18 @@ def _candidate_keyboard(aid: int, candidates: list[dict], offset: int = 0):
         rows.append([("🔗 Показать ссылками", f"chat:links:{aid}")])
     rows += [[("⬅️ Инструменты", "tool:menu"), ("🏠 Главное меню", "nav:home")]]
     return kb(rows)
+
+
 async def _verify_group_candidates_isolated(aid: int, candidates: list[dict], concurrency: int = 4):
     """Verify search results on a snapshot, never opening the worker's live session."""
     async with isolated_account_client(aid) as (_account, client):
         return await verify_group_candidates(client, candidates, concurrency=concurrency)
+
+
 @router.callback_query(F.data.startswith("chat:search:"))
 async def chat_search_start(c, state: FSMContext):
-    if not await check_cb(c): return
+    if not await check_cb(c):
+        return
     aid = int(c.data.split(":")[2])
     await state.clear()
     await state.update_data(
@@ -91,9 +98,12 @@ async def chat_search_start(c, state: FSMContext):
         "каналы, профили, боты и нерабочие ссылки исключаются.",
         CANCEL,
     )
+
+
 @router.message(Flow.chat_search_query)
 async def chat_search_query(m: Message, state: FSMContext):
-    if not await check_msg(m) or not await private(m): return
+    if not await check_msg(m) or not await private(m):
+        return
     data = await state.get_data()
     query = " ".join((m.text or "").split())
     await delete_msg(m)
@@ -102,10 +112,13 @@ async def chat_search_query(m: Message, state: FSMContext):
         return
     query = query[:100]
     aid = int(data.get("chat_search_account_id", 0))
-    account_ids = list(dict.fromkeys(
-        int(value) for value in (data.get("chat_search_account_ids") or [aid])
-        if str(value).isdigit()
-    ))
+    account_ids = list(
+        dict.fromkeys(
+            int(value)
+            for value in (data.get("chat_search_account_ids") or [aid])
+            if str(value).isdigit()
+        )
+    )
     if aid not in account_ids:
         account_ids.insert(0, aid)
     anchor = {"ui_chat_id": data.get("ui_chat_id"), "ui_message_id": data.get("ui_message_id")}
@@ -122,6 +135,7 @@ async def chat_search_query(m: Message, state: FSMContext):
     )
 
     try:
+
         async def search_one_account(search_aid: int):
             try:
                 async with SessionFactory() as db:
@@ -138,18 +152,16 @@ async def chat_search_query(m: Message, state: FSMContext):
 
         async def search_accounts():
             semaphore = asyncio.Semaphore(3)
+
             async def limited(search_aid):
                 async with semaphore:
                     return await search_one_account(search_aid)
+
             results = await asyncio.gather(
                 *(limited(search_aid) for search_aid in account_ids),
                 return_exceptions=True,
             )
-            return [
-                item
-                for batch in results if isinstance(batch, list)
-                for item in batch
-            ]
+            return [item for batch in results if isinstance(batch, list) for item in batch]
 
         native_task = asyncio.create_task(search_accounts())
         web_task = asyncio.create_task(search_web_groups(query, limit=600, pages_per_query=5))
@@ -166,12 +178,14 @@ async def chat_search_query(m: Message, state: FSMContext):
             key = link.casefold()
             if key in combined:
                 current = combined[key]
-                current["score"] = max(
-                    int(current.get("score") or 0), int(item.get("score") or 0)
+                current["score"] = max(int(current.get("score") or 0), int(item.get("score") or 0))
+                current["source"] = ", ".join(
+                    dict.fromkeys(
+                        (current.get("source", "") + ", " + item.get("source", ""))
+                        .strip(", ")
+                        .split(", ")
+                    )
                 )
-                current["source"] = ", ".join(dict.fromkeys(
-                    (current.get("source", "") + ", " + item.get("source", "")).strip(", ").split(", ")
-                ))
             else:
                 combined[key] = item
 
@@ -186,9 +200,7 @@ async def chat_search_query(m: Message, state: FSMContext):
             "Каналы и нерабочие ссылки отбрасываются.",
             kb([[("⬅️ Инструменты", "tool:menu")]]),
         )
-        candidates = await _verify_group_candidates_isolated(
-            aid, raw_candidates, concurrency=4
-        )
+        candidates = await _verify_group_candidates_isolated(aid, raw_candidates, concurrency=4)
     except Exception as exc:
         await edit_anchor(
             m.bot,
@@ -196,13 +208,19 @@ async def chat_search_query(m: Message, state: FSMContext):
             f"❌ Не удалось выполнить поиск или проверить результаты.\n\n"
             f"{type(exc).__name__}: {str(exc)[:220]}\n\n"
             "Проверьте подключение аккаунта и повторите поиск.",
-            kb([
-                [(
-                    "🔎 Повторить всеми аккаунтами" if len(account_ids) > 1 else "🔎 Повторить поиск",
-                    "tool:groups:all" if len(account_ids) > 1 else f"chat:search:{aid}",
-                )],
-                [("⬅️ Инструменты", "tool:menu")],
-            ]),
+            kb(
+                [
+                    [
+                        (
+                            "🔎 Повторить всеми аккаунтами"
+                            if len(account_ids) > 1
+                            else "🔎 Повторить поиск",
+                            "tool:groups:all" if len(account_ids) > 1 else f"chat:search:{aid}",
+                        )
+                    ],
+                    [("⬅️ Инструменты", "tool:menu")],
+                ]
+            ),
         )
         return
     CHAT_CANDIDATES[(m.from_user.id, aid)] = candidates
@@ -214,13 +232,19 @@ async def chat_search_query(m: Message, state: FSMContext):
             "Это не означает, что таких групп нет: поисковики могут ограничивать выдачу, "
             "а Telegram не предоставляет полный каталог всех публичных групп. "
             "Попробуйте синонимы, более короткий запрос или другую формулировку.",
-            kb([
-                [(
-                    "🔎 Новый поиск всеми аккаунтами" if len(account_ids) > 1 else "🔎 Новый запрос",
-                    "tool:groups:all" if len(account_ids) > 1 else f"chat:search:{aid}",
-                )],
-                [("⬅️ Инструменты", "tool:menu")],
-            ]),
+            kb(
+                [
+                    [
+                        (
+                            "🔎 Новый поиск всеми аккаунтами"
+                            if len(account_ids) > 1
+                            else "🔎 Новый запрос",
+                            "tool:groups:all" if len(account_ids) > 1 else f"chat:search:{aid}",
+                        )
+                    ],
+                    [("⬅️ Инструменты", "tool:menu")],
+                ]
+            ),
         )
         return
 
@@ -235,27 +259,31 @@ async def chat_search_query(m: Message, state: FSMContext):
     for i, item in enumerate(candidates[:12], 1):
         members = (
             f"{int(item.get('members') or 0):,}".replace(",", " ") + " участников"
-            if item.get("members") else "участники: неизвестно"
+            if item.get("members")
+            else "участники: неизвестно"
         )
-        kind_label = "супергруппа" if item.get("kind") == "supergroup" else (
-            "приватная группа" if item.get("kind") == "invite" else "группа"
+        kind_label = (
+            "супергруппа"
+            if item.get("kind") == "supergroup"
+            else ("приватная группа" if item.get("kind") == "invite" else "группа")
         )
-        lines.append(
-            f"{i}. {str(item.get('title') or 'Группа')[:75]} · {members} · {kind_label}"
-        )
-    await edit_anchor(
-        m.bot, anchor, "\n".join(lines), _candidate_keyboard(aid, candidates, 0)
-    )
+        lines.append(f"{i}. {str(item.get('title') or 'Группа')[:75]} · {members} · {kind_label}")
+    await edit_anchor(m.bot, anchor, "\n".join(lines), _candidate_keyboard(aid, candidates, 0))
+
+
 @router.callback_query(F.data.startswith("chat:links:"))
 async def chat_candidate_links(c):
-    if not await check_cb(c): return
+    if not await check_cb(c):
+        return
     aid = int(c.data.split(":")[2])
     candidates = CHAT_CANDIDATES.get((c.from_user.id, aid), [])
-    links = list(dict.fromkeys(
-        str(item.get("link") or "").strip()
-        for item in candidates
-        if item.get("verified") and item.get("link")
-    ))
+    links = list(
+        dict.fromkeys(
+            str(item.get("link") or "").strip()
+            for item in candidates
+            if item.get("verified") and item.get("link")
+        )
+    )
     if not links:
         await c.answer("Нет проверенных ссылок. Запустите поиск заново.", show_alert=True)
         return
@@ -278,66 +306,122 @@ async def chat_candidate_links(c):
         if len(chunks) > 1:
             chunk = f"📄 Часть {index}/{len(chunks)}\n" + chunk
         await c.message.answer(chunk, disable_web_page_preview=True)
+
+
 @router.callback_query(F.data.startswith("chat:discover:"))
 async def chat_discover_links(c):
-    if not await check_cb(c): return
+    if not await check_cb(c):
+        return
     aid = int(c.data.split(":")[2])
     await c.answer("Запущено глубокое сканирование. Это может занять время.")
     anchor = {"ui_chat_id": c.message.chat.id, "ui_message_id": c.message.message_id}
-    await edit_anchor(c.bot, anchor, f"🧭 Глубокий поиск ссылок · аккаунт #{aid}\n\nПросматриваю до 5 000 последних сообщений в каждой группе, где состоит аккаунт. Сканирование может занять значительное время.", kb([[("⬅️ К аккаунту", f"acc:view:{aid}")]]))
+    await edit_anchor(
+        c.bot,
+        anchor,
+        f"🧭 Глубокий поиск ссылок · аккаунт #{aid}\n\nПросматриваю до 5 000 последних сообщений в каждой группе, где состоит аккаунт. Сканирование может занять значительное время.",
+        kb([[("⬅️ К аккаунту", f"acc:view:{aid}")]]),
+    )
     scan_stats = {"groups": 0, "messages": 0, "links": 0}
+
     async def report_progress(groups, messages, links):
         scan_stats.update(groups=groups, messages=messages, links=links)
         if messages % 5000 != 0 and messages != 0:
             return
-        progress_text = f"🧭 Глубокий поиск ссылок · аккаунт #{aid}\n\nГрупп обработано: {groups}\nСообщений просмотрено: {messages:,}\nУникальных ссылок найдено: {links}\n\nСканирование продолжается…".replace(",", " ")
+        progress_text = f"🧭 Глубокий поиск ссылок · аккаунт #{aid}\n\nГрупп обработано: {groups}\nСообщений просмотрено: {messages:,}\nУникальных ссылок найдено: {links}\n\nСканирование продолжается…".replace(
+            ",", " "
+        )
         await edit_anchor(c.bot, anchor, progress_text, kb([[("⬅️ К аккаунту", f"acc:view:{aid}")]]))
+
     try:
         async with isolated_account_client(aid) as (_account, client):
-            candidates = await find_invite_links_in_dialogs(client, dialog_limit=None, messages_per_dialog=5000, progress_callback=report_progress)
+            candidates = await find_invite_links_in_dialogs(
+                client,
+                dialog_limit=None,
+                messages_per_dialog=5000,
+                progress_callback=report_progress,
+            )
     except Exception as exc:
-        await edit_anchor(c.bot, {"ui_chat_id": c.message.chat.id, "ui_message_id": c.message.message_id}, f"Не удалось найти ссылки: {str(exc)[:180]}", kb([[("⬅️ К аккаунту", f"acc:view:{aid}")]]))
+        await edit_anchor(
+            c.bot,
+            {"ui_chat_id": c.message.chat.id, "ui_message_id": c.message.message_id},
+            f"Не удалось найти ссылки: {str(exc)[:180]}",
+            kb([[("⬅️ К аккаунту", f"acc:view:{aid}")]]),
+        )
         return
     CHAT_CANDIDATES[(c.from_user.id, aid)] = candidates
     if not candidates:
-        await edit_anchor(c.bot, {"ui_chat_id": c.message.chat.id, "ui_message_id": c.message.message_id}, "🧭 Подходящих ссылок в последних сообщениях доступных групп не найдено.\n\nПоиск проверяет недавние сообщения в группах, к которым аккаунт уже имеет доступ; он не читает закрытые чаты, где аккаунт не состоит.", kb([[("🔎 Поиск публичных групп", f"chat:search:{aid}")], [("⬅️ К аккаунту", f"acc:view:{aid}")]]))
+        await edit_anchor(
+            c.bot,
+            {"ui_chat_id": c.message.chat.id, "ui_message_id": c.message.message_id},
+            "🧭 Подходящих ссылок в последних сообщениях доступных групп не найдено.\n\nПоиск проверяет недавние сообщения в группах, к которым аккаунт уже имеет доступ; он не читает закрытые чаты, где аккаунт не состоит.",
+            kb(
+                [
+                    [("🔎 Поиск публичных групп", f"chat:search:{aid}")],
+                    [("⬅️ К аккаунту", f"acc:view:{aid}")],
+                ]
+            ),
+        )
         return
     lines = [
         f"🧭 Найдено ссылок: {len(candidates)} · аккаунт #{aid}",
-        f"Групп обработано: {scan_stats['groups']} · сообщений просмотрено: {scan_stats['messages']:,}".replace(",", " "),
+        f"Групп обработано: {scan_stats['groups']} · сообщений просмотрено: {scan_stats['messages']:,}".replace(
+            ",", " "
+        ),
         "Просмотрено до 5 000 последних сообщений в каждой доступной группе.",
         "",
         "Источник показывает чат, в котором была найдена ссылка. Каждая ссылка будет проверена перед вступлением.",
     ]
     for i, item in enumerate(candidates[:12], 1):
         lines.append(f"{i}. {item['link'][:75]}\n   найдено в: {item.get('source', 'сообщение')}")
-    await edit_anchor(c.bot, {"ui_chat_id": c.message.chat.id, "ui_message_id": c.message.message_id}, "\n".join(lines), _candidate_keyboard(aid, candidates, 0))
+    await edit_anchor(
+        c.bot,
+        {"ui_chat_id": c.message.chat.id, "ui_message_id": c.message.message_id},
+        "\n".join(lines),
+        _candidate_keyboard(aid, candidates, 0),
+    )
+
+
 @router.callback_query(F.data.startswith("chat:page:"))
 async def chat_candidate_page(c):
-    if not await check_cb(c): return
+    if not await check_cb(c):
+        return
     _, _, aid_raw, offset_raw = c.data.split(":")
     aid, offset = int(aid_raw), max(0, int(offset_raw))
     candidates = CHAT_CANDIDATES.get((c.from_user.id, aid), [])
     if not candidates:
-        await edit(c, "Результаты больше не сохранены. Запустите поиск ещё раз.", kb([[("🔎 Поиск групп", f"chat:search:{aid}")], [("⬅️ К аккаунту", f"acc:view:{aid}")]]))
+        await edit(
+            c,
+            "Результаты больше не сохранены. Запустите поиск ещё раз.",
+            kb([[("🔎 Поиск групп", f"chat:search:{aid}")], [("⬅️ К аккаунту", f"acc:view:{aid}")]]),
+        )
         return
-    page = candidates[offset:offset + 12]
-    lines = [f"Найденные группы · аккаунт #{aid}", f"Показаны {offset + 1}–{min(offset + 12, len(candidates))} из {len(candidates)}", "", "Выберите результат для проверки."]
+    page = candidates[offset : offset + 12]
+    lines = [
+        f"Найденные группы · аккаунт #{aid}",
+        f"Показаны {offset + 1}–{min(offset + 12, len(candidates))} из {len(candidates)}",
+        "",
+        "Выберите результат для проверки.",
+    ]
     for i, item in enumerate(page, start=offset + 1):
         lines.append(f"{i}. {str(item.get('title') or item.get('link') or 'Группа')[:70]}")
     await edit(c, "\n".join(lines), _candidate_keyboard(aid, candidates, offset))
+
+
 @router.callback_query(F.data.startswith("chat:candidate:"))
 async def chat_candidate_preview(c):
-    if not await check_cb(c): return
+    if not await check_cb(c):
+        return
     _, _, aid_raw, index_raw = c.data.split(":")
     aid, index = int(aid_raw), int(index_raw)
     candidates = CHAT_CANDIDATES.get((c.from_user.id, aid), [])
     if index < 0 or index >= len(candidates):
-        await c.answer("Результаты устарели. Запустите поиск ещё раз.", show_alert=True); return
+        await c.answer("Результаты устарели. Запустите поиск ещё раз.", show_alert=True)
+        return
     item = candidates[index]
     link = item.get("link")
     if not link:
-        await c.answer("У этой группы нет публичной ссылки.", show_alert=True); return
+        await c.answer("У этой группы нет публичной ссылки.", show_alert=True)
+        return
     try:
         kind, target = parse_chat_link(link)
         async with isolated_account_client(aid) as (_account, client):
@@ -360,40 +444,97 @@ async def chat_candidate_preview(c):
                     entity_id = utils.get_peer_id(entity)
                     already = True
                 else:
-                    if getattr(invite, "channel", False) and not getattr(invite, "megagroup", False):
+                    if getattr(invite, "channel", False) and not getattr(
+                        invite, "megagroup", False
+                    ):
                         raise ValueError("Ссылка ведёт на канал, а не группу.")
                     title = getattr(invite, "title", None) or "Закрытая группа"
-                    members = len(getattr(invite, "participants", []) or []) or int(getattr(invite, "participants_count", 0) or 0)
+                    members = len(getattr(invite, "participants", []) or []) or int(
+                        getattr(invite, "participants_count", 0) or 0
+                    )
                     entity_id = None
     except Exception as exc:
-        await edit(c, f"Не удалось проверить ссылку:\n{str(exc)[:220]}", kb([[("⬅️ К результатам", f"chat:results:{aid}")], [("⬅️ К аккаунту", f"acc:view:{aid}")]]))
+        await edit(
+            c,
+            f"Не удалось проверить ссылку:\n{str(exc)[:220]}",
+            kb(
+                [
+                    [("⬅️ К результатам", f"chat:results:{aid}")],
+                    [("⬅️ К аккаунту", f"acc:view:{aid}")],
+                ]
+            ),
+        )
         return
-    CHAT_PENDING_JOIN[(c.from_user.id, aid)] = {"link": link, "kind": kind, "target": target, "title": title, "members": members, "entity_id": entity_id, "already": already}
-    status = "Аккаунт уже состоит в группе." if already else "Вступление произойдёт только после вашего подтверждения."
-    await edit(c, f"👥 {title}\nУчастников: {members or 'неизвестно'}\nСсылка: {link}\n\n{status}\n\nПроверьте название и ссылку перед вступлением.", kb([[("✅ Подтвердить вступление", f"chat:joinconfirm:{aid}")], [("⬅️ К результатам", f"chat:results:{aid}")], [("⬅️ К аккаунту", f"acc:view:{aid}")]]))
+    CHAT_PENDING_JOIN[(c.from_user.id, aid)] = {
+        "link": link,
+        "kind": kind,
+        "target": target,
+        "title": title,
+        "members": members,
+        "entity_id": entity_id,
+        "already": already,
+    }
+    status = (
+        "Аккаунт уже состоит в группе."
+        if already
+        else "Вступление произойдёт только после вашего подтверждения."
+    )
+    await edit(
+        c,
+        f"👥 {title}\nУчастников: {members or 'неизвестно'}\nСсылка: {link}\n\n{status}\n\nПроверьте название и ссылку перед вступлением.",
+        kb(
+            [
+                [("✅ Подтвердить вступление", f"chat:joinconfirm:{aid}")],
+                [("⬅️ К результатам", f"chat:results:{aid}")],
+                [("⬅️ К аккаунту", f"acc:view:{aid}")],
+            ]
+        ),
+    )
+
+
 @router.callback_query(F.data.startswith("chat:results:"))
 async def chat_results_back(c):
-    if not await check_cb(c): return
+    if not await check_cb(c):
+        return
     aid = int(c.data.split(":")[2])
     candidates = CHAT_CANDIDATES.get((c.from_user.id, aid), [])
     if not candidates:
-        await edit(c, "Результаты больше не сохранены. Запустите поиск ещё раз.", kb([[("🔎 Поиск групп", f"chat:search:{aid}")], [("⬅️ К аккаунту", f"acc:view:{aid}")]]))
+        await edit(
+            c,
+            "Результаты больше не сохранены. Запустите поиск ещё раз.",
+            kb([[("🔎 Поиск групп", f"chat:search:{aid}")], [("⬅️ К аккаунту", f"acc:view:{aid}")]]),
+        )
         return
     lines = [f"Найденные кандидаты · аккаунт #{aid}", "", "Выберите группу для проверки."]
     for i, item in enumerate(candidates[:12], 1):
         lines.append(f"{i}. {str(item.get('title') or item.get('link') or 'Группа')[:70]}")
     await edit(c, "\n".join(lines), _candidate_keyboard(aid, candidates, 0))
+
+
 @router.callback_query(F.data.startswith("chat:joinlink:"))
 async def chat_join_link_start(c, state: FSMContext):
-    if not await check_cb(c): return
+    if not await check_cb(c):
+        return
     aid = int(c.data.split(":")[2])
     await state.clear()
-    await state.update_data(ui_chat_id=c.message.chat.id, ui_message_id=c.message.message_id, return_callback=cancel_return_for(c.data), chat_join_account_id=aid)
+    await state.update_data(
+        ui_chat_id=c.message.chat.id,
+        ui_message_id=c.message.message_id,
+        return_callback=cancel_return_for(c.data),
+        chat_join_account_id=aid,
+    )
     await state.set_state(Flow.chat_join_link)
-    await edit(c, f"🔗 Вступление в группу или канал · аккаунт #{aid}\n\nОтправьте публичную ссылку t.me/username или пригласительную ссылку t.me/+… / t.me/joinchat/…. Поддерживаются группы, супергруппы и каналы — как публичные, так и приватные.\n\nЯ автоматически определю тип сообщества, проверю ссылку и покажу предпросмотр. Вступление или подписка произойдёт только после вашего отдельного подтверждения.", CANCEL)
+    await edit(
+        c,
+        f"🔗 Вступление в группу или канал · аккаунт #{aid}\n\nОтправьте публичную ссылку t.me/username или пригласительную ссылку t.me/+… / t.me/joinchat/…. Поддерживаются группы, супергруппы и каналы — как публичные, так и приватные.\n\nЯ автоматически определю тип сообщества, проверю ссылку и покажу предпросмотр. Вступление или подписка произойдёт только после вашего отдельного подтверждения.",
+        CANCEL,
+    )
+
+
 @router.message(Flow.chat_join_link)
 async def chat_join_link_input(m: Message, state: FSMContext):
-    if not await check_msg(m) or not await private(m): return
+    if not await check_msg(m) or not await private(m):
+        return
     data = await state.get_data()
     raw = (m.text or "").strip()
     await delete_msg(m)
@@ -405,7 +546,9 @@ async def chat_join_link_input(m: Message, state: FSMContext):
     aid = int(data.get("chat_join_account_id", 0))
     anchor = {"ui_chat_id": data.get("ui_chat_id"), "ui_message_id": data.get("ui_message_id")}
     await state.clear()
-    CHAT_CANDIDATES[(m.from_user.id, aid)] = [{"title": raw[:80], "link": raw, "source": "Введено вручную"}]
+    CHAT_CANDIDATES[(m.from_user.id, aid)] = [
+        {"title": raw[:80], "link": raw, "source": "Введено вручную"}
+    ]
     # Reuse the same guarded preview flow as search results.
     CHAT_PENDING_JOIN.pop((m.from_user.id, aid), None)
     CHANNEL_PENDING_JOIN.pop((m.from_user.id, aid), None)
@@ -440,65 +583,90 @@ async def chat_join_link_input(m: Message, state: FSMContext):
                     title = getattr(invite, "title", None) or (
                         "Приватный канал" if is_channel else "Закрытая группа"
                     )
-                    members = (
-                        len(getattr(invite, "participants", []) or [])
-                        or int(getattr(invite, "participants_count", 0) or 0)
+                    members = len(getattr(invite, "participants", []) or []) or int(
+                        getattr(invite, "participants_count", 0) or 0
                     )
                     entity_id = None
     except Exception as exc:
         await edit_anchor(
-            m.bot, anchor, f"Не удалось проверить ссылку:\n{str(exc)[:220]}",
-            kb([
-                [("🔗 Ввести другую ссылку", f"chat:joinlink:{aid}")],
-                [("⬅️ К аккаунту", f"acc:view:{aid}")],
-            ]),
+            m.bot,
+            anchor,
+            f"Не удалось проверить ссылку:\n{str(exc)[:220]}",
+            kb(
+                [
+                    [("🔗 Ввести другую ссылку", f"chat:joinlink:{aid}")],
+                    [("⬅️ К аккаунту", f"acc:view:{aid}")],
+                ]
+            ),
         )
         return
 
     if is_channel:
         CHANNEL_PENDING_JOIN[(m.from_user.id, aid)] = {
-            "link": raw, "kind": kind, "target": target, "title": title,
-            "members": members, "entity_id": entity_id, "already": already,
+            "link": raw,
+            "kind": kind,
+            "target": target,
+            "title": title,
+            "members": members,
+            "entity_id": entity_id,
+            "already": already,
         }
         status = (
             "Аккаунт уже подписан на канал."
-            if already else "Подписка произойдёт только после отдельного подтверждения."
+            if already
+            else "Подписка произойдёт только после отдельного подтверждения."
         )
         await edit_anchor(
-            m.bot, anchor,
+            m.bot,
+            anchor,
             f"📣 {title}\nПодписчиков: {members or 'неизвестно'}\nСсылка: {raw}\n\n{status}",
-            kb([
-                [("✅ Подтвердить подписку", f"channel:joinconfirm:{aid}")],
-                [("🔗 Другая ссылка", f"chat:joinlink:{aid}")],
-                [("⬅️ К аккаунту", f"acc:view:{aid}")],
-            ]),
+            kb(
+                [
+                    [("✅ Подтвердить подписку", f"channel:joinconfirm:{aid}")],
+                    [("🔗 Другая ссылка", f"chat:joinlink:{aid}")],
+                    [("⬅️ К аккаунту", f"acc:view:{aid}")],
+                ]
+            ),
         )
         return
 
     CHAT_PENDING_JOIN[(m.from_user.id, aid)] = {
-        "link": raw, "kind": kind, "target": target, "title": title,
-        "members": members, "entity_id": entity_id, "already": already,
+        "link": raw,
+        "kind": kind,
+        "target": target,
+        "title": title,
+        "members": members,
+        "entity_id": entity_id,
+        "already": already,
     }
     status = (
         "Аккаунт уже состоит в группе."
-        if already else "Вступление произойдёт только после подтверждения."
+        if already
+        else "Вступление произойдёт только после подтверждения."
     )
     await edit_anchor(
-        m.bot, anchor,
+        m.bot,
+        anchor,
         f"👥 {title}\nУчастников: {members or 'неизвестно'}\nСсылка: {raw}\n\n{status}",
-        kb([
-            [("✅ Подтвердить вступление", f"chat:joinconfirm:{aid}")],
-            [("🔗 Другая ссылка", f"chat:joinlink:{aid}")],
-            [("⬅️ К аккаунту", f"acc:view:{aid}")],
-        ]),
+        kb(
+            [
+                [("✅ Подтвердить вступление", f"chat:joinconfirm:{aid}")],
+                [("🔗 Другая ссылка", f"chat:joinlink:{aid}")],
+                [("⬅️ К аккаунту", f"acc:view:{aid}")],
+            ]
+        ),
     )
+
+
 @router.callback_query(F.data.startswith("chat:joinconfirm:"))
 async def chat_join_confirm(c):
-    if not await check_cb(c): return
+    if not await check_cb(c):
+        return
     aid = int(c.data.split(":")[2])
     pending = CHAT_PENDING_JOIN.get((c.from_user.id, aid))
     if not pending:
-        await c.answer("Предпросмотр устарел. Проверьте ссылку ещё раз.", show_alert=True); return
+        await c.answer("Предпросмотр устарел. Проверьте ссылку ещё раз.", show_alert=True)
+        return
     try:
         async with isolated_account_client(aid) as (_account, client):
             me = await client.get_me()
@@ -510,7 +678,11 @@ async def chat_join_confirm(c):
                 )
             logging.info(
                 "Chat join started: account_id=%s telegram_user_id=%s username=%s kind=%s already=%s",
-                aid, int(me.id), getattr(me, "username", None), pending.get("kind"), pending.get("already", False),
+                aid,
+                int(me.id),
+                getattr(me, "username", None),
+                pending.get("kind"),
+                pending.get("already", False),
             )
             entity = None
             if pending.get("already") and pending.get("entity_id"):
@@ -519,23 +691,44 @@ async def chat_join_confirm(c):
                 entity = await client.get_entity(pending["target"])
                 if not group_entity(entity):
                     raise ValueError("Ссылка ведёт не на группу.")
+
                 async def report_floodwait(seconds):
-                    await edit(c,
+                    await edit(
+                        c,
                         f"⏳ Telegram временно ограничил вступления. Жду {seconds} сек., затем повторю вступление в группу «{pending['title']}»…",
                         kb([[("⬅️ К аккаунту", f"acc:view:{aid}")]]),
                     )
-                join_result = await perform_join_request(aid, client, JoinChannelRequest(entity), report_floodwait)
-                logging.info("Chat join RPC accepted: account_id=%s telegram_user_id=%s request=JoinChannelRequest result=%s", aid, int(me.id), type(join_result).__name__)
+
+                join_result = await perform_join_request(
+                    aid, client, JoinChannelRequest(entity), report_floodwait
+                )
+                logging.info(
+                    "Chat join RPC accepted: account_id=%s telegram_user_id=%s request=JoinChannelRequest result=%s",
+                    aid,
+                    int(me.id),
+                    type(join_result).__name__,
+                )
             else:
+
                 async def report_floodwait(seconds):
-                    await edit(c,
+                    await edit(
+                        c,
                         f"⏳ Telegram временно ограничил вступления. Жду {seconds} сек., затем повторю вступление в группу «{pending['title']}»…",
                         kb([[("⬅️ К аккаунту", f"acc:view:{aid}")]]),
                     )
+
                 joined = await perform_join_request(
                     aid, client, ImportChatInviteRequest(hash=pending["target"]), report_floodwait
                 )
-                logging.info("Chat join RPC accepted: account_id=%s telegram_user_id=%s request=ImportChatInviteRequest chats=%s", aid, int(me.id), [(type(x).__name__, getattr(x, "id", None)) for x in (getattr(joined, "chats", []) or [])])
+                logging.info(
+                    "Chat join RPC accepted: account_id=%s telegram_user_id=%s request=ImportChatInviteRequest chats=%s",
+                    aid,
+                    int(me.id),
+                    [
+                        (type(x).__name__, getattr(x, "id", None))
+                        for x in (getattr(joined, "chats", []) or [])
+                    ],
+                )
                 entity = next((x for x in joined.chats if group_entity(x)), None)
                 if entity is None:
                     raise RuntimeError("Telegram не вернул вступившую группу.")
@@ -556,23 +749,43 @@ async def chat_join_confirm(c):
                     await asyncio.sleep(1)
             logging.info(
                 "Chat membership verification: account_id=%s telegram_user_id=%s chat_id=%s entity_type=%s is_member=%s",
-                aid, int(me.id), chat_id, type(entity).__name__, is_member,
+                aid,
+                int(me.id),
+                chat_id,
+                type(entity).__name__,
+                is_member,
             )
             if not is_member:
                 await edit(
                     c,
                     "Telegram не подтвердил членство аккаунта в группе. Возможно, вступление ожидает одобрения или Telegram отклонил его. Группа не добавлена в список чатов.",
-                    kb([[("🔁 Проверить после одобрения", f"chat:joinlink:{aid}")], [("⬅️ К аккаунту", f"acc:view:{aid}")]]),
+                    kb(
+                        [
+                            [("🔁 Проверить после одобрения", f"chat:joinlink:{aid}")],
+                            [("⬅️ К аккаунту", f"acc:view:{aid}")],
+                        ]
+                    ),
                 )
                 return
     except Exception as exc:
         logging.exception(
             "Chat join failed: account_id=%s kind=%s error_type=%s",
-            aid, pending.get("kind"), type(exc).__name__,
+            aid,
+            pending.get("kind"),
+            type(exc).__name__,
         )
         # Approval-only invite links are not equivalent to membership; explain that no binding was created.
         if isinstance(exc, FloodWaitError):
-            await edit(c, f"⛔ Telegram ограничил вступления. Повторная попытка остановлена. Подождите {int(exc.seconds)} сек. и попробуйте снова.", kb([[('🔗 Другая ссылка', f'chat:joinlink:{aid}')], [('⬅️ К аккаунту', f'acc:view:{aid}')]]))
+            await edit(
+                c,
+                f"⛔ Telegram ограничил вступления. Повторная попытка остановлена. Подождите {int(exc.seconds)} сек. и попробуйте снова.",
+                kb(
+                    [
+                        [("🔗 Другая ссылка", f"chat:joinlink:{aid}")],
+                        [("⬅️ К аккаунту", f"acc:view:{aid}")],
+                    ]
+                ),
+            )
             return
         if type(exc).__name__ == "ChannelPrivateError":
             await edit(
@@ -582,11 +795,25 @@ async def chat_join_confirm(c):
                 "Нужна действующая пригласительная ссылка t.me/+… или t.me/joinchat/… "
                 "именно для этого аккаунта. Если аккаунт заблокирован администраторами, "
                 "пригласительная ссылка тоже не поможет. В список чатов группа не добавлена.",
-                kb([[("🔗 Ввести пригласительную ссылку", f"chat:joinlink:{aid}")], [("⬅️ К аккаунту", f"acc:view:{aid}")]]),
+                kb(
+                    [
+                        [("🔗 Ввести пригласительную ссылку", f"chat:joinlink:{aid}")],
+                        [("⬅️ К аккаунту", f"acc:view:{aid}")],
+                    ]
+                ),
             )
             return
         if "InviteRequestSentError" in type(exc).__name__:
-            await edit(c, "Запрос на вступление отправлен администраторам группы. Аккаунт пока не добавлен в активные чаты — повторите после одобрения.", kb([[("🔗 Проверить другую ссылку", f"chat:joinlink:{aid}")], [("⬅️ К аккаунту", f"acc:view:{aid}")]]))
+            await edit(
+                c,
+                "Запрос на вступление отправлен администраторам группы. Аккаунт пока не добавлен в активные чаты — повторите после одобрения.",
+                kb(
+                    [
+                        [("🔗 Проверить другую ссылку", f"chat:joinlink:{aid}")],
+                        [("⬅️ К аккаунту", f"acc:view:{aid}")],
+                    ]
+                ),
+            )
             return
         if "UserAlreadyParticipantError" in type(exc).__name__:
             try:
@@ -604,55 +831,118 @@ async def chat_join_confirm(c):
                     if not await telegram_management.verify_chat_membership(client, entity):
                         raise RuntimeError("Telegram не подтвердил членство аккаунта в группе.")
             except Exception as nested:
-                await edit(c, f"Аккаунт уже состоит в группе, но не удалось обновить её в списке: {type(nested).__name__}.", kb([[("⬅️ К аккаунту", f"acc:view:{aid}")]]))
+                await edit(
+                    c,
+                    f"Аккаунт уже состоит в группе, но не удалось обновить её в списке: {type(nested).__name__}.",
+                    kb([[("⬅️ К аккаунту", f"acc:view:{aid}")]]),
+                )
                 return
         else:
-            await edit(c, f"Не удалось вступить: {type(exc).__name__}: {str(exc)[:180]}. Проверьте ссылку, ограничения Telegram и доступность группы.", kb([[("🔗 Другая ссылка", f"chat:joinlink:{aid}")], [("⬅️ К аккаунту", f"acc:view:{aid}")]]))
+            await edit(
+                c,
+                f"Не удалось вступить: {type(exc).__name__}: {str(exc)[:180]}. Проверьте ссылку, ограничения Telegram и доступность группы.",
+                kb(
+                    [
+                        [("🔗 Другая ссылка", f"chat:joinlink:{aid}")],
+                        [("⬅️ К аккаунту", f"acc:view:{aid}")],
+                    ]
+                ),
+            )
             return
     if entity is None:
-        await edit(c, "Telegram не подтвердил вступление: чат не определён. Запись не создана.", kb([
-            [("🔗 Проверить ссылку ещё раз", f"chat:joinlink:{aid}")],
-            [("⬅️ К аккаунту", f"acc:view:{aid}")],
-        ]))
+        await edit(
+            c,
+            "Telegram не подтвердил вступление: чат не определён. Запись не создана.",
+            kb(
+                [
+                    [("🔗 Проверить ссылку ещё раз", f"chat:joinlink:{aid}")],
+                    [("⬅️ К аккаунту", f"acc:view:{aid}")],
+                ]
+            ),
+        )
         return
     async with SessionFactory() as db:
-        binding = await db.scalar(select(ChatBinding).where(ChatBinding.account_id == aid, ChatBinding.chat_id == chat_id))
+        binding = await db.scalar(
+            select(ChatBinding).where(ChatBinding.account_id == aid, ChatBinding.chat_id == chat_id)
+        )
         access_hash = getattr(entity, "access_hash", None)
-        peer_type = "channel" if access_hash is not None or entity.__class__.__name__.startswith("Channel") else "chat"
+        peer_type = (
+            "channel"
+            if access_hash is not None or entity.__class__.__name__.startswith("Channel")
+            else "chat"
+        )
         if binding:
             binding.title = title
             binding.enabled = True
             binding.access_hash = int(access_hash) if access_hash is not None else None
             binding.peer_type = peer_type
         else:
-            db.add(ChatBinding(
-                account_id=aid, chat_id=chat_id, title=title, enabled=True,
-                auto_discovered=False,
-                access_hash=int(access_hash) if access_hash is not None else None,
-                peer_type=peer_type,
-            ))
+            db.add(
+                ChatBinding(
+                    account_id=aid,
+                    chat_id=chat_id,
+                    title=title,
+                    enabled=True,
+                    auto_discovered=False,
+                    access_hash=int(access_hash) if access_hash is not None else None,
+                    peer_type=peer_type,
+                )
+            )
         await db.commit()
     CHAT_PENDING_JOIN.pop((c.from_user.id, aid), None)
-    await edit(c, f"✅ Группа «{title}» добавлена в чаты аккаунта #{aid}.\n\nЧат включён для работы и обучения. Если нужно, его можно выключить в разделе «Чаты аккаунта».", kb([[("💬 Чаты аккаунта", f"chat:account:{aid}:0")], [("👤 К аккаунту", f"acc:view:{aid}")], [("🏠 Главное меню", "nav:home")]]))
+    await edit(
+        c,
+        f"✅ Группа «{title}» добавлена в чаты аккаунта #{aid}.\n\nЧат включён для работы и обучения. Если нужно, его можно выключить в разделе «Чаты аккаунта».",
+        kb(
+            [
+                [("💬 Чаты аккаунта", f"chat:account:{aid}:0")],
+                [("👤 К аккаунту", f"acc:view:{aid}")],
+                [("🏠 Главное меню", "nav:home")],
+            ]
+        ),
+    )
+
+
 @router.callback_query(F.data == "chat:menu")
 async def chats_legacy_redirect(c):
-    if not await check_cb(c): return
-    await edit(c, "Управление чатами теперь находится внутри карточки аккаунта.", kb([[("👤 К аккаунтам", "acc:list")], [("🏠 Главное меню", "nav:home")]]))
+    if not await check_cb(c):
+        return
+    await edit(
+        c,
+        "Управление чатами теперь находится внутри карточки аккаунта.",
+        kb([[("👤 К аккаунтам", "acc:list")], [("🏠 Главное меню", "nav:home")]]),
+    )
+
+
 async def chat_account_screen(c, aid, page=0):
     async with SessionFactory() as db:
         account = await db.get(Account, aid)
-        bindings = list((await db.scalars(
-            select(ChatBinding).where(ChatBinding.account_id == aid).order_by(ChatBinding.title, ChatBinding.id)
-        )).all())
-        discussion_ids = set((await db.scalars(
-            select(ChannelBinding.discussion_group_id).where(
-                ChannelBinding.account_id == aid,
-                ChannelBinding.discussion_group_id.is_not(None),
-            )
-        )).all())
-        channel_ids = set((await db.scalars(
-            select(ChannelBinding.channel_id).where(ChannelBinding.account_id == aid)
-        )).all())
+        bindings = list(
+            (
+                await db.scalars(
+                    select(ChatBinding)
+                    .where(ChatBinding.account_id == aid)
+                    .order_by(ChatBinding.title, ChatBinding.id)
+                )
+            ).all()
+        )
+        discussion_ids = set(
+            (
+                await db.scalars(
+                    select(ChannelBinding.discussion_group_id).where(
+                        ChannelBinding.account_id == aid,
+                        ChannelBinding.discussion_group_id.is_not(None),
+                    )
+                )
+            ).all()
+        )
+        channel_ids = set(
+            (
+                await db.scalars(
+                    select(ChannelBinding.channel_id).where(ChannelBinding.account_id == aid)
+                )
+            ).all()
+        )
         excluded_chat_ids = discussion_ids | channel_ids
         bindings = [row for row in bindings if int(row.chat_id) not in excluded_chat_ids]
     if not account:
@@ -661,38 +951,70 @@ async def chat_account_screen(c, aid, page=0):
     page_size = 20
     max_page = max(0, (len(bindings) - 1) // page_size)
     page = max(0, min(page, max_page))
-    visible = bindings[page * page_size:(page + 1) * page_size]
-    rows = [[(f"{'🟢' if row.enabled else '⚪'} {row.title[:38]}", f"chat:select:{aid}:{row.id}:{page}")] for row in visible]
+    visible = bindings[page * page_size : (page + 1) * page_size]
+    rows = [
+        [
+            (
+                f"{'🟢' if row.enabled else '⚪'} {row.title[:38]}",
+                f"chat:select:{aid}:{row.id}:{page}",
+            )
+        ]
+        for row in visible
+    ]
     nav = []
-    if page > 0: nav.append(("⬅️ Назад", f"chat:account:{aid}:{page-1}"))
-    if page < max_page: nav.append(("➡️ Далее", f"chat:account:{aid}:{page+1}"))
-    if nav: rows.append(nav)
+    if page > 0:
+        nav.append(("⬅️ Назад", f"chat:account:{aid}:{page - 1}"))
+    if page < max_page:
+        nav.append(("➡️ Далее", f"chat:account:{aid}:{page + 1}"))
+    if nav:
+        rows.append(nav)
     rows += [
-        [("↻ Загрузить чаты" if not bindings else "↻ Обновить список чатов", f"chat:load:{aid}:{page}")],
+        [
+            (
+                "↻ Загрузить чаты" if not bindings else "↻ Обновить список чатов",
+                f"chat:load:{aid}:{page}",
+            )
+        ],
         [("🧭 Поиск ссылок", f"chat:discover:{aid}")],
         [("⬅️ К аккаунту", f"acc:view:{aid}")],
     ]
-    hint = "Сначала нажмите «Загрузить чаты»." if not bindings else f"Всего чатов: {len(bindings)}. Нажатие на строку сразу включает или выключает чат."
-    await edit(c, f"💬 Чаты · {account.display_name} · страница {page+1}/{max_page+1}\n\n{hint}\n🟢 — включён · ⚪ — выключен", kb(rows))
+    hint = (
+        "Сначала нажмите «Загрузить чаты»."
+        if not bindings
+        else f"Всего чатов: {len(bindings)}. Нажатие на строку сразу включает или выключает чат."
+    )
+    await edit(
+        c,
+        f"💬 Чаты · {account.display_name} · страница {page + 1}/{max_page + 1}\n\n{hint}\n🟢 — включён · ⚪ — выключен",
+        kb(rows),
+    )
+
+
 @router.callback_query(F.data.startswith("chat:account:"))
 async def chat_account(c):
-    if not await check_cb(c): return
+    if not await check_cb(c):
+        return
     parts = c.data.split(":")
     aid = int(parts[2])
     page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
     await chat_account_screen(c, aid, page)
+
+
 @router.callback_query(F.data.startswith("chat:load:"))
 async def chat_load(c):
-    if not await check_cb(c): return
+    if not await check_cb(c):
+        return
     parts = c.data.split(":")
     aid = int(parts[2])
     page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
     if not cfg.telegram_api_id or not cfg.telegram_api_hash:
-        await c.answer("Не заданы Telegram API credentials.", show_alert=True); return
+        await c.answer("Не заданы Telegram API credentials.", show_alert=True)
+        return
     async with SessionFactory() as db:
         account = await db.get(Account, aid)
     if not account:
-        await c.answer("Аккаунт не найден", show_alert=True); return
+        await c.answer("Аккаунт не найден", show_alert=True)
+        return
     try:
         async with isolated_telegram_client(account) as client:
             if not await client.is_user_authorized():
@@ -704,7 +1026,10 @@ async def chat_load(c):
                 if (
                     getattr(entity, "deleted", False)
                     or getattr(entity, "bot", False)
-                    or (getattr(entity, "broadcast", False) and not getattr(entity, "megagroup", False))
+                    or (
+                        getattr(entity, "broadcast", False)
+                        and not getattr(entity, "megagroup", False)
+                    )
                 ):
                     continue
                 title = (dialog.name or str(dialog.id)).strip()
@@ -714,18 +1039,28 @@ async def chat_load(c):
         await c.answer(f"Ошибка загрузки: {type(exc).__name__}: {str(exc)[:180]}", show_alert=True)
         return
     async with SessionFactory() as db:
-        discussion_ids = set((await db.scalars(
-            select(ChannelBinding.discussion_group_id).where(
-                ChannelBinding.account_id == aid,
-                ChannelBinding.discussion_group_id.is_not(None),
-            )
-        )).all())
-        channel_ids = set((await db.scalars(
-            select(ChannelBinding.channel_id).where(ChannelBinding.account_id == aid)
-        )).all())
+        discussion_ids = set(
+            (
+                await db.scalars(
+                    select(ChannelBinding.discussion_group_id).where(
+                        ChannelBinding.account_id == aid,
+                        ChannelBinding.discussion_group_id.is_not(None),
+                    )
+                )
+            ).all()
+        )
+        channel_ids = set(
+            (
+                await db.scalars(
+                    select(ChannelBinding.channel_id).where(ChannelBinding.account_id == aid)
+                )
+            ).all()
+        )
         excluded_chat_ids = discussion_ids | channel_ids
         dialogs = [item for item in dialogs if item[0] not in excluded_chat_ids]
-        existing = list((await db.scalars(select(ChatBinding).where(ChatBinding.account_id == aid))).all())
+        existing = list(
+            (await db.scalars(select(ChatBinding).where(ChatBinding.account_id == aid))).all()
+        )
         by_chat = {row.chat_id: row for row in existing}
         added = 0
         for chat_id, title in dialogs:
@@ -733,14 +1068,19 @@ async def chat_load(c):
             if binding:
                 binding.title = title
             else:
-                db.add(ChatBinding(account_id=aid, chat_id=chat_id, **discovered_binding_values(title)))
+                db.add(
+                    ChatBinding(account_id=aid, chat_id=chat_id, **discovered_binding_values(title))
+                )
                 added += 1
         await db.commit()
     await chat_account_screen(c, aid, page)
     await c.message.answer(f"✅ Загружено чатов: {len(dialogs)} · новых добавлено: {added}")
+
+
 @router.callback_query(F.data.startswith("chat:select:"))
 async def chat_select(c):
-    if not await check_cb(c): return
+    if not await check_cb(c):
+        return
     _, _, aid_raw, binding_raw, page_raw = c.data.split(":")
     aid, binding_id, page = int(aid_raw), int(binding_raw), int(page_raw)
     async with SessionFactory() as db:
@@ -751,16 +1091,23 @@ async def chat_select(c):
         binding.enabled = not binding.enabled
         await db.commit()
     await chat_account_screen(c, aid, page)
+
+
 async def chat_account_refresh(c, aid, page=0):
     await chat_account_screen(c, aid, page)
+
+
 @router.callback_query(F.data.startswith("chat:toggle:"))
 async def chat_toggle(c):
-    if not await check_cb(c): return
-    bid=int(c.data.split(":")[2])
+    if not await check_cb(c):
+        return
+    bid = int(c.data.split(":")[2])
     async with SessionFactory() as db:
-        b=await db.get(ChatBinding,bid)
-        if not b: await c.answer("Чат не найден",show_alert=True); return
+        b = await db.get(ChatBinding, bid)
+        if not b:
+            await c.answer("Чат не найден", show_alert=True)
+            return
         b.enabled = not b.enabled
         aid = b.account_id
         await db.commit()
-    await chat_account_refresh(c,aid)
+    await chat_account_refresh(c, aid)

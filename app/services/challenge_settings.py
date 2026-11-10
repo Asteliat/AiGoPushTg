@@ -4,6 +4,7 @@ The single source of truth is the ``challenge_mode`` application setting. The le
 boolean ``challenge_monitor_enabled`` switch is still understood (older deployments
 keep it), and it is removed as soon as the mode is saved from the bot.
 """
+
 from __future__ import annotations
 
 from app.services.challenge_monitor import ChallengeMode, parse_challenge_mode

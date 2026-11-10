@@ -1,4 +1,5 @@
 """Profile field, photo and story input screens."""
+
 from __future__ import annotations
 
 from app.bot.core import Flow
@@ -20,6 +21,7 @@ import os
 import secrets
 import tempfile
 
+
 @router.message(Flow.management_input)
 async def management_input_received(m: Message, state: FSMContext):
     if not await check_msg(m) or not await private(m):
@@ -34,9 +36,22 @@ async def management_input_received(m: Message, state: FSMContext):
         if action == "autoresponder":
             parts = [value.strip() for value in raw.split("|", 3)]
             if len(parts) != 4:
-                raise ValueError("Формат: ВКЛ/ВЫКЛ | ключевые слова или - | текст ответа | пауза в секундах.")
+                raise ValueError(
+                    "Формат: ВКЛ/ВЫКЛ | ключевые слова или - | текст ответа | пауза в секундах."
+                )
             flag = parts[0].lower()
-            if flag not in {"вкл", "включить", "on", "true", "1", "выкл", "выключить", "off", "false", "0"}:
+            if flag not in {
+                "вкл",
+                "включить",
+                "on",
+                "true",
+                "1",
+                "выкл",
+                "выключить",
+                "off",
+                "false",
+                "0",
+            }:
                 raise ValueError("Первое поле должно быть ВКЛ или ВЫКЛ.")
             enabled = flag in {"вкл", "включить", "on", "true", "1"}
             keywords = "" if parts[1].lower() in {"-", "все", "all"} else parts[1]
@@ -66,7 +81,8 @@ async def management_input_received(m: Message, state: FSMContext):
                 await db.commit()
             message = (
                 f"Автоответчик включён для {len(account_ids)} аккаунтов. Он отвечает только в личных чатах и только при выключенном ИИ каждого аккаунта."
-                if enabled else f"Автоответчик выключен для {len(account_ids)} аккаунтов."
+                if enabled
+                else f"Автоответчик выключен для {len(account_ids)} аккаунтов."
             )
         elif action.startswith("profilefield_"):
             field = action.removeprefix("profilefield_")
@@ -86,22 +102,31 @@ async def management_input_received(m: Message, state: FSMContext):
         else:
             raise ValueError("Неизвестное действие настройки аккаунта.")
 
-        keyboard = kb([
-            [("↩️ К настройкам аккаунтов", "tool:account-settings:menu")],
-            [("🏠 Главное меню", "nav:home")],
-        ])
+        keyboard = kb(
+            [
+                [("↩️ К настройкам аккаунтов", "tool:account-settings:menu")],
+                [("🏠 Главное меню", "nav:home")],
+            ]
+        )
         if action.startswith("profilefield_"):
             await finish_prompt_keep_state(m, state, message, keyboard)
         else:
             await finish_prompt(m, state, message, keyboard)
     except telegram_management.FloodWaitError as exc:
         await finish_prompt(
-            m, state,
+            m,
+            state,
             f"⏳ Telegram установил FloodWait: {int(exc.seconds)} сек. Операция не повторялась автоматически.",
             kb([[("↩️ К настройкам аккаунтов", "tool:account-settings:menu")]]),
         )
     except Exception as exc:
-        await prompt_message(m, state, f"❌ {type(exc).__name__}: {str(exc)[:400]}\n\nПроверьте ввод и попробуйте ещё раз.")
+        await prompt_message(
+            m,
+            state,
+            f"❌ {type(exc).__name__}: {str(exc)[:400]}\n\nПроверьте ввод и попробуйте ещё раз.",
+        )
+
+
 @router.message(Flow.management_photo)
 async def management_photo_received(m: Message, state: FSMContext):
     if not await check_msg(m) or not await private(m):
@@ -135,10 +160,17 @@ async def management_photo_received(m: Message, state: FSMContext):
                 results.append(f"✅ #{account_id}: фото обновлено")
             except Exception as exc:
                 results.append(f"❌ #{account_id}: {type(exc).__name__}: {str(exc)[:120]}")
-        photo_keyboard = kb([
-            [("↩️ К модулю", data.get("module_return_callback") or "tool:account-settings:menu")],
-            [("🏠 Главное меню", "nav:home")],
-        ])
+        photo_keyboard = kb(
+            [
+                [
+                    (
+                        "↩️ К модулю",
+                        data.get("module_return_callback") or "tool:account-settings:menu",
+                    )
+                ],
+                [("🏠 Главное меню", "nav:home")],
+            ]
+        )
         if data.get("module_return_callback") == "tool:account-settings:menu":
             await finish_prompt_keep_state(m, state, "\n".join(results), photo_keyboard)
         else:
@@ -152,13 +184,17 @@ async def management_photo_received(m: Message, state: FSMContext):
         else:
             await finish_prompt(m, state, flood_text, flood_keyboard)
     except Exception as exc:
-        await prompt_message(m, state, f"Не удалось обновить фото: {type(exc).__name__}: {str(exc)[:350]}")
+        await prompt_message(
+            m, state, f"Не удалось обновить фото: {type(exc).__name__}: {str(exc)[:350]}"
+        )
     finally:
         try:
             if os.path.exists(path):
                 os.remove(path)
         except OSError:
             logging.exception("Could not remove temporary profile photo %s", path)
+
+
 @router.message(Flow.management_story)
 async def management_story_received(m: Message, state: FSMContext):
     if not await check_msg(m) or not await private(m):
@@ -193,12 +229,21 @@ async def management_story_received(m: Message, state: FSMContext):
                 results.append(f"✅ #{account_id}: история опубликована для контактов")
             except Exception as exc:
                 results.append(f"❌ #{account_id}: {type(exc).__name__}: {str(exc)[:180]}")
-        await finish_prompt_keep_state(m, state, "\n".join(results), kb([
-            [("↩️ К настройке аккаунтов", "tool:account-settings:menu")],
-            [("🏠 Главное меню", "nav:home")],
-        ]))
+        await finish_prompt_keep_state(
+            m,
+            state,
+            "\n".join(results),
+            kb(
+                [
+                    [("↩️ К настройке аккаунтов", "tool:account-settings:menu")],
+                    [("🏠 Главное меню", "nav:home")],
+                ]
+            ),
+        )
     except Exception as exc:
-        await prompt_message(m, state, f"Не удалось обработать историю: {type(exc).__name__}: {str(exc)[:300]}")
+        await prompt_message(
+            m, state, f"Не удалось обработать историю: {type(exc).__name__}: {str(exc)[:300]}"
+        )
     finally:
         try:
             if os.path.exists(path):

@@ -15,6 +15,7 @@ This module keeps the decision pure and testable:
 
 Network and Telegram interactions live in :mod:`app.workers.challenge_watcher`.
 """
+
 from __future__ import annotations
 
 import re
@@ -45,9 +46,7 @@ _CHALLENGE_PATTERNS: tuple[str, ...] = (
     r"\bcaptcha\b",
     r"\bhuman\s+verification\b",
 )
-_COMPILED_CHALLENGE = tuple(
-    re.compile(pattern, re.IGNORECASE) for pattern in _CHALLENGE_PATTERNS
-)
+_COMPILED_CHALLENGE = tuple(re.compile(pattern, re.IGNORECASE) for pattern in _CHALLENGE_PATTERNS)
 
 # Buttons that must never be pressed automatically: they cancel, report or leave.
 _DESTRUCTIVE_BUTTON = re.compile(
@@ -64,12 +63,10 @@ _CONFIRM_BUTTON = re.compile(
 )
 
 _EMOJI = re.compile(
-    "[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U00002190-\U000021FF"
-    "\U00002B00-\U00002BFF\U0000FE0F\U0000200D\U0001F1E6-\U0001F1FF]"
+    "[\U0001f000-\U0001faff\U00002600-\U000027bf\U00002190-\U000021ff"
+    "\U00002b00-\U00002bff\U0000fe0f\U0000200d\U0001f1e6-\U0001f1ff]"
 )
-_EMOJI_ONLY = re.compile(
-    "^[^\\w\\s]+$"
-)
+_EMOJI_ONLY = re.compile("^[^\\w\\s]+$")
 _NUMBER = re.compile(r"(?<!\d)(\d{1,3})(?!\d)")
 _MATH = re.compile(r"(?<!\d)(\d{1,3})\s*([+\-−×xX*÷/:])\s*(\d{1,3})(?!\d)")
 
@@ -129,8 +126,10 @@ def is_directed_to_account(
     username = (account_username or "").strip().lstrip("@").casefold()
     if username and re.search(rf"(?<!\w)@{re.escape(username)}(?!\w)", haystack):
         return True
-    if username and len(username) >= 4 and re.search(
-        rf"(?<!\w){re.escape(username)}(?!\w)", haystack
+    if (
+        username
+        and len(username) >= 4
+        and re.search(rf"(?<!\w){re.escape(username)}(?!\w)", haystack)
     ):
         return True
 
@@ -151,7 +150,9 @@ def _clean_name(name: str | None) -> str:
     if not name:
         return ""
     cleaned = "".join(
-        char for char in name if not _EMOJI.match(char) and unicodedata.category(char)[0] not in {"S", "C"}
+        char
+        for char in name
+        if not _EMOJI.match(char) and unicodedata.category(char)[0] not in {"S", "C"}
     )
     return " ".join(cleaned.split())
 
@@ -244,7 +245,10 @@ def select_verification_index(
 
     # A pure emoji keyboard without a hint in the text: any press verifies the
     # account in most group bots, and the emoji set is the only control offered.
-    if all(_EMOJI_ONLY.match(label) or _EMOJI.search(label) for label in (labels[index] for index in candidates)):
+    if all(
+        _EMOJI_ONLY.match(label) or _EMOJI.search(label)
+        for label in (labels[index] for index in candidates)
+    ):
         return candidates[0]
     return None
 
@@ -253,7 +257,9 @@ def _looks_like_lead_button(label: str) -> bool:
     return bool(re.search(r"✅|✔|☑|подтверд|verify|continue|продолж", label, re.IGNORECASE))
 
 
-def solve_verification(button_rows: Sequence[Sequence[str]], prompt_text: str | None) -> tuple[int, int] | None:
+def solve_verification(
+    button_rows: Sequence[Sequence[str]], prompt_text: str | None
+) -> tuple[int, int] | None:
     """Return ``(row, column)`` for :meth:`telethon.tl.custom.message.Message.click`."""
     labels = [label for row in button_rows for label in row]
     index = select_verification_index(labels, prompt_text)
@@ -333,7 +339,9 @@ _CHALLENGE_MODE_VALUES: dict[str, ChallengeMode] = {
 }
 
 
-def parse_challenge_mode(value: str | None, *, default: ChallengeMode = ChallengeMode.AUTO) -> ChallengeMode:
+def parse_challenge_mode(
+    value: str | None, *, default: ChallengeMode = ChallengeMode.AUTO
+) -> ChallengeMode:
     """Parse a stored setting, tolerating the legacy boolean ``challenge_monitor_enabled``."""
     if value is None:
         return default
