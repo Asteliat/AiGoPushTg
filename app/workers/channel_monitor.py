@@ -1029,6 +1029,157 @@ class ChannelMonitor:
             getattr(event.chat, "title", "") or "Канал", post_message=message,
         ))
 
+    async def _recover_binding(self, binding) -> None:
+        """Revisit one channel: reopen legacy skips, discover its discussion, scan posts."""
+        now = _utcnow()
+        reopened_posts: list[int] = []
+        async with SessionFactory() as db:
+            known_states = list((await db.scalars(select(ChannelPostState).where(
+                ChannelPostState.account_id == self.account_id,
+                ChannelPostState.channel_id == binding.channel_id,
+            ))).all())
+            for previous_state in known_states:
+                if (
+                    previous_state.status == "done"
+                    and is_legacy_comment_threshold_skip(previous_state.last_error)
+                ):
+                    # These posts were incorrectly marked terminal by the old
+                    # audience-comment threshold. Remove the permanent Redis lock
+                    # before reopening the DB state so they are processed once.
+                    await self.redis.delete(
+                        f"atcivperson:channel-post:{self.account_id}:"
+                        f"{int(binding.channel_id)}:{int(previous_state.post_id)}"
+                    )
+                    previous_state.status = "queued"
+                    previous_state.next_retry_at = None
+                    previous_state.last_error = ""
+                    previous_state.updated_at = now
+                    reopened_posts.append(int(previous_state.post_id))
+            if reopened_posts:
+                await db.commit()
+            state_by_post = {
+                int(item.post_id): SimpleNamespace(
+                    status=item.status,
+                    next_retry_at=item.next_retry_at,
+                    updated_at=item.updated_at,
+                )
+                for item in known_states
+            }
+        for reopened_post_id in reopened_posts:
+            logging.warning(
+                "Re-queued post previously skipped by the removed comment threshold: "
+                "account=%s channel_id=%s post_id=%s",
+                self.account_id, int(binding.channel_id), reopened_post_id,
+            )
+        entity = await self.client.get_entity(binding.channel_id)
+        # A recent post can have comments disabled. Try several posts and
+        # keep searching when Telegram reports MSG_ID_INVALID for one thread.
+        async for recent_post in self.client.iter_messages(entity, limit=10):
+            if not has_channel_post_content(recent_post.message, recent_post):
+                continue
+            try:
+                logging.info(
+                    "Discussion discovery started: account=%s channel_id=%s post_id=%s",
+                    self.account_id, int(binding.channel_id), int(recent_post.id),
+                )
+                discussion = await self.client(GetDiscussionMessageRequest(
+                    peer=entity, msg_id=int(recent_post.id)
+                ))
+            except MsgIdInvalidError:
+                logging.debug(
+                    "No discussion thread for channel post; checking an older post: "
+                    "account=%s channel_id=%s post_id=%s",
+                    self.account_id, int(binding.channel_id), int(recent_post.id),
+                )
+                continue
+            except FloodWaitError as exc:
+                logging.warning(
+                    "Discussion discovery FloodWait: account=%s channel_id=%s wait=%ss",
+                    self.account_id, int(binding.channel_id), int(getattr(exc, "seconds", 0)),
+                )
+                break
+            except Exception as exc:
+                logging.exception(
+                    "Discussion discovery failed: account=%s channel_id=%s post_id=%s "
+                    "error_type=%s error=%s",
+                    self.account_id, int(binding.channel_id), int(recent_post.id),
+                    type(exc).__name__, exc,
+                )
+                continue
+
+            group = next((
+                chat for chat in getattr(discussion, "chats", [])
+                if getattr(chat, "megagroup", False)
+            ), None)
+            if not group:
+                continue
+            await self.register_discussion_group(int(binding.channel_id), group)
+            logging.info(
+                "Discussion discovery succeeded: account=%s channel_id=%s post_id=%s "
+                "group_id=%s group_peer_id=%s",
+                self.account_id, int(binding.channel_id), int(recent_post.id),
+                int(group.id), int(utils.get_peer_id(group)),
+            )
+            break
+        self.spawn(self.poll_published_comment_replies(binding, entity))
+        async for message in self.client.iter_messages(entity, limit=RECOVERY_SCAN_LIMIT):
+            body = (message.message or "").strip()
+            if not has_channel_post_content(body, message):
+                continue
+            previous = state_by_post.get(int(message.id))
+            if not should_scan_recovered_post(
+                status=previous.status if previous else None,
+                next_retry_at=previous.next_retry_at if previous else None,
+                updated_at=previous.updated_at if previous else None,
+                message_date=message.date,
+                binding_created_at=binding.created_at,
+                now=now,
+            ):
+                continue
+            logging.info(
+                "Channel recovery discovered post: account=%s channel_id=%s post_id=%s "
+                "previous_state=%s",
+                self.account_id, int(binding.channel_id), int(message.id),
+                previous.status if previous else "missing",
+            )
+            self.spawn(self.process_post(
+                entity, int(binding.channel_id), int(message.id), body,
+                binding.title or getattr(entity, "title", "") or "Канал",
+                post_message=message,
+            ))
+
+    async def _poll_disabled_channel_bindings(self, bindings) -> None:
+        """Keep answering existing comment threads of channels that were switched off."""
+        enabled_channel_ids = {int(item.channel_id) for item in bindings}
+        async with SessionFactory() as db:
+            all_channel_bindings = list((await db.scalars(
+                select(ChannelBinding).where(ChannelBinding.account_id == self.account_id)
+            )).all())
+        enabled_channel_ids = {int(item.channel_id) for item in bindings}
+        for old_binding in all_channel_bindings:
+            if int(old_binding.channel_id) in enabled_channel_ids:
+                continue
+            try:
+                old_entity = await self.client.get_entity(old_binding.channel_id)
+                self.spawn(self.poll_published_comment_replies(old_binding, old_entity))
+            except Exception:
+                logging.exception(
+                    "Could not poll replies for disabled channel binding: account=%s channel_id=%s",
+                    self.account_id, int(old_binding.channel_id),
+                )
+
+    async def _start_pending_channel_learning(self) -> None:
+        """Start the style collector for channels whose learning is queued."""
+        async with SessionFactory() as db:
+            training_bindings = list((await db.scalars(select(ChannelBinding).where(
+                ChannelBinding.account_id == self.account_id,
+                ChannelBinding.learning_status == "training",
+            ))).all())
+        for learning_binding in training_bindings:
+            if learning_binding.id not in self.active_channel_learning:
+                self.active_channel_learning.add(learning_binding.id)
+                self.spawn(self.process_channel_learning(learning_binding.id))
+
     async def recovery_loop(self):
         """Revisit recent channel history to recover missed events and due retries."""
         while True:
@@ -1050,152 +1201,12 @@ class ChannelMonitor:
                         ChannelBinding.account_id == self.account_id,
                         ChannelBinding.enabled.is_(True),
                     ))).all())
-                async with SessionFactory() as db:
-                    training_bindings = list((await db.scalars(select(ChannelBinding).where(
-                        ChannelBinding.account_id == self.account_id,
-                        ChannelBinding.learning_status == "training",
-                    ))).all())
-                for learning_binding in training_bindings:
-                    if learning_binding.id not in self.active_channel_learning:
-                        self.active_channel_learning.add(learning_binding.id)
-                        self.spawn(self.process_channel_learning(learning_binding.id))
-                # Existing replies to already-published channel comments remain ordinary
-                # Chats conversations even if channel automation is later disabled.
-                async with SessionFactory() as db:
-                    all_channel_bindings = list((await db.scalars(
-                        select(ChannelBinding).where(ChannelBinding.account_id == self.account_id)
-                    )).all())
-                enabled_channel_ids = {int(item.channel_id) for item in bindings}
-                for old_binding in all_channel_bindings:
-                    if int(old_binding.channel_id) in enabled_channel_ids:
-                        continue
-                    try:
-                        old_entity = await self.client.get_entity(old_binding.channel_id)
-                        self.spawn(self.poll_published_comment_replies(old_binding, old_entity))
-                    except Exception:
-                        logging.exception(
-                            "Could not poll replies for disabled channel binding: account=%s channel_id=%s",
-                            self.account_id, int(old_binding.channel_id),
-                        )
+                await self._start_pending_channel_learning()
+                await self._poll_disabled_channel_bindings(bindings)
 
                 for binding in bindings:
                     try:
-                        now = _utcnow()
-                        reopened_posts: list[int] = []
-                        async with SessionFactory() as db:
-                            known_states = list((await db.scalars(select(ChannelPostState).where(
-                                ChannelPostState.account_id == self.account_id,
-                                ChannelPostState.channel_id == binding.channel_id,
-                            ))).all())
-                            for previous_state in known_states:
-                                if (
-                                    previous_state.status == "done"
-                                    and is_legacy_comment_threshold_skip(previous_state.last_error)
-                                ):
-                                    # These posts were incorrectly marked terminal by the old
-                                    # audience-comment threshold. Remove the permanent Redis lock
-                                    # before reopening the DB state so they are processed once.
-                                    await self.redis.delete(
-                                        f"atcivperson:channel-post:{self.account_id}:"
-                                        f"{int(binding.channel_id)}:{int(previous_state.post_id)}"
-                                    )
-                                    previous_state.status = "queued"
-                                    previous_state.next_retry_at = None
-                                    previous_state.last_error = ""
-                                    previous_state.updated_at = now
-                                    reopened_posts.append(int(previous_state.post_id))
-                            if reopened_posts:
-                                await db.commit()
-                            state_by_post = {
-                                int(item.post_id): SimpleNamespace(
-                                    status=item.status,
-                                    next_retry_at=item.next_retry_at,
-                                    updated_at=item.updated_at,
-                                )
-                                for item in known_states
-                            }
-                        for reopened_post_id in reopened_posts:
-                            logging.warning(
-                                "Re-queued post previously skipped by the removed comment threshold: "
-                                "account=%s channel_id=%s post_id=%s",
-                                self.account_id, int(binding.channel_id), reopened_post_id,
-                            )
-                        entity = await self.client.get_entity(binding.channel_id)
-                        # A recent post can have comments disabled. Try several posts and
-                        # keep searching when Telegram reports MSG_ID_INVALID for one thread.
-                        async for recent_post in self.client.iter_messages(entity, limit=10):
-                            if not has_channel_post_content(recent_post.message, recent_post):
-                                continue
-                            try:
-                                logging.info(
-                                    "Discussion discovery started: account=%s channel_id=%s post_id=%s",
-                                    self.account_id, int(binding.channel_id), int(recent_post.id),
-                                )
-                                discussion = await self.client(GetDiscussionMessageRequest(
-                                    peer=entity, msg_id=int(recent_post.id)
-                                ))
-                            except MsgIdInvalidError:
-                                logging.debug(
-                                    "No discussion thread for channel post; checking an older post: "
-                                    "account=%s channel_id=%s post_id=%s",
-                                    self.account_id, int(binding.channel_id), int(recent_post.id),
-                                )
-                                continue
-                            except FloodWaitError as exc:
-                                logging.warning(
-                                    "Discussion discovery FloodWait: account=%s channel_id=%s wait=%ss",
-                                    self.account_id, int(binding.channel_id), int(getattr(exc, "seconds", 0)),
-                                )
-                                break
-                            except Exception as exc:
-                                logging.exception(
-                                    "Discussion discovery failed: account=%s channel_id=%s post_id=%s "
-                                    "error_type=%s error=%s",
-                                    self.account_id, int(binding.channel_id), int(recent_post.id),
-                                    type(exc).__name__, exc,
-                                )
-                                continue
-
-                            group = next((
-                                chat for chat in getattr(discussion, "chats", [])
-                                if getattr(chat, "megagroup", False)
-                            ), None)
-                            if not group:
-                                continue
-                            await self.register_discussion_group(int(binding.channel_id), group)
-                            logging.info(
-                                "Discussion discovery succeeded: account=%s channel_id=%s post_id=%s "
-                                "group_id=%s group_peer_id=%s",
-                                self.account_id, int(binding.channel_id), int(recent_post.id),
-                                int(group.id), int(utils.get_peer_id(group)),
-                            )
-                            break
-                        self.spawn(self.poll_published_comment_replies(binding, entity))
-                        async for message in self.client.iter_messages(entity, limit=RECOVERY_SCAN_LIMIT):
-                            body = (message.message or "").strip()
-                            if not has_channel_post_content(body, message):
-                                continue
-                            previous = state_by_post.get(int(message.id))
-                            if not should_scan_recovered_post(
-                                status=previous.status if previous else None,
-                                next_retry_at=previous.next_retry_at if previous else None,
-                                updated_at=previous.updated_at if previous else None,
-                                message_date=message.date,
-                                binding_created_at=binding.created_at,
-                                now=now,
-                            ):
-                                continue
-                            logging.info(
-                                "Channel recovery discovered post: account=%s channel_id=%s post_id=%s "
-                                "previous_state=%s",
-                                self.account_id, int(binding.channel_id), int(message.id),
-                                previous.status if previous else "missing",
-                            )
-                            self.spawn(self.process_post(
-                                entity, int(binding.channel_id), int(message.id), body,
-                                binding.title or getattr(entity, "title", "") or "Канал",
-                                post_message=message,
-                            ))
+                        await self._recover_binding(binding)
                     except Exception:
                         logging.exception(
                             "Channel recovery scan failed for account %s channel %s",

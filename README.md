@@ -190,6 +190,7 @@ GitHub Actions выполняет эти проверки при push в `main` 
 ## Документация
 
 - [Вход в Telegram-аккаунт по номеру телефона](docs/PHONE_LOGIN.md)
+- [Автопрохождение проверок Telegram](docs/CHALLENGES.md)
 - [Пользовательское руководство](https://guide.cloudre.store/)
 
 ---
