@@ -134,6 +134,8 @@ class FakeSession:
         return self.factory.scalar_result
 
     async def scalars(self, _statement):
+        if self.factory.scalar_queue:
+            return FakeScalars(self.factory.scalar_queue.pop(0))
         return FakeScalars(self.factory.scalar_rows)
 
     async def execute(self, _statement):
@@ -161,6 +163,7 @@ class FakeSessionFactory:
         self.objects = objects or {}
         self.scalar_result = None
         self.scalar_rows: list = []
+        self.scalar_queue: list[list] = []
         self.execute_rows: list = []
         self.added: list = []
         self.deleted: list = []
@@ -355,6 +358,10 @@ def make_account(account_id: int = 1, **overrides):
         "ai_agent_id": None,
         "learning_status": "idle",
         "learning_prompt": "",
+        "learning_limit": 500,
+        "learning_started_at": None,
+        "learning_ends_at": None,
+        "learning_completed_at": None,
         "persona_style_override": "",
         "reply_cooldown_seconds_override": None,
     }
