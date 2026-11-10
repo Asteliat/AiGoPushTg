@@ -142,6 +142,8 @@ class FakeSession:
         self.factory.deleted.append(obj)
 
     async def commit(self) -> None:
+        if self.factory.commit_errors:
+            raise self.factory.commit_errors.pop(0)
         self.factory.commits += 1
 
     async def rollback(self) -> None:
@@ -160,6 +162,7 @@ class FakeSessionFactory:
         self.deleted: list = []
         self.commits = 0
         self.rollbacks = 0
+        self.commit_errors: list[Exception] = []
 
     def __call__(self) -> FakeSession:
         return FakeSession(self)

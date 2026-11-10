@@ -18,6 +18,7 @@ def test_application_modules_import() -> None:
         "app.workers.connection",
         "app.workers.memory",
         "app.workers.autoresponder",
+        "app.workers.trigger_replies",
         "app.workers.account_status",
         "app.workers.learning",
         "app.workers.channel_filters",
