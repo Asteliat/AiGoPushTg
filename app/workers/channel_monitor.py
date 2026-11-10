@@ -7,6 +7,7 @@ import asyncio
 import base64
 import io
 import logging
+from dataclasses import dataclass
 from datetime import timedelta
 from types import SimpleNamespace
 
@@ -51,6 +52,18 @@ PUBLISHED_REPLY_COMMENT_LIMIT = 100
 DISCUSSION_COMMENT_SCAN_LIMIT = 100
 DISCUSSION_COMMENT_CONTEXT_LIMIT = 10
 
+@dataclass(frozen=True, slots=True)
+class PostClaim:
+    """What processing a channel post needs after it has been claimed."""
+
+    lock_acquired: bool
+    was_waiting: bool
+    comment_policy_enabled: bool
+    comment_policy_action: str
+    min_comments: int
+    wait_seconds: int
+
+
 
 class ChannelMonitor:
     """Per-account channel monitor: posts, comments, publications and recovery.
@@ -81,6 +94,97 @@ class ChannelMonitor:
         self.client.add_event_handler(self.handle_reply_to_our_channel_comment, events.NewMessage(incoming=True))
         self.recovery_task = self.spawn(self.recovery_loop())
 
+
+    async def _claim_post(
+        self, channel_id: int, post_id: int, stored_post_text: str, channel_title: str
+    ) -> PostClaim | None:
+        """Mark the post as processing and return what the pipeline needs.
+
+        Returns ``None`` when this post must not be processed now: the account or
+        channel is paused, another worker holds the lock, the post is already done,
+        or its retry time has not come yet.
+        """
+        lock_key = redis_keys.channel_post(self.account_id, channel_id, post_id)
+        lock_acquired = False
+        was_waiting = False
+        comment_policy_enabled = False
+        comment_policy_action = "wait"
+        min_comments = 2
+        wait_seconds = 300
+        async with SessionFactory() as db:
+            account = await db.get(Account, self.account_id)
+            binding = await db.scalar(select(ChannelBinding).where(
+                ChannelBinding.account_id == self.account_id,
+                ChannelBinding.channel_id == channel_id,
+                ChannelBinding.enabled.is_(True),
+                ChannelBinding.reply_enabled.is_(True),
+            ))
+            if (
+                not account or not binding or not account.enabled or account.manual_pause
+                or not account.ai_enabled or not await global_ai_enabled(db)
+                or not account.ai_agent_id
+            ):
+                return
+
+            (
+                comment_policy_enabled,
+                comment_policy_action,
+                min_comments,
+                wait_seconds,
+            ) = resolve_channel_comment_policy(account, binding)
+
+            lock_acquired = bool(await self.redis.set(lock_key, "processing", nx=True, ex=30 * 60))
+            if not lock_acquired:
+                return
+
+            state = await db.scalar(select(ChannelPostState).where(
+                ChannelPostState.account_id == self.account_id,
+                ChannelPostState.channel_id == channel_id,
+                ChannelPostState.post_id == post_id,
+            ).with_for_update())
+            now = _utcnow()
+            if state:
+                was_waiting = state.status == "waiting"
+                if state.status == "done":
+                    await self.redis.set(lock_key, "done", ex=365 * 24 * 3600)
+                    return
+                if (
+                    state.next_retry_at and state.next_retry_at > now
+                    and not (was_waiting and not comment_policy_enabled)
+                ):
+                    return
+                if state.status == "processing" and not is_stale_processing(
+                    state.status, state.updated_at, now
+                ):
+                    return
+                state.status = "processing"
+                state.attempts += 1
+                state.post_text = stored_post_text
+                state.channel_title = channel_title[:255]
+                state.next_retry_at = None
+                state.last_error = ""
+                state.updated_at = now
+            else:
+                state = ChannelPostState(
+                    account_id=self.account_id,
+                    channel_id=channel_id,
+                    post_id=post_id,
+                    channel_title=channel_title[:255],
+                    post_text=stored_post_text,
+                    status="processing",
+                    attempts=1,
+                    updated_at=now,
+                )
+                db.add(state)
+            await db.commit()
+        return PostClaim(
+            lock_acquired=lock_acquired,
+            was_waiting=was_waiting,
+            comment_policy_enabled=comment_policy_enabled,
+            comment_policy_action=comment_policy_action,
+            min_comments=min_comments,
+            wait_seconds=wait_seconds,
+        )
 
     async def cancel_background_tasks(self) -> None:
         """Cancel and await this account's background tasks."""
@@ -320,73 +424,17 @@ class ChannelMonitor:
         min_comments = 2
         wait_seconds = 300
         try:
-            async with SessionFactory() as db:
-                account = await db.get(Account, self.account_id)
-                binding = await db.scalar(select(ChannelBinding).where(
-                    ChannelBinding.account_id == self.account_id,
-                    ChannelBinding.channel_id == channel_id,
-                    ChannelBinding.enabled.is_(True),
-                    ChannelBinding.reply_enabled.is_(True),
-                ))
-                if (
-                    not account or not binding or not account.enabled or account.manual_pause
-                    or not account.ai_enabled or not await global_ai_enabled(db)
-                    or not account.ai_agent_id
-                ):
-                    return
-
-                (
-                    comment_policy_enabled,
-                    comment_policy_action,
-                    min_comments,
-                    wait_seconds,
-                ) = resolve_channel_comment_policy(account, binding)
-
-                lock_acquired = bool(await self.redis.set(lock_key, "processing", nx=True, ex=30 * 60))
-                if not lock_acquired:
-                    return
-
-                state = await db.scalar(select(ChannelPostState).where(
-                    ChannelPostState.account_id == self.account_id,
-                    ChannelPostState.channel_id == channel_id,
-                    ChannelPostState.post_id == post_id,
-                ).with_for_update())
-                now = _utcnow()
-                if state:
-                    was_waiting = state.status == "waiting"
-                    if state.status == "done":
-                        await self.redis.set(lock_key, "done", ex=365 * 24 * 3600)
-                        return
-                    if (
-                        state.next_retry_at and state.next_retry_at > now
-                        and not (was_waiting and not comment_policy_enabled)
-                    ):
-                        return
-                    if state.status == "processing" and not is_stale_processing(
-                        state.status, state.updated_at, now
-                    ):
-                        return
-                    state.status = "processing"
-                    state.attempts += 1
-                    state.post_text = stored_post_text
-                    state.channel_title = channel_title[:255]
-                    state.next_retry_at = None
-                    state.last_error = ""
-                    state.updated_at = now
-                else:
-                    state = ChannelPostState(
-                        account_id=self.account_id,
-                        channel_id=channel_id,
-                        post_id=post_id,
-                        channel_title=channel_title[:255],
-                        post_text=stored_post_text,
-                        status="processing",
-                        attempts=1,
-                        updated_at=now,
-                    )
-                    db.add(state)
-                await db.commit()
-
+            claim = await self._claim_post(
+                channel_id, post_id, stored_post_text, channel_title
+            )
+            if claim is None:
+                return
+            lock_acquired = claim.lock_acquired
+            was_waiting = claim.was_waiting
+            comment_policy_enabled = claim.comment_policy_enabled
+            comment_policy_action = claim.comment_policy_action
+            min_comments = claim.min_comments
+            wait_seconds = claim.wait_seconds
             try:
                 discussion = await self.client(GetDiscussionMessageRequest(peer=channel_entity, msg_id=post_id))
             except Exception as exc:
