@@ -124,7 +124,11 @@ class FakeSession:
         return False
 
     async def get(self, model, key):
-        return self.factory.objects.get((model.__name__, int(key)))
+        try:
+            normalized = int(key)
+        except (TypeError, ValueError):
+            normalized = key
+        return self.factory.objects.get((model.__name__, normalized))
 
     async def scalar(self, _statement):
         return self.factory.scalar_result
