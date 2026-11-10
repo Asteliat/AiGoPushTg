@@ -10,6 +10,8 @@ def test_application_modules_import() -> None:
         "app.api.main",
         "app.workers.main",
         "app.services.challenge_monitor",
+        "app.services.challenge_settings",
+        "app.workers.challenge_watcher",
             "app.workers.channel_monitor",
         "app.telegram_gateway.enroll",
         "app.telegram_gateway.proxy",

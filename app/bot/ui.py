@@ -16,6 +16,8 @@ from telethon.tl.functions.messages import CheckChatInviteRequest, ImportChatInv
 from telethon.tl.types import ChatInviteAlready
 from app.telegram_gateway.discovery import search_public_groups, search_web_groups, verify_group_candidates, find_invite_links_in_dialogs, search_public_channels, search_web_channels, verify_channel_candidates
 from app.services.ai_responses import global_ai_enabled
+from app.services.challenge_monitor import ChallengeMode
+from app.services.challenge_settings import read_challenge_mode, write_challenge_mode
 from app.services.chat_bindings import discovered_binding_values
 from app.services.channels import (
     decode_channel_comment_policy_action,
@@ -1227,20 +1229,24 @@ async def settings_cb(c: CallbackQuery):
 async def challenge_settings(c: CallbackQuery):
     if not await check_cb(c):
         return
-    async with SessionFactory() as db:
-        setting = await db.get(AppSetting, "challenge_monitor_enabled")
-    enabled = setting is None or setting.value.strip().lower() in {"1", "true", "yes", "on", "enabled"}
-    status = "включено" if enabled else "выключено"
+    mode = await read_challenge_mode()
+    current = {
+        ChallengeMode.AUTO: "Авто — проходить сам",
+        ChallengeMode.NOTIFY: "Только уведомлять",
+        ChallengeMode.OFF: "Выключено",
+    }[mode]
+    mark = lambda value: " ✅" if mode is value else ""
     await edit(
         c,
-        "🛡 Обнаружение проверок Telegram\n\n"
-        f"Сейчас: {status}.\n\n"
-        "При обнаружении сообщения от бота с признаками проверки аккаунт отправит уведомление "
-        "в основной канал логов: аккаунт, группа, текст и подписи кнопок. "
-        "Проверка не нажимается автоматически — это помогает не отправить неверный ответ "
-        "и не обходить подтверждение человека.",
+        "🛡 Проверки Telegram\n\n"
+        "В группах боты просят подтвердить, что вы человек, и присылают кнопку.\n"
+        "«Авто» — аккаунт сам нажимает нужную кнопку, если проверка адресована ему.\n"
+        "Чужие проверки (для других участников) пропускаются без уведомлений.\n\n"
+        f"Сейчас: {current}",
         kb([
-            [("🟢 Включить", "challenge:set:on"), ("🔴 Выключить", "challenge:set:off")],
+            [("🟢 Авто" + mark(ChallengeMode.AUTO), "challenge:set:auto")],
+            [("🔔 Только уведомлять" + mark(ChallengeMode.NOTIFY), "challenge:set:notify")],
+            [("⛔ Выключить" + mark(ChallengeMode.OFF), "challenge:set:off")],
             [("⬅️ Настройки", "nav:settings")],
         ]),
     )
@@ -1251,17 +1257,11 @@ async def challenge_settings_save(c: CallbackQuery):
     if not await check_cb(c):
         return
     value = c.data.rsplit(":", 1)[-1]
-    if value not in {"on", "off"}:
+    modes = {mode.value: mode for mode in ChallengeMode}
+    if value not in modes:
         await c.answer("Неизвестное значение.", show_alert=True)
         return
-    async with SessionFactory() as db:
-        setting = await db.get(AppSetting, "challenge_monitor_enabled")
-        stored = "true" if value == "on" else "false"
-        if setting:
-            setting.value = stored
-        else:
-            db.add(AppSetting(key="challenge_monitor_enabled", value=stored))
-        await db.commit()
+    await write_challenge_mode(modes[value])
     await c.answer("Настройка сохранена.")
     await challenge_settings(c)
 
