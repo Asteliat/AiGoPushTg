@@ -27,6 +27,8 @@ from app.services.channels import (
 from app.services.ai_responses import global_ai_enabled
 from app.storage.db import SessionFactory
 from app.storage.models import Account, AIAgent, ChannelAnalysis, ChannelBinding, ChannelPostState
+from app.workers import redis_keys
+from app.workers.channel_publication import first_defined, publication_status_text
 from app.workers.channel_recovery import (
     is_stale_processing,
     should_scan_recovered_post,
@@ -308,7 +310,7 @@ class ChannelMonitor:
             return
         stored_post_text = post_text.strip() or "[Фотография без текстового описания]"
         self.active_posts.add(key)
-        lock_key = f"atcivperson:channel-post:{self.account_id}:{channel_id}:{post_id}"
+        lock_key = redis_keys.channel_post(self.account_id, channel_id, post_id)
         cooldown_lock_key = None
         cooldown_lock_acquired = False
         lock_acquired = False
@@ -525,12 +527,10 @@ class ChannelMonitor:
                     )
                     return
 
-                probability = (
-                    binding.reply_probability_override
-                    if binding.reply_probability_override is not None
-                    else agent.channel_reply_probability_override
-                    if agent.channel_reply_probability_override is not None
-                    else account.channel_reply_probability
+                probability = first_defined(
+                    binding.reply_probability_override,
+                    agent.channel_reply_probability_override,
+                    account.channel_reply_probability,
                 )
                 reply_requested = channel_reply_probability_passes(probability)
 
@@ -572,12 +572,10 @@ class ChannelMonitor:
 
                 mode = effective_channel_reply_mode(account, binding)
                 account_name = account.display_name
-                effective_cooldown = (
-                    binding.reply_cooldown_seconds_override
-                    if binding.reply_cooldown_seconds_override is not None
-                    else agent.channel_reply_cooldown_seconds_override
-                    if agent.channel_reply_cooldown_seconds_override is not None
-                    else account.channel_reply_cooldown_seconds
+                effective_cooldown = first_defined(
+                    binding.reply_cooldown_seconds_override,
+                    agent.channel_reply_cooldown_seconds_override,
+                    account.channel_reply_cooldown_seconds,
                 )
                 cooldown_seconds = max(0, int(effective_cooldown or 0))
 
@@ -589,7 +587,9 @@ class ChannelMonitor:
 
             if publication_status == "approved" or publication_status == "publishing":
                 if cooldown_seconds:
-                    cooldown_lock_key = f"atcivperson:channel-cooldown-lock:{self.account_id}:{channel_id}"
+                    cooldown_lock_key = redis_keys.channel_cooldown_lock(
+                        self.account_id, channel_id
+                    )
                     cooldown_lock_acquired = bool(await self.redis.set(
                         cooldown_lock_key, str(post_id), nx=True, ex=90
                     ))
@@ -600,7 +600,7 @@ class ChannelMonitor:
                             last_error="another channel publication is in progress",
                         )
                         return
-                    cooldown_key = f"atcivperson:channel-reply-cooldown:{self.account_id}:{channel_id}"
+                    cooldown_key = redis_keys.channel_reply_cooldown(self.account_id, channel_id)
                     if await self.redis.exists(cooldown_key):
                         async with SessionFactory() as db:
                             current = await db.scalar(select(ChannelAnalysis).where(
@@ -664,7 +664,7 @@ class ChannelMonitor:
                             await db.commit()
                     if cooldown_seconds:
                         await self.redis.set(
-                            f"atcivperson:channel-reply-cooldown:{self.account_id}:{channel_id}",
+                            redis_keys.channel_reply_cooldown(self.account_id, channel_id),
                             "1", ex=cooldown_seconds,
                         )
                     publication_status = "published"
@@ -675,15 +675,7 @@ class ChannelMonitor:
                     )
 
             label = "по теме" if result.on_topic else "не по теме"
-            status_text = {
-                "published": "Комментарий опубликован ответом на исходную публикацию.",
-                "manual": "Подготовлен черновик. Ручной режим: комментарий не опубликован.",
-                "skipped_probability": "ИИ проанализировал пост, но вероятность не выбрала подготовку комментария.",
-                "skipped_ai": "ИИ решил, что отдельный комментарий к публикации не нужен.",
-                "skipped_cooldown": "Публикация пропущена из-за паузы между ответами.",
-                "approved": "Ответ подготовлен, ожидает публикации.",
-                "publishing": "Публикация выполняется.",
-            }.get(publication_status, "Ответ не опубликован.")
+            status_text = publication_status_text(publication_status)
             notification = (
                 f"📡 Анализ канала: {result.channel_title or channel_title}\n"
                 f"Аккаунт: {account_name} (#{self.account_id}) · Публикация #{post_id}\n"

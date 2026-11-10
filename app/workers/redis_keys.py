@@ -74,5 +74,17 @@ def learning_buffer(account_id: int, started_at_timestamp: int) -> str:
     return f"atcivperson:learning:{account_id}:{started_at_timestamp}"
 
 
+def channel_post(account_id: int, channel_id: int, post_id: int) -> str:
+    return f"atcivperson:channel-post:{account_id}:{channel_id}:{post_id}"
+
+
+def channel_cooldown_lock(account_id: int, channel_id: int) -> str:
+    return f"atcivperson:channel-cooldown-lock:{account_id}:{channel_id}"
+
+
+def channel_reply_cooldown(account_id: int, channel_id: int) -> str:
+    return f"atcivperson:channel-reply-cooldown:{account_id}:{channel_id}"
+
+
 def log_destination_key(category: str) -> str:
     return f"log_chat_ids_{category}"

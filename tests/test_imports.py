@@ -24,6 +24,7 @@ def test_application_modules_import() -> None:
         "app.workers.account_status",
         "app.workers.learning",
         "app.workers.channel_filters",
+        "app.workers.channel_publication",
         "app.workers.dialogs_sync",
         "app.workers.reconnect",
         "app.workers.send_policy",
