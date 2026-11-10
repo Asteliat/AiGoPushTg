@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import app.bot.ui as ui
+import app.bot.screens.chats as chats
 
 
 @pytest.mark.asyncio
@@ -28,10 +28,10 @@ async def test_group_candidate_verification_uses_isolated_session(monkeypatch):
         calls["concurrency"] = concurrency
         return expected
 
-    monkeypatch.setattr(ui, "isolated_account_client", fake_isolated_client)
-    monkeypatch.setattr(ui, "verify_group_candidates", fake_verify)
+    monkeypatch.setattr(chats, "isolated_account_client", fake_isolated_client)
+    monkeypatch.setattr(chats, "verify_group_candidates", fake_verify)
 
-    result = await ui._verify_group_candidates_isolated(account_id, candidates, concurrency=3)
+    result = await chats._verify_group_candidates_isolated(account_id, candidates, concurrency=3)
 
     assert result == expected
     assert calls == {
@@ -58,8 +58,8 @@ async def test_group_candidate_verification_rejects_unauthorized_snapshot(monkey
     async def unexpected_verify(*_args, **_kwargs):
         pytest.fail("Verification must not run for an unauthorized session")
 
-    monkeypatch.setattr(ui, "isolated_account_client", fake_isolated_client)
-    monkeypatch.setattr(ui, "verify_group_candidates", unexpected_verify)
+    monkeypatch.setattr(chats, "isolated_account_client", fake_isolated_client)
+    monkeypatch.setattr(chats, "verify_group_candidates", unexpected_verify)
 
     with pytest.raises(RuntimeError, match="Сессия аккаунта не авторизована"):
-        await ui._verify_group_candidates_isolated(1, [])
+        await chats._verify_group_candidates_isolated(1, [])
