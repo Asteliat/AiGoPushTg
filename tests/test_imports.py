@@ -15,6 +15,8 @@ def test_application_modules_import() -> None:
         "app.workers.redis_keys",
         "app.workers.state",
         "app.workers.lease",
+        "app.workers.connection",
+        "app.workers.account_status",
         "app.workers.learning",
         "app.workers.channel_filters",
         "app.workers.dialogs_sync",
