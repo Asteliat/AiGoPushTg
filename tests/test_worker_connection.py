@@ -8,7 +8,14 @@ from app.workers import connection as connection_module
 from app.workers import state as state_module
 from app.workers.connection import AccountConnector
 from app.workers.state import WorkerState
-from tests.fakes import FakeRedis, FakeSessionFactory, FakeTelethonClient, make_account
+from tests.fakes import (
+    FakeEvent,
+    FakeMessage,
+    FakeRedis,
+    FakeSessionFactory,
+    FakeTelethonClient,
+    make_account,
+)
 
 
 class Recorder:
@@ -17,6 +24,16 @@ class Recorder:
 
     def __call__(self, *args, **kwargs) -> None:
         self.calls.append((args, kwargs))
+
+
+class PipelineRecorder:
+    """Stands in for reply_pipeline.on_message with its real keyword signature."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def __call__(self, event, *, aid, labels, worker, **kwargs) -> None:
+        self.calls.append({"event": event, "aid": aid, "labels": labels, "worker": worker, **kwargs})
 
 
 class InstallRecorder:
@@ -94,7 +111,7 @@ class ReturningRecorder(Recorder):
 
 
 def make_connector(worker, client, *, on_message=None, challenge=None, monitor=None):
-    on_message = on_message or Recorder()
+    on_message = on_message or PipelineRecorder()
     challenge = challenge or InstallRecorder()
     monitor = monitor if monitor is not None else Recorder()
     connector = AccountConnector(
@@ -133,6 +150,14 @@ async def test_connect_leases_session_wires_handlers_and_stores_state(
         assert monitor.calls and monitor.calls[0][0][0] is client
         assert worker.monitors[7] is monitor.result
         assert logs and "Аккаунт подключён" in logs[0][1]
+
+        # The registered handler must forward the worker state into the pipeline,
+        # otherwise every incoming message fails with a missing argument.
+        handler = client.handlers[0][0]
+        await handler(FakeEvent(FakeMessage("привет", sender_id=5), chat_id=10))
+        assert on_message.calls, "pipeline must be called"
+        assert on_message.calls[0]["worker"] is worker
+        assert on_message.calls[0]["aid"] == 7
     finally:
         await worker.cancel_background_tasks()
 

@@ -137,7 +137,7 @@ class AccountConnector:
             worker.watched[account.id] = labels
             client.add_event_handler(
                 lambda event, aid=account.id, labels=labels: self._on_message(
-                    event, aid=aid, labels=labels
+                    event, aid=aid, labels=labels, worker=worker
                 ),
                 events.NewMessage(incoming=True),
             )
@@ -148,6 +148,7 @@ class AccountConnector:
                     event,
                     aid=account.id,
                     labels=worker.watched.get(account.id, {}),
+                    worker=worker,
                     allow_unbound=True,
                     forced_label=f"Обсуждение канала · {channel_title}",
                     extra_context=extra_context,
