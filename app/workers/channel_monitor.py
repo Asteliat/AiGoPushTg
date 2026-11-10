@@ -49,9 +49,6 @@ PUBLISHED_REPLY_COMMENT_LIMIT = 100
 DISCUSSION_COMMENT_SCAN_LIMIT = 100
 DISCUSSION_COMMENT_CONTEXT_LIMIT = 10
 
-# Keep channel diagnostics visible even when the application root log level is WARNING.
-logging.getLogger(__name__).setLevel(logging.INFO)
-
 
 class ChannelMonitor:
     """Per-account channel monitor: posts, comments, publications and recovery.

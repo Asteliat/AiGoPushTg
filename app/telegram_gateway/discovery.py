@@ -30,34 +30,65 @@ _SOFT_SPAM = (
 )
 _logger = logging.getLogger(__name__)
 
-_PROVIDER_COOLDOWNS: dict[str, float] = {}
-_PROVIDER_FAILURES: dict[str, int] = {}
 _SEARCH_CACHE: dict[str, tuple[float, list[dict]]] = {}
 _CACHE_TTL_SECONDS = 15 * 60
 _CACHE_MAX_ITEMS = 256
 
 
+class ProviderPool:
+    """Per-engine penalties for CAPTCHA/blocked/rate-limited search results.
+
+    Search engines punish one client independently, so this state belongs to one pool
+    instance instead of module globals: a test creates its own pool, and the process
+    can reset the penalties without touching unrelated code.
+    """
+
+    def __init__(self) -> None:
+        self._failures: dict[str, int] = {}
+        self._cooldowns: dict[str, float] = {}
+
+    @staticmethod
+    def cooldown_seconds(status: str, failures: int) -> int:
+        base = {"captcha": 30 * 60, "blocked": 15 * 60, "rate_limited": 10 * 60}.get(
+            status, 5 * 60
+        )
+        return min(base * (2 ** min(max(failures - 1, 0), 4)), 6 * 60 * 60)
+
+    def available(self, name: str, now: float | None = None) -> bool:
+        moment = time.monotonic() if now is None else now
+        return self._cooldowns.get(name, 0.0) <= moment
+
+    def record(self, name: str, status: str) -> None:
+        if status == "ok":
+            self._failures.pop(name, None)
+            self._cooldowns.pop(name, None)
+            return
+        if status not in {"captcha", "blocked", "rate_limited"}:
+            return
+        failures = self._failures.get(name, 0) + 1
+        self._failures[name] = failures
+        delay = self.cooldown_seconds(status, failures)
+        self._cooldowns[name] = time.monotonic() + delay
+        _logger.warning("Group discovery provider %s paused for %ss (%s)", name, delay, status)
+
+    def reset(self) -> None:
+        self._failures.clear()
+        self._cooldowns.clear()
+
+
+PROVIDER_POOL = ProviderPool()
+
+
 def _provider_cooldown_seconds(status: str, failures: int) -> int:
-    base = {"captcha": 30 * 60, "blocked": 15 * 60, "rate_limited": 10 * 60}.get(status, 5 * 60)
-    return min(base * (2 ** min(max(failures - 1, 0), 4)), 6 * 60 * 60)
+    return ProviderPool.cooldown_seconds(status, failures)
 
 
 def _provider_available(name: str, now: float | None = None) -> bool:
-    return _PROVIDER_COOLDOWNS.get(name, 0.0) <= (time.monotonic() if now is None else now)
+    return PROVIDER_POOL.available(name, now)
 
 
 def _record_provider_status(name: str, status: str) -> None:
-    if status == "ok":
-        _PROVIDER_FAILURES.pop(name, None)
-        _PROVIDER_COOLDOWNS.pop(name, None)
-        return
-    if status not in {"captcha", "blocked", "rate_limited"}:
-        return
-    failures = _PROVIDER_FAILURES.get(name, 0) + 1
-    _PROVIDER_FAILURES[name] = failures
-    delay = _provider_cooldown_seconds(status, failures)
-    _PROVIDER_COOLDOWNS[name] = time.monotonic() + delay
-    _logger.warning("Group discovery provider %s paused for %ss (%s)", name, delay, status)
+    PROVIDER_POOL.record(name, status)
 
 
 _SPECIAL_NAMES = {

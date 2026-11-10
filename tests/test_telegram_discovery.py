@@ -98,26 +98,25 @@ def test_search_engine_captcha_is_reported_and_not_parsed(monkeypatch):
 def test_provider_cooldown_pauses_only_blocked_engine():
     import app.telegram_gateway.discovery as discovery
 
-    discovery._PROVIDER_COOLDOWNS.clear()
-    discovery._PROVIDER_FAILURES.clear()
+    discovery.PROVIDER_POOL.reset()
 
     discovery._record_provider_status("Google", "captcha")
 
     assert not discovery._provider_available("Google")
     assert discovery._provider_available("Bing")
-    assert discovery._PROVIDER_FAILURES["Google"] == 1
+    assert discovery.PROVIDER_POOL._failures["Google"] == 1
 
 
 def test_provider_success_clears_its_cooldown():
     import app.telegram_gateway.discovery as discovery
 
-    discovery._PROVIDER_COOLDOWNS["Google"] = 9999999999.0
-    discovery._PROVIDER_FAILURES["Google"] = 2
+    discovery.PROVIDER_POOL.record("Google", "captcha")
+    discovery.PROVIDER_POOL.record("Google", "captcha")
 
     discovery._record_provider_status("Google", "ok")
 
     assert discovery._provider_available("Google")
-    assert "Google" not in discovery._PROVIDER_FAILURES
+    assert "Google" not in discovery.PROVIDER_POOL._failures
 
 
 async def test_web_search_uses_short_cache(monkeypatch):

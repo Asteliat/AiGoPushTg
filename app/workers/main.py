@@ -62,6 +62,8 @@ async def shutdown(worker: WorkerState, tasks: list[asyncio.Task]) -> None:
 async def main() -> None:
     cfg = get_settings()
     logging.basicConfig(level=cfg.log_level.upper())
+    # Channel diagnostics stay visible even when the root level is WARNING.
+    logging.getLogger("app.workers.channel_monitor").setLevel(logging.INFO)
     worker = WorkerState(
         cfg=cfg,
         worker_instance_id=f"{os.getenv('HOSTNAME') or 'worker'}:{os.getpid()}",
