@@ -53,6 +53,13 @@ DISCUSSION_COMMENT_SCAN_LIMIT = 100
 DISCUSSION_COMMENT_CONTEXT_LIMIT = 10
 
 @dataclass(frozen=True, slots=True)
+class PublicationOutcome:
+    """Result of the publication attempt for one channel post."""
+
+    status: str
+    holds_cooldown_lock: bool
+
+@dataclass(frozen=True, slots=True)
 class PostClaim:
     """What processing a channel post needs after it has been claimed."""
 
@@ -94,6 +101,176 @@ class ChannelMonitor:
         self.client.add_event_handler(self.handle_reply_to_our_channel_comment, events.NewMessage(incoming=True))
         self.recovery_task = self.spawn(self.recovery_loop())
 
+
+    async def _publish_comment(
+        self,
+        *,
+        account,
+        channel_id: int,
+        post_id: int,
+        result,
+        publication_status: str,
+        cooldown_seconds: int,
+        group_entity,
+        group_peer_id: int,
+        root_message_id: int,
+        cooldown_lock_key: str,
+    ) -> PublicationOutcome | None:
+        """Publish the AI comment as a reply to the discussion root.
+
+        Returns ``None`` when another publication currently holds the channel
+        cooldown lock; the post is re-queued in that case.
+        """
+        cooldown_lock_acquired = False
+        if publication_status == "approved" or publication_status == "publishing":
+            if cooldown_seconds:
+                cooldown_lock_key = redis_keys.channel_cooldown_lock(
+                    self.account_id, channel_id
+                )
+                cooldown_lock_acquired = bool(await self.redis.set(
+                    cooldown_lock_key, str(post_id), nx=True, ex=90
+                ))
+                if not cooldown_lock_acquired:
+                    await self.update_state(
+                        channel_id, post_id, status="retry",
+                        next_retry_at=_utcnow() + timedelta(seconds=60),
+                        last_error="another channel publication is in progress",
+                    )
+                    return
+                cooldown_key = redis_keys.channel_reply_cooldown(self.account_id, channel_id)
+                if await self.redis.exists(cooldown_key):
+                    async with SessionFactory() as db:
+                        current = await db.scalar(select(ChannelAnalysis).where(
+                            ChannelAnalysis.account_id == self.account_id,
+                            ChannelAnalysis.channel_id == channel_id,
+                            ChannelAnalysis.post_id == post_id,
+                        ))
+                        if current:
+                            current.publication_status = "skipped_cooldown"
+                            await db.commit()
+                    publication_status = "skipped_cooldown"
+
+            if publication_status in {"approved", "publishing"}:
+                async with SessionFactory() as db:
+                    current = await db.scalar(select(ChannelAnalysis).where(
+                        ChannelAnalysis.account_id == self.account_id,
+                        ChannelAnalysis.channel_id == channel_id,
+                        ChannelAnalysis.post_id == post_id,
+                    ))
+                    if not current:
+                        raise RuntimeError("Channel analysis disappeared before publication")
+                    if current.publication_status == "approved":
+                        current.publication_status = "publishing"
+                        current.discussion_group_id = group_peer_id
+                        await db.commit()
+                    was_publishing = current.publication_status == "publishing"
+                    known_comment_id = current.published_comment_id
+
+                sent_message = None
+                if was_publishing and known_comment_id:
+                    sent_message = await self.client.get_messages(group_entity, ids=int(known_comment_id))
+                if sent_message is None and was_publishing:
+                    # Recover the narrow crash window where Telegram accepted the
+                    # comment but the worker stopped before saving its message ID.
+                    async for candidate in self.client.iter_messages(
+                        group_entity, reply_to=root_message_id, limit=100
+                    ):
+                        if (
+                            candidate.out
+                            and int(candidate.sender_id or 0) == int(account.telegram_user_id or 0)
+                            and (candidate.message or "").strip() == result.suggested_response.strip()
+                        ):
+                            sent_message = candidate
+                            break
+                if sent_message is None:
+                    sent_message = await self.client.send_message(
+                        group_entity, result.suggested_response, reply_to=root_message_id
+                    )
+
+                async with SessionFactory() as db:
+                    current = await db.scalar(select(ChannelAnalysis).where(
+                        ChannelAnalysis.account_id == self.account_id,
+                        ChannelAnalysis.channel_id == channel_id,
+                        ChannelAnalysis.post_id == post_id,
+                    ))
+                    if current:
+                        current.published_comment_id = int(sent_message.id)
+                        current.discussion_group_id = group_peer_id
+                        current.publication_status = "published"
+                        current.publication_error = ""
+                        await db.commit()
+                if cooldown_seconds:
+                    await self.redis.set(
+                        redis_keys.channel_reply_cooldown(self.account_id, channel_id),
+                        "1", ex=cooldown_seconds,
+                    )
+                publication_status = "published"
+                logging.info(
+                    "Channel-level comment published: account=%s channel_id=%s post_id=%s "
+                    "discussion_group=%s comment_id=%s",
+                    self.account_id, channel_id, post_id, group_peer_id, int(sent_message.id),
+                )
+        return PublicationOutcome(
+            status=publication_status,
+            holds_cooldown_lock=cooldown_lock_acquired,
+        )
+
+    async def _resolve_discussion(
+        self, channel_entity, channel_id: int, post_id: int
+    ) -> tuple[object, object, int, int] | None:
+        """Resolve the linked discussion group and the root message of a post.
+
+        Returns ``None`` when Telegram has no discussion for this post yet; the
+        post state is moved to a retry in that case.
+        """
+        try:
+            discussion = await self.client(GetDiscussionMessageRequest(peer=channel_entity, msg_id=post_id))
+        except Exception as exc:
+            await self.update_state(
+                channel_id, post_id, status="retry",
+                next_retry_at=_utcnow() + timedelta(minutes=5),
+                last_error=f"discussion lookup: {type(exc).__name__}",
+            )
+            logging.exception(
+                "Channel discussion lookup failed: account=%s channel_id=%s post_id=%s",
+                self.account_id, channel_id, post_id,
+            )
+            return
+
+        group_entity = next(
+            (chat for chat in getattr(discussion, "chats", []) if getattr(chat, "megagroup", False)),
+            None,
+        )
+        discussion_messages = getattr(discussion, "messages", [])
+        root_message = next(
+            (
+                item for item in discussion_messages
+                if group_entity
+                and getattr(getattr(item, "peer_id", None), "channel_id", None) == getattr(group_entity, "id", None)
+            ),
+            None,
+        )
+        if not group_entity or not root_message:
+            await self.update_state(
+                channel_id, post_id, status="retry",
+                next_retry_at=_utcnow() + timedelta(minutes=30),
+                last_error="linked discussion group or root message unavailable",
+            )
+            logging.warning(
+                "Channel discussion target unavailable: account=%s channel_id=%s post_id=%s",
+                self.account_id, channel_id, post_id,
+            )
+            return
+
+        await self.register_discussion_group(channel_id, group_entity)
+        group_peer_id = int(utils.get_peer_id(group_entity))
+        root_message_id = int(root_message.id)
+        logging.info(
+            "Channel post processing started: account=%s channel_id=%s post_id=%s "
+            "discussion_group=%s root_message_id=%s",
+            self.account_id, channel_id, post_id, group_peer_id, root_message_id,
+        )
+        return group_entity, root_message, group_peer_id, root_message_id
 
     async def _claim_post(
         self, channel_id: int, post_id: int, stored_post_text: str, channel_title: str
@@ -435,53 +612,12 @@ class ChannelMonitor:
             comment_policy_action = claim.comment_policy_action
             min_comments = claim.min_comments
             wait_seconds = claim.wait_seconds
-            try:
-                discussion = await self.client(GetDiscussionMessageRequest(peer=channel_entity, msg_id=post_id))
-            except Exception as exc:
-                await self.update_state(
-                    channel_id, post_id, status="retry",
-                    next_retry_at=_utcnow() + timedelta(minutes=5),
-                    last_error=f"discussion lookup: {type(exc).__name__}",
-                )
-                logging.exception(
-                    "Channel discussion lookup failed: account=%s channel_id=%s post_id=%s",
-                    self.account_id, channel_id, post_id,
-                )
+            resolved = await self._resolve_discussion(
+                channel_entity, channel_id, post_id
+            )
+            if resolved is None:
                 return
-
-            group_entity = next(
-                (chat for chat in getattr(discussion, "chats", []) if getattr(chat, "megagroup", False)),
-                None,
-            )
-            discussion_messages = getattr(discussion, "messages", [])
-            root_message = next(
-                (
-                    item for item in discussion_messages
-                    if group_entity
-                    and getattr(getattr(item, "peer_id", None), "channel_id", None) == getattr(group_entity, "id", None)
-                ),
-                None,
-            )
-            if not group_entity or not root_message:
-                await self.update_state(
-                    channel_id, post_id, status="retry",
-                    next_retry_at=_utcnow() + timedelta(minutes=30),
-                    last_error="linked discussion group or root message unavailable",
-                )
-                logging.warning(
-                    "Channel discussion target unavailable: account=%s channel_id=%s post_id=%s",
-                    self.account_id, channel_id, post_id,
-                )
-                return
-
-            await self.register_discussion_group(channel_id, group_entity)
-            group_peer_id = int(utils.get_peer_id(group_entity))
-            root_message_id = int(root_message.id)
-            logging.info(
-                "Channel post processing started: account=%s channel_id=%s post_id=%s "
-                "discussion_group=%s root_message_id=%s",
-                self.account_id, channel_id, post_id, group_peer_id, root_message_id,
-            )
+            group_entity, root_message, group_peer_id, root_message_id = resolved
 
             comments, comment_fetch_diagnostics = await fetch_discussion_comments(
                 self.client,
@@ -633,95 +769,26 @@ class ChannelMonitor:
 
                 publication_status = result.publication_status
 
-            if publication_status == "approved" or publication_status == "publishing":
-                if cooldown_seconds:
-                    cooldown_lock_key = redis_keys.channel_cooldown_lock(
-                        self.account_id, channel_id
-                    )
-                    cooldown_lock_acquired = bool(await self.redis.set(
-                        cooldown_lock_key, str(post_id), nx=True, ex=90
-                    ))
-                    if not cooldown_lock_acquired:
-                        await self.update_state(
-                            channel_id, post_id, status="retry",
-                            next_retry_at=_utcnow() + timedelta(seconds=60),
-                            last_error="another channel publication is in progress",
-                        )
-                        return
-                    cooldown_key = redis_keys.channel_reply_cooldown(self.account_id, channel_id)
-                    if await self.redis.exists(cooldown_key):
-                        async with SessionFactory() as db:
-                            current = await db.scalar(select(ChannelAnalysis).where(
-                                ChannelAnalysis.account_id == self.account_id,
-                                ChannelAnalysis.channel_id == channel_id,
-                                ChannelAnalysis.post_id == post_id,
-                            ))
-                            if current:
-                                current.publication_status = "skipped_cooldown"
-                                await db.commit()
-                        publication_status = "skipped_cooldown"
-
-                if publication_status in {"approved", "publishing"}:
-                    async with SessionFactory() as db:
-                        current = await db.scalar(select(ChannelAnalysis).where(
-                            ChannelAnalysis.account_id == self.account_id,
-                            ChannelAnalysis.channel_id == channel_id,
-                            ChannelAnalysis.post_id == post_id,
-                        ))
-                        if not current:
-                            raise RuntimeError("Channel analysis disappeared before publication")
-                        if current.publication_status == "approved":
-                            current.publication_status = "publishing"
-                            current.discussion_group_id = group_peer_id
-                            await db.commit()
-                        was_publishing = current.publication_status == "publishing"
-                        known_comment_id = current.published_comment_id
-
-                    sent_message = None
-                    if was_publishing and known_comment_id:
-                        sent_message = await self.client.get_messages(group_entity, ids=int(known_comment_id))
-                    if sent_message is None and was_publishing:
-                        # Recover the narrow crash window where Telegram accepted the
-                        # comment but the worker stopped before saving its message ID.
-                        async for candidate in self.client.iter_messages(
-                            group_entity, reply_to=root_message_id, limit=100
-                        ):
-                            if (
-                                candidate.out
-                                and int(candidate.sender_id or 0) == int(account.telegram_user_id or 0)
-                                and (candidate.message or "").strip() == result.suggested_response.strip()
-                            ):
-                                sent_message = candidate
-                                break
-                    if sent_message is None:
-                        sent_message = await self.client.send_message(
-                            group_entity, result.suggested_response, reply_to=root_message_id
-                        )
-
-                    async with SessionFactory() as db:
-                        current = await db.scalar(select(ChannelAnalysis).where(
-                            ChannelAnalysis.account_id == self.account_id,
-                            ChannelAnalysis.channel_id == channel_id,
-                            ChannelAnalysis.post_id == post_id,
-                        ))
-                        if current:
-                            current.published_comment_id = int(sent_message.id)
-                            current.discussion_group_id = group_peer_id
-                            current.publication_status = "published"
-                            current.publication_error = ""
-                            await db.commit()
-                    if cooldown_seconds:
-                        await self.redis.set(
-                            redis_keys.channel_reply_cooldown(self.account_id, channel_id),
-                            "1", ex=cooldown_seconds,
-                        )
-                    publication_status = "published"
-                    logging.info(
-                        "Channel-level comment published: account=%s channel_id=%s post_id=%s "
-                        "discussion_group=%s comment_id=%s",
-                        self.account_id, channel_id, post_id, group_peer_id, int(sent_message.id),
-                    )
-
+            cooldown_lock_key = redis_keys.channel_cooldown_lock(
+                self.account_id, channel_id
+            )
+            if publication_status in {"approved", "publishing"}:
+                outcome = await self._publish_comment(
+                    account=account,
+                    channel_id=channel_id,
+                    post_id=post_id,
+                    result=result,
+                    publication_status=publication_status,
+                    cooldown_seconds=cooldown_seconds,
+                    group_entity=group_entity,
+                    group_peer_id=group_peer_id,
+                    root_message_id=root_message_id,
+                    cooldown_lock_key=cooldown_lock_key,
+                )
+                if outcome is None:
+                    return
+                publication_status = outcome.status
+                cooldown_lock_acquired = outcome.holds_cooldown_lock
             label = "по теме" if result.on_topic else "не по теме"
             status_text = publication_status_text(publication_status)
             notification = (
