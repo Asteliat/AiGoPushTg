@@ -32,6 +32,7 @@ from app.services.challenge_monitor import (
 )
 from app.services.challenge_settings import read_challenge_mode
 from app.storage.models import Account
+from app.workers import redis_keys
 
 _MESSAGE_DEDUPE_TTL = 24 * 3600
 _CHAT_COOLDOWN_SECONDS = 60
@@ -124,10 +125,10 @@ class ChallengeWatcher:
             return
 
         chat_id = int(event.chat_id or 0)
-        message_key = f"atcivperson:challenge:seen:{identity.account_id}:{chat_id}:{message.id}"
+        message_key = redis_keys.challenge_seen(identity.account_id, chat_id, int(message.id))
         if not await self._redis.set(message_key, "1", nx=True, ex=_MESSAGE_DEDUPE_TTL):
             return
-        cooldown_key = f"atcivperson:challenge:cooldown:{identity.account_id}:{chat_id}"
+        cooldown_key = redis_keys.challenge_cooldown(identity.account_id, chat_id)
         if not await self._redis.set(cooldown_key, "1", nx=True, ex=_CHAT_COOLDOWN_SECONDS):
             return
 

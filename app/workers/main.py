@@ -31,10 +31,13 @@ from app.services.challenge_monitor import (
     is_challenge_prompt,
 )
 from app.workers.challenge_watcher import ChallengeWatcher
+from app.workers.reconnect import reconnect_at
+from app.workers.send_policy import automatic_send_allowed
+from app.workers import redis_keys
 
 async def heartbeat(redis):
     while True:
-        await redis.set("atcivperson:worker:last_seen", "ok", ex=60)
+        await redis.set(redis_keys.WORKER_HEARTBEAT, "ok", ex=60)
         await asyncio.sleep(20)
 
 async def main():
@@ -75,8 +78,8 @@ async def main():
     challenge_watcher = ChallengeWatcher(redis=redis, send_log=send_log)
 
     async def remember_message(aid: int, chat_id: int, sender_id: int, item: dict) -> None:
-        chat_key = f"atcivperson:memory:{aid}:{chat_id}:chat"
-        person_key = f"atcivperson:memory:{aid}:{chat_id}:person:{sender_id}"
+        chat_key = redis_keys.chat_memory(aid, chat_id)
+        person_key = redis_keys.person_memory(aid, chat_id, sender_id)
         raw = json.dumps(item, ensure_ascii=False)
         for key, limit in ((chat_key, 30), (person_key, 16)):
             await redis.lpush(key, raw)
@@ -85,8 +88,8 @@ async def main():
 
     async def read_conversation_context(aid: int, chat_id: int, sender_id: int) -> str:
         keys = [
-            f"atcivperson:memory:{aid}:{chat_id}:chat",
-            f"atcivperson:memory:{aid}:{chat_id}:person:{sender_id}",
+            redis_keys.chat_memory(aid, chat_id),
+            redis_keys.person_memory(aid, chat_id, sender_id),
         ]
         merged = {}
         for key in keys:
@@ -127,7 +130,7 @@ async def main():
             return False
 
         # Reserve the message before sending so a worker reconnect cannot double-reply.
-        dedupe_key = f"atcivperson:autoresponder:message:{aid}:{int(event.chat_id)}:{int(event.message.id)}"
+        dedupe_key = redis_keys.autoresponder_message(aid, int(event.chat_id), int(event.message.id))
         reserved = await redis.set(dedupe_key, "1", nx=True, ex=30 * 24 * 3600)
         if not reserved:
             return True
@@ -145,7 +148,7 @@ async def main():
         except ValueError:
             cooldown = 0
         if cooldown:
-            cooldown_key = f"atcivperson:autoresponder:cooldown:{aid}:{sender_id}"
+            cooldown_key = redis_keys.autoresponder_cooldown(aid, sender_id)
             allowed = await redis.set(cooldown_key, "1", nx=True, ex=cooldown)
             if not allowed:
                 return True
@@ -204,7 +207,7 @@ async def main():
             return True
 
         aid = int(account.id)
-        lock_key = f"atcivperson:trigger-lock:{aid}"
+        lock_key = redis_keys.trigger_lock(aid)
         lock_token = secrets.token_urlsafe(18)
         try:
             locked = bool(await redis.set(lock_key, lock_token, nx=True, ex=3600))
@@ -219,13 +222,10 @@ async def main():
             logging.exception("Could not acquire trigger lock for account %s", aid)
             return True
 
-        release_script = (
-            "if redis.call('get', KEYS[1]) == ARGV[1] "
-            "then return redis.call('del', KEYS[1]) else return 0 end"
-        )
+        release_script = redis_keys.CAS_DELETE
         try:
-            trigger_cooldown_key = f"atcivperson:trigger-cooldown:{aid}:{selected.id}"
-            message_cooldown_key = f"atcivperson:trigger-message-cooldown:{aid}"
+            trigger_cooldown_key = redis_keys.trigger_cooldown(aid, int(selected.id))
+            message_cooldown_key = redis_keys.trigger_message_cooldown(aid)
             cooldown_keys = []
             if int(selected.cooldown_seconds or 0) > 0:
                 cooldown_keys.append(trigger_cooldown_key)
@@ -363,28 +363,6 @@ async def main():
             except Exception:
                 logging.exception("Could not release trigger lock for account %s", aid)
 
-    async def automatic_send_allowed(aid: int, chat_id: int, expected_agent_id: int, *, allow_unbound: bool = False) -> bool:
-        async with SessionFactory() as db:
-            account = await db.get(Account, aid)
-            if (
-                not account or not account.enabled or account.manual_pause
-                or not account.ai_enabled
-                or account.reply_mode != "automatic"
-                or account.learning_status in {"training", "stopping"}
-                or account.ai_agent_id != expected_agent_id
-                or not await global_ai_enabled(db)
-            ):
-                return False
-            binding = None
-            if not allow_unbound:
-                binding = await db.scalar(select(ChatBinding).where(
-                    ChatBinding.account_id == aid,
-                    ChatBinding.chat_id == chat_id,
-                    ChatBinding.enabled.is_(True),
-                ))
-            agent = await db.get(AIAgent, account.ai_agent_id) if account.ai_agent_id else None
-            return bool(agent and agent.enabled and (allow_unbound or binding))
-
     async def on_message(event, *, aid, labels, allow_unbound: bool = False, forced_label: str | None = None, extra_context: str = "", force_addressed: bool = False):
         label = forced_label or labels.get(event.chat_id)
         if label is None and not allow_unbound and not event.is_private:
@@ -448,7 +426,7 @@ async def main():
                     started = current.learning_started_at
                     if started.tzinfo is None:
                         started = started.replace(tzinfo=timezone.utc)
-                    learning_key = f"atcivperson:learning:{aid}:{int(started.timestamp())}"
+                    learning_key = redis_keys.learning_buffer(aid, int(started.timestamp()))
                     learning_item = {
                         "chat_id": int(event.chat_id),
                         "message_id": int(event.message.id),
@@ -526,7 +504,7 @@ async def main():
             )
             if cooldown_seconds > 0:
                 allowed = await redis.set(
-                    f"atcivperson:reply-cooldown:{aid}:{event.chat_id}", "1",
+                    redis_keys.reply_cooldown(aid, int(event.chat_id)), "1",
                     ex=cooldown_seconds, nx=True,
                 )
                 if not allowed:
@@ -695,7 +673,7 @@ async def main():
 
             chat_ids = [binding.chat_id for binding in bindings]
             labels = {binding.chat_id: f"Чат {index + 1}" for index, binding in enumerate(bindings)}
-            key = f"atcivperson:learning:{aid}:{int(started.timestamp())}"
+            key = redis_keys.learning_buffer(aid, int(started.timestamp()))
             had_buffer = bool(await redis.exists(key))
 
             async def capture_training_message(event):
@@ -987,17 +965,20 @@ async def main():
     def schedule_reconnect(aid: int) -> None:
         failures = reconnect_failures.get(aid, 0) + 1
         reconnect_failures[aid] = failures
-        delay = min(300, 5 * (2 ** min(failures - 1, 6)))
-        reconnect_after[aid] = datetime.now(timezone.utc) + timedelta(seconds=delay)
-        logging.warning("Telegram account %s reconnect scheduled in %ss (attempt %s)", aid, delay, failures)
+        reconnect_after[aid] = reconnect_at(failures)
+        logging.warning(
+            "Telegram account %s reconnect scheduled (attempt %s)", aid, failures
+        )
 
     async def maintain_session_lease(aid: int, token: str, client: TelegramClient) -> None:
-        key = f"atcivperson:telegram-session:{aid}"
-        script = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('expire', KEYS[1], 90) else return 0 end"
+        key = redis_keys.session_lease(aid)
+        script = redis_keys.CAS_EXPIRE
         while True:
             await asyncio.sleep(20)
             try:
-                renewed = await redis.eval(script, 1, key, token)
+                renewed = await redis.eval(
+                script, 1, key, token, redis_keys.SESSION_LEASE_TTL_SECONDS
+            )
             except Exception:
                 logging.exception("Could not renew Telegram session lease for account %s", aid)
                 continue
@@ -1017,8 +998,8 @@ async def main():
             await asyncio.gather(task, return_exceptions=True)
         token = session_lease_tokens.pop(aid, None)
         if token:
-            key = f"atcivperson:telegram-session:{aid}"
-            script = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end"
+            key = redis_keys.session_lease(aid)
+            script = redis_keys.CAS_DELETE
             try:
                 await redis.eval(script, 1, key, token)
             except Exception:
@@ -1038,7 +1019,7 @@ async def main():
             except OSError:
                 logging.exception("Could not harden session file permissions for account %s", account.id)
 
-        lease_key = f"atcivperson:telegram-session:{account.id}"
+        lease_key = redis_keys.session_lease(account.id)
         lease_token = f"{worker_instance_id}|{secrets.token_urlsafe(24)}"
         lease_acquired = bool(await redis.set(lease_key, lease_token, nx=True, ex=90))
         if not lease_acquired:
@@ -1051,8 +1032,7 @@ async def main():
             # Clear it only with compare-and-delete, and only when no local client owns it.
             if owner_id == worker_instance_id and account.id not in clients and current_lease:
                 removed = await redis.eval(
-                    "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
-                    1, lease_key, current_lease,
+                    redis_keys.CAS_DELETE, 1, lease_key, current_lease,
                 )
                 if removed:
                     logging.warning(
@@ -1081,8 +1061,7 @@ async def main():
                 await asyncio.gather(lease_task, return_exceptions=True)
             try:
                 await redis.eval(
-                    "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
-                    1, lease_key, lease_token,
+                    redis_keys.CAS_DELETE, 1, lease_key, lease_token,
                 )
             except Exception:
                 logging.exception(
@@ -1205,7 +1184,7 @@ async def main():
                         if should_finalize:
                             started = account.learning_started_at
                             if started:
-                                key = f"atcivperson:learning:{account.id}:{int(started.timestamp())}"
+                                key = redis_keys.learning_buffer(account.id, int(started.timestamp()))
                                 await finalize_learning_buffer(account.id, key, min(1000, max(500, account.learning_limit)))
                             else:
                                 async with SessionFactory() as cleanup_db:
