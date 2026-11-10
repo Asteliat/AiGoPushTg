@@ -1,16 +1,16 @@
+name: aigopushtg
+
 services:
   postgres:
     image: postgres:17-alpine
     restart: unless-stopped
     environment:
-      # Legacy identifiers: the existing PostgreSQL volume was initialised with this
-      # user and database name, so they stay unchanged after the rename to AiGoPushTg.
-      POSTGRES_DB: atcivperson
-      POSTGRES_USER: atcivperson
+      POSTGRES_DB: aigopushtg
+      POSTGRES_USER: aigopushtg
       POSTGRES_PASSWORD: $POSTGRES_PASSWORD
     volumes: [postgres_data:/var/lib/postgresql/data]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U atcivperson -d atcivperson"]
+      test: ["CMD-SHELL", "pg_isready -U aigopushtg -d aigopushtg"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -40,9 +40,9 @@ services:
     restart: unless-stopped
     environment:
       PGHOST: postgres
-      PGUSER: atcivperson
+      PGUSER: aigopushtg
       PGPASSWORD: $POSTGRES_PASSWORD
-      PGDATABASE: atcivperson
+      PGDATABASE: aigopushtg
     volumes:
       - ./backups:/backups
     command:
@@ -56,7 +56,7 @@ services:
           out="/backups/aigopushtg-$$stamp.dump"
           if pg_dump -Fc -f "$$tmp" && mv "$$tmp" "$$out"; then
             chmod 600 "$$out"
-            find /backups -maxdepth 1 -type f \( -name 'aigopushtg-*.dump' -o -name 'atcivperson-*.dump' \) -mtime +14 -delete
+            find /backups -maxdepth 1 -type f -name 'aigopushtg-*.dump' -mtime +14 -delete
           else
             rm -f "$$tmp"
             echo "Database backup failed" >&2
