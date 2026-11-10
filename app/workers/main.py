@@ -31,7 +31,12 @@ from app.workers.challenge_watcher import ChallengeWatcher
 from app.workers.state import WorkerState
 from app.workers.learning import finalize_learning_buffer, run_learning
 from app.workers.dialogs_sync import sync_account_dialogs
-from app.workers.reconnect import reconnect_at
+from app.workers.lease import (
+    lease_owner,
+    maintain_session_lease,
+    release_session_lease,
+    schedule_reconnect,
+)
 from app.workers.send_policy import automatic_send_allowed
 from app.workers import redis_keys
 
@@ -574,53 +579,10 @@ async def main():
                 account.connection_status = status
                 await db.commit()
 
-    def schedule_reconnect(aid: int) -> None:
-        failures = worker.reconnect_failures.get(aid, 0) + 1
-        worker.reconnect_failures[aid] = failures
-        worker.reconnect_after[aid] = reconnect_at(failures)
-        logging.warning(
-            "Telegram account %s reconnect scheduled (attempt %s)", aid, failures
-        )
-
-    async def maintain_session_lease(aid: int, token: str, client: TelegramClient) -> None:
-        key = redis_keys.session_lease(aid)
-        script = redis_keys.CAS_EXPIRE
-        while True:
-            await asyncio.sleep(20)
-            try:
-                renewed = await worker.redis.eval(
-                script, 1, key, token, redis_keys.SESSION_LEASE_TTL_SECONDS
-            )
-            except Exception:
-                logging.exception("Could not renew Telegram session lease for account %s", aid)
-                continue
-            if not renewed:
-                logging.error(
-                    "Telegram session lease lost for account %s on worker %s; disconnecting",
-                    aid, worker.worker_instance_id,
-                )
-                if client.is_connected():
-                    await client.disconnect()
-                return
-
-    async def release_session_lease(aid: int) -> None:
-        task = worker.session_lease_tasks.pop(aid, None)
-        if task and not task.done():
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
-        token = worker.session_lease_tokens.pop(aid, None)
-        if token:
-            key = redis_keys.session_lease(aid)
-            script = redis_keys.CAS_DELETE
-            try:
-                await worker.redis.eval(script, 1, key, token)
-            except Exception:
-                logging.exception("Could not release Telegram session lease for account %s", aid)
-
     async def connect_account(account, binding_rows):
         if not worker.cfg.telegram_api_id or not worker.cfg.telegram_api_hash:
             await set_connection_status(account.id, "error")
-            schedule_reconnect(account.id)
+            schedule_reconnect(worker, account.id)
             return
         session_file = str(account.session_path)
         if not session_file.endswith(".session"):
@@ -637,7 +599,7 @@ async def main():
         if not lease_acquired:
             current_lease = await worker.redis.get(lease_key)
             owner_text = str(current_lease or "")
-            owner_id = owner_text.split("|", 1)[0] if "|" in owner_text else "unknown/legacy-worker"
+            owner_id = lease_owner(owner_text)
             lease_ttl = await worker.redis.ttl(lease_key)
 
             # A failed connection in this same process must never strand its own lease.
@@ -661,7 +623,7 @@ async def main():
                     "owner=%s lease_ttl=%ss this_worker=%s",
                     account.id, owner_id, lease_ttl, worker.worker_instance_id,
                 )
-                schedule_reconnect(account.id)
+                schedule_reconnect(worker, account.id)
                 return
 
         client = None
@@ -694,7 +656,7 @@ async def main():
             )
             configure_telethon_sqlite_session(client)
             lease_task = asyncio.create_task(
-                maintain_session_lease(account.id, lease_token, client)
+                maintain_session_lease(worker, account.id, lease_token, client)
             )
             await client.connect()
             if not await client.is_user_authorized():
@@ -703,7 +665,7 @@ async def main():
                 if client.is_connected():
                     await client.disconnect()
                 await release_connecting_lease()
-                schedule_reconnect(account.id)
+                schedule_reconnect(worker, account.id)
                 return
 
             labels = await sync_account_dialogs(
@@ -762,7 +724,7 @@ async def main():
             logging.exception(
                 "Could not connect account %s on worker %s", account.id, worker.worker_instance_id
             )
-            schedule_reconnect(account.id)
+            schedule_reconnect(worker, account.id)
             if client and client.is_connected():
                 try:
                     await client.disconnect()
@@ -828,7 +790,7 @@ async def main():
                         )
                     )
                     if existing_task is not None and existing_task.done():
-                        schedule_reconnect(aid)
+                        schedule_reconnect(worker, aid)
                     if aid not in active or runtime_config_changed or (existing_task is not None and existing_task.done()):
                         learning = worker.learning_tasks.pop(aid, None)
                         if learning and not learning.done():
@@ -839,7 +801,7 @@ async def main():
                         client=worker.clients.pop(aid,None)
                         if client and client.is_connected():
                             await client.disconnect()
-                        await release_session_lease(aid)
+                        await release_session_lease(worker, aid)
                         worker.watched.pop(aid,None); worker.account_snapshot.pop(aid,None)
                         previous = all_by_id.get(aid)
                         status = "paused" if previous and previous.manual_pause else ("disconnected" if not previous or not previous.enabled else "error")
@@ -897,7 +859,7 @@ async def main():
         for aid, client in list(worker.clients.items()):
             if client.is_connected():
                 await client.disconnect()
-            await release_session_lease(aid)
+            await release_session_lease(worker, aid)
         if worker.bot:
             await worker.bot.session.close()
         await worker.redis.aclose()
