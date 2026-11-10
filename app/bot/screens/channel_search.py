@@ -6,6 +6,7 @@ from app.bot.core import CANCEL
 from app.bot.core import CHANNEL_CANDIDATES
 from app.bot.core import CHANNEL_PENDING_JOIN
 from app.bot.core import Flow
+from app.bot.candidates import candidate_at
 from app.bot.core import check_cb
 from app.bot.core import check_msg
 from app.bot.core import delete_msg
@@ -422,10 +423,21 @@ async def channel_candidate_preview(c: CallbackQuery):
     _, _, aid_raw, index_raw = c.data.split(":")
     aid, index = int(aid_raw), int(index_raw)
     candidates = CHANNEL_CANDIDATES.get((c.from_user.id, aid), [])
-    if index < 0 or index >= len(candidates):
-        await c.answer("Результаты устарели. Запустите поиск ещё раз.", show_alert=True)
+    item = candidate_at(candidates, index)
+    if item is None:
+        await c.answer("Результаты устарели")
+        await edit(
+            c,
+            "Результаты поиска больше не сохранены (бот перезапускался).\n"
+            "Запустите поиск ещё раз — запрос вводить заново не нужно, кнопка ниже.",
+            kb(
+                [
+                    [("🔎 Новый поиск", f"tool:channels:account:{aid}")],
+                    [("⬅️ Инструменты", "tool:menu")],
+                ]
+            ),
+        )
         return
-    item = candidates[index]
     link = item.get("link")
     if not link:
         await c.answer("У этого канала нет ссылки.", show_alert=True)
