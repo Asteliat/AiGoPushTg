@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="theme-color" content="#080b12">
-<meta name="description" content="Интерактивное руководство AtcivPerson. Исследуйте меню бота и узнайте, как работает каждая настройка.">
-<title>AtcivPerson — интерактивное руководство</title>
+<meta name="description" content="Интерактивное руководство AiGoPushTg. Исследуйте меню бота и узнайте, как работает каждая настройка.">
+<title>AiGoPushTg — интерактивное руководство</title>
 <style>
 :root{color-scheme:dark;--bg:#080b12;--panel:#101722;--panel2:#141f2e;--line:#253247;--text:#edf4ff;--muted:#93a2b8;--blue:#91bdff;--cyan:#82e1df;--violet:#b8a5ff;--green:#83dcb3;--amber:#f0c67c;--red:#ff899b}
 *{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at 75% -15%,#4567a52e,transparent 42%),radial-gradient(ellipse at 0% 75%,#2a8c8a12,transparent 38%),var(--bg);color:var(--text);font:15px/1.65 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}button,input{font:inherit}button{cursor:pointer}.top{height:72px;position:sticky;top:0;z-index:10;display:flex;align-items:center;justify-content:space-between;padding:0 clamp(16px,4vw,54px);border-bottom:1px solid #ffffff12;background:#080b12d9;backdrop-filter:blur(24px)}.brand{display:flex;align-items:center;gap:12px;font-weight:800;letter-spacing:.08em}.logo{width:37px;height:37px;border-radius:13px;display:grid;place-items:center;color:#07111b;background:linear-gradient(140deg,#a8d0ff,#8f9ef3 55%,#72d9d0);box-shadow:0 6px 26px #84aefc35;font-weight:950}.brand small{display:block;font-size:9px;color:#8495ad;letter-spacing:.23em}.topright{display:flex;gap:12px;align-items:center}.search{width:min(330px,38vw);position:relative}.search input{width:100%;background:#111a28;border:1px solid #2a3950;border-radius:13px;color:var(--text);padding:10px 13px 10px 37px;outline:none}.search:before{content:"⌕";position:absolute;left:13px;top:4px;font-size:22px;color:#8397b3}.search input:focus{border-color:#8dbaff88;box-shadow:0 0 0 3px #8dbaff12}.top-pill{font-size:10px;color:#aebed3;border:1px solid #2a3950;border-radius:99px;padding:6px 10px;letter-spacing:.1em}.mobile-menu{display:none;background:#162235;color:#dceaff;border:1px solid #30415a;border-radius:10px;padding:8px 11px}
@@ -17,7 +17,7 @@
 </head>
 <body>
 <header class="top">
- <div class="brand"><div class="logo">A</div><div>ATCIVPERSON<small>INTERACTIVE GUIDE</small></div></div>
+ <div class="brand"><div class="logo">A</div><div>AIGOPUSHTG<small>INTERACTIVE GUIDE</small></div></div>
  <div class="topright"><div class="search"><input id="search" type="search" placeholder="Найти раздел или функцию…" aria-label="Поиск по руководству"></div><span class="top-pill">BOT MENU · GUIDE</span><button class="mobile-menu" id="mobileMenu">☰</button></div>
 </header>
 <div class="shell">
@@ -28,14 +28,14 @@
 </aside>
 <main class="main">
  <div class="hero">
-  <div class="eyebrow">ATCIVPERSON · FULL BOT MANUAL</div>
+  <div class="eyebrow">AIGOPUSHTG · FULL BOT MANUAL</div>
   <h1>Весь бот.<br><span class="grad">Кнопка за кнопкой.</span></h1>
-  <p>Исследуйте меню AtcivPerson так, будто вы открыли самого бота. Выбирайте разделы, переходите во вложенные экраны и изучайте назначение каждой настройки, порядок работы и взаимосвязи функций.</p>
+  <p>Исследуйте меню AiGoPushTg так, будто вы открыли самого бота. Выбирайте разделы, переходите во вложенные экраны и изучайте назначение каждой настройки, порядок работы и взаимосвязи функций.</p>
   <div class="hero-stats"><span class="chip">Интерактивная навигация</span><span class="chip">Полное дерево меню</span><span class="chip">Подробные инструкции</span><span class="chip">Desktop + Mobile</span></div>
  </div>
  <div class="workspace">
   <section class="panel">
-   <div class="panel-head"><b>◈  МЕНЮ ATCIVPERSON</b><span>DEMO NAVIGATION</span></div>
+   <div class="panel-head"><b>◈  МЕНЮ AIGOPUSHTG</b><span>DEMO NAVIGATION</span></div>
    <div class="bot-screen" id="botScreen"></div>
   </section>
   <section class="panel">
@@ -43,12 +43,12 @@
    <div class="detail" id="detailScreen"></div>
   </section>
  </div>
- <footer class="footer">ATCIVPERSON · Интерактивное руководство по структуре меню и функциям проекта. Демо-кнопки не подключены к Telegram API и не изменяют реальные настройки.</footer>
+ <footer class="footer">AIGOPUSHTG · Интерактивное руководство по структуре меню и функциям проекта. Демо-кнопки не подключены к Telegram API и не изменяют реальные настройки.</footer>
 </main>
 </div>
 <script>
 const N={
- home:{title:"Главное меню",icon:"⌂",subtitle:"Стартовая панель управления AtcivPerson",desc:"Главное меню — точка входа ко всем инструментам. В реальном боте оно открывается командой /start в личном чате с управляющим ботом. Здесь находятся шесть основных разделов.",body:`<p>Через главное меню администратор управляет подключёнными Telegram-аккаунтами, конфигурациями ИИ, стилями общения, примерами, триггерами и системными настройками.</p><h3>Как устроена логика</h3><ul><li><strong>Аккаунты</strong> — отдельные Telegram-сессии и все их рабочие настройки.</li><li><strong>ИИ-агенты</strong> — провайдеры, модели, API-ключи и параметры генерации.</li><li><strong>Персоны</strong> — стиль и правила общения.</li><li><strong>Примеры</strong> — образцы входящих сообщений и желаемых ответов.</li><li><strong>Инструменты</strong> — глобальные триггеры.</li><li><strong>Настройки</strong> — глобальные вероятности и журналы событий.</li></ul><div class="tip good">Рекомендуемый порядок первого запуска: агент → персона → примеры → аккаунт → чаты → ручная проверка → автоматический режим при необходимости.</div>`,children:["accounts","agents","personas","examples","tools","settings"]},
+ home:{title:"Главное меню",icon:"⌂",subtitle:"Стартовая панель управления AiGoPushTg",desc:"Главное меню — точка входа ко всем инструментам. В реальном боте оно открывается командой /start в личном чате с управляющим ботом. Здесь находятся шесть основных разделов.",body:`<p>Через главное меню администратор управляет подключёнными Telegram-аккаунтами, конфигурациями ИИ, стилями общения, примерами, триггерами и системными настройками.</p><h3>Как устроена логика</h3><ul><li><strong>Аккаунты</strong> — отдельные Telegram-сессии и все их рабочие настройки.</li><li><strong>ИИ-агенты</strong> — провайдеры, модели, API-ключи и параметры генерации.</li><li><strong>Персоны</strong> — стиль и правила общения.</li><li><strong>Примеры</strong> — образцы входящих сообщений и желаемых ответов.</li><li><strong>Инструменты</strong> — глобальные триггеры.</li><li><strong>Настройки</strong> — глобальные вероятности и журналы событий.</li></ul><div class="tip good">Рекомендуемый порядок первого запуска: агент → персона → примеры → аккаунт → чаты → ручная проверка → автоматический режим при необходимости.</div>`,children:["accounts","agents","personas","examples","tools","settings"]},
  accounts:{title:"Аккаунты",icon:"👤",subtitle:"Управление подключёнными Telegram-профилями",desc:"В этом разделе отображаются все подключённые пользовательские Telegram-аккаунты. Каждый аккаунт имеет собственную сессию, список чатов, ИИ-агента, персону, режим ответов и дополнительные настройки.",body:`<p>Список можно отфильтровать по состоянию: <strong>В работе</strong>, <strong>На обучении</strong> или <strong>В простое</strong>. Нажатие на строку открывает карточку конкретного аккаунта.</p><h3>Добавление аккаунта</h3><p>Кнопка «Добавить аккаунт» предлагает способы авторизации: QR без прокси, QR через прокси, номер телефона без прокси или через прокси. Для прокси можно выбрать SOCKS5 или HTTP.</p><h3>Что важно</h3><ul><li>Подключайте только аккаунты, которыми владеете или которыми вам разрешено управлять.</li><li>QR-код и сессионные данные — секреты авторизации.</li><li>Подключение не означает, что все чаты сразу начнут обрабатываться: их нужно отдельно загрузить и включить.</li></ul>`,children:["account-add","account-filters","account-card"]},
  "account-add":{title:"Добавить аккаунт",icon:"➕",subtitle:"Подключение Telegram-сессии",desc:"Мастер подключения создаёт новую авторизованную сессию Telegram, которой worker сможет пользоваться после подтверждения владельцем аккаунта.",body:`<p>Бот предлагает четыре варианта:</p><ul><li><strong>QR · без прокси</strong> — прямое подключение и подтверждение QR-кода в приложении Telegram.</li><li><strong>QR · через прокси</strong> — сначала задаётся прокси, затем запускается QR-вход.</li><li><strong>Номер телефона · без прокси</strong> — авторизация через номер и код Telegram.</li><li><strong>Номер телефона · через прокси</strong> — тот же процесс через указанный прокси.</li></ul><p>При настройке прокси вводятся тип, хост, порт и при необходимости логин/пароль. Конфигурация сохраняется зашифрованной.</p><div class="tip warn">Не отправляйте коды входа, QR и пароль 2FA в сторонние чаты. Если Telegram запрашивает пароль двухэтапной аутентификации, следуйте доверенному сценарию авторизации проекта.</div>`,children:[]},
  "account-filters":{title:"Фильтры аккаунтов",icon:"◉",subtitle:"Срез списка по рабочему состоянию",desc:"Фильтры помогают быстро отделить активные аккаунты от тех, которые проходят автообучение или пока не задействованы.",body:`<ul><li><strong>В работе</strong> — аккаунт включён и имеет выбранные активные чаты.</li><li><strong>На обучении</strong> — выполняется обучение контекста.</li><li><strong>В простое</strong> — аккаунт сейчас не относится к рабочим или обучающимся.</li></ul><p>Фильтр меняет только отображение списка. Он не включает, не выключает и не ставит аккаунты на паузу.</p>`,children:[]},

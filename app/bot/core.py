@@ -160,7 +160,7 @@ async def home_text():
     paused = sum(a.manual_pause for a in accounts)
     checks = _CHALLENGE_MODE_LABELS[await read_challenge_mode()]
     return (
-        "🧭 AtcivPerson · панель управления\n\n"
+        "🧭 AiGoPushTg · панель управления\n\n"
         f"👤 аккаунтов: {len(accounts)} · ⏸ пауза: {paused} · 🧠 обучение: {training}\n"
         f"🤖 агентов: {len(agents)} · ИИ: {'включён' if ai_on else 'выключен'}\n"
         f"🛡 проверки: {checks}"

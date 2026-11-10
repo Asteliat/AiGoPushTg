@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     telegram_api_hash: str = ""
     app_env: str = "development"
     log_level: str = "INFO"
+    # Legacy default credentials: an existing PostgreSQL volume already has them.
     database_url: str = "postgresql+asyncpg://atcivperson:change-me-before-deploy@localhost:5432/atcivperson"
     redis_url: str = "redis://localhost:6379/0"
     data_dir: Path = Path("./data")

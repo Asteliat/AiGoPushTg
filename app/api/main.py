@@ -21,7 +21,7 @@ async def lifespan(_: FastAPI):
     await engine.dispose()
 
 
-app = FastAPI(title="AtcivPerson API", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="AiGoPushTg API", version="0.2.0", lifespan=lifespan)
 
 
 async def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
@@ -33,7 +33,7 @@ async def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
 
 @app.get("/health")
 async def health() -> dict[str, str]:
-    return {"status": "ok", "service": "atcivperson-api"}
+    return {"status": "ok", "service": "aigopushtg-api"}
 
 
 @app.get("/v1/accounts", dependencies=[Depends(require_api_key)])

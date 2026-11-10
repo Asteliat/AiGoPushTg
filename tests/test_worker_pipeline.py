@@ -196,7 +196,7 @@ async def test_training_account_only_buffers_the_message(logs) -> None:
 
     assert env.generated == []
     # The training buffer is keyed by the learning start timestamp.
-    assert any(key.startswith("atcivperson:learning:1:") for key in env.redis.lists)
+    assert any(key.startswith("aigopushtg:learning:1:") for key in env.redis.lists)
 
 
 @pytest.mark.asyncio

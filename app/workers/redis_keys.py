@@ -19,71 +19,71 @@ CAS_EXPIRE = (
     "then return redis.call('expire', KEYS[1], ARGV[2]) else return 0 end"
 )
 
-WORKER_HEARTBEAT = "atcivperson:worker:last_seen"
+WORKER_HEARTBEAT = "aigopushtg:worker:last_seen"
 
 
 def session_lease(account_id: int) -> str:
-    return f"atcivperson:telegram-session:{account_id}"
+    return f"aigopushtg:telegram-session:{account_id}"
 
 
 def challenge_seen(account_id: int, chat_id: int, message_id: int) -> str:
-    return f"atcivperson:challenge:seen:{account_id}:{chat_id}:{message_id}"
+    return f"aigopushtg:challenge:seen:{account_id}:{chat_id}:{message_id}"
 
 
 def challenge_cooldown(account_id: int, chat_id: int) -> str:
-    return f"atcivperson:challenge:cooldown:{account_id}:{chat_id}"
+    return f"aigopushtg:challenge:cooldown:{account_id}:{chat_id}"
 
 
 def challenge_bot_dm(account_id: int, bot_username: str) -> str:
-    return f"atcivperson:challenge:bot:{account_id}:{bot_username.lower()}"
+    return f"aigopushtg:challenge:bot:{account_id}:{bot_username.lower()}"
 
 
 def chat_memory(account_id: int, chat_id: int) -> str:
-    return f"atcivperson:memory:{account_id}:{chat_id}:chat"
+    return f"aigopushtg:memory:{account_id}:{chat_id}:chat"
 
 
 def person_memory(account_id: int, chat_id: int, sender_id: int) -> str:
-    return f"atcivperson:memory:{account_id}:{chat_id}:person:{sender_id}"
+    return f"aigopushtg:memory:{account_id}:{chat_id}:person:{sender_id}"
 
 
 def autoresponder_message(account_id: int, chat_id: int, message_id: int) -> str:
-    return f"atcivperson:autoresponder:message:{account_id}:{chat_id}:{message_id}"
+    return f"aigopushtg:autoresponder:message:{account_id}:{chat_id}:{message_id}"
 
 
 def autoresponder_cooldown(account_id: int, sender_id: int) -> str:
-    return f"atcivperson:autoresponder:cooldown:{account_id}:{sender_id}"
+    return f"aigopushtg:autoresponder:cooldown:{account_id}:{sender_id}"
 
 
 def trigger_lock(account_id: int) -> str:
-    return f"atcivperson:trigger-lock:{account_id}"
+    return f"aigopushtg:trigger-lock:{account_id}"
 
 
 def trigger_cooldown(account_id: int, trigger_id: int) -> str:
-    return f"atcivperson:trigger-cooldown:{account_id}:{trigger_id}"
+    return f"aigopushtg:trigger-cooldown:{account_id}:{trigger_id}"
 
 
 def trigger_message_cooldown(account_id: int) -> str:
-    return f"atcivperson:trigger-message-cooldown:{account_id}"
+    return f"aigopushtg:trigger-message-cooldown:{account_id}"
 
 
 def reply_cooldown(account_id: int, chat_id: int) -> str:
-    return f"atcivperson:reply-cooldown:{account_id}:{chat_id}"
+    return f"aigopushtg:reply-cooldown:{account_id}:{chat_id}"
 
 
 def learning_buffer(account_id: int, started_at_timestamp: int) -> str:
-    return f"atcivperson:learning:{account_id}:{started_at_timestamp}"
+    return f"aigopushtg:learning:{account_id}:{started_at_timestamp}"
 
 
 def channel_post(account_id: int, channel_id: int, post_id: int) -> str:
-    return f"atcivperson:channel-post:{account_id}:{channel_id}:{post_id}"
+    return f"aigopushtg:channel-post:{account_id}:{channel_id}:{post_id}"
 
 
 def channel_cooldown_lock(account_id: int, channel_id: int) -> str:
-    return f"atcivperson:channel-cooldown-lock:{account_id}:{channel_id}"
+    return f"aigopushtg:channel-cooldown-lock:{account_id}:{channel_id}"
 
 
 def channel_reply_cooldown(account_id: int, channel_id: int) -> str:
-    return f"atcivperson:channel-reply-cooldown:{account_id}:{channel_id}"
+    return f"aigopushtg:channel-reply-cooldown:{account_id}:{channel_id}"
 
 
 def log_destination_key(category: str) -> str:

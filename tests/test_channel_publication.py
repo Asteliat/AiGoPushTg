@@ -32,10 +32,10 @@ def test_zero_override_is_not_treated_as_missing() -> None:
 
 
 def test_channel_redis_keys_are_scoped_per_account_and_channel() -> None:
-    assert redis_keys.channel_post(7, 500, 42) == "atcivperson:channel-post:7:500:42"
-    assert redis_keys.channel_cooldown_lock(7, 500) == "atcivperson:channel-cooldown-lock:7:500"
+    assert redis_keys.channel_post(7, 500, 42) == "aigopushtg:channel-post:7:500:42"
+    assert redis_keys.channel_cooldown_lock(7, 500) == "aigopushtg:channel-cooldown-lock:7:500"
     assert (
         redis_keys.channel_reply_cooldown(7, 500)
-        == "atcivperson:channel-reply-cooldown:7:500"
+        == "aigopushtg:channel-reply-cooldown:7:500"
     )
     assert redis_keys.channel_post(8, 500, 42) != redis_keys.channel_post(7, 500, 42)

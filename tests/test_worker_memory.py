@@ -22,8 +22,8 @@ async def test_remember_message_writes_both_lists_with_limits() -> None:
 
     await memory.remember_message(redis, 1, -100, 5, item(1, "привет"))
 
-    chat_key = "atcivperson:memory:1:-100:chat"
-    person_key = "atcivperson:memory:1:-100:person:5"
+    chat_key = "aigopushtg:memory:1:-100:chat"
+    person_key = "aigopushtg:memory:1:-100:person:5"
     assert json.loads(redis.lists[chat_key][0])["text"] == "привет"
     assert json.loads(redis.lists[person_key][0])["text"] == "привет"
     assert redis.expires[chat_key] == memory.MEMORY_TTL_SECONDS
@@ -36,7 +36,7 @@ async def test_remember_message_keeps_only_the_newest_entries() -> None:
     await memory.remember_message(redis, 1, -100, 5, item(1, "первое"))
     await memory.remember_message(redis, 1, -100, 5, item(2, "второе"))
 
-    chat_key = "atcivperson:memory:1:-100:chat"
+    chat_key = "aigopushtg:memory:1:-100:chat"
     texts = [json.loads(raw)["text"] for raw in redis.lists[chat_key]]
     # Newest first: lpush puts the second message at the head.
     assert texts == ["второе", "первое"]
@@ -64,8 +64,8 @@ async def test_context_merges_chat_and_person_history_in_time_order() -> None:
 async def test_context_deduplicates_the_same_message() -> None:
     redis = FakeRedis()
     payload = item(7, "дубль")
-    redis.lists["atcivperson:memory:1:-100:chat"] = [json.dumps(payload)]
-    redis.lists["atcivperson:memory:1:-100:person:5"] = [json.dumps(payload)]
+    redis.lists["aigopushtg:memory:1:-100:chat"] = [json.dumps(payload)]
+    redis.lists["aigopushtg:memory:1:-100:person:5"] = [json.dumps(payload)]
 
     context = await memory.read_conversation_context(redis, 1, -100, 5)
 
@@ -75,7 +75,7 @@ async def test_context_deduplicates_the_same_message() -> None:
 @pytest.mark.asyncio
 async def test_context_ignores_broken_json_and_empty_text() -> None:
     redis = FakeRedis()
-    redis.lists["atcivperson:memory:1:-100:chat"] = [
+    redis.lists["aigopushtg:memory:1:-100:chat"] = [
         "{not json",
         json.dumps(item(1, "   ")),
         json.dumps(item(2, "живое сообщение")),

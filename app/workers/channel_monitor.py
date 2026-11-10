@@ -992,7 +992,7 @@ class ChannelMonitor:
             )
             return
 
-        lock_key = f"atcivperson:channel-to-chat:{self.account_id}:{chat_id}:{int(message.id)}"
+        lock_key = f"aigopushtg:channel-to-chat:{self.account_id}:{chat_id}:{int(message.id)}"
         if not await self.redis.set(lock_key, "processing", nx=True, ex=30 * 60):
             return
         try:
@@ -1047,7 +1047,7 @@ class ChannelMonitor:
                     # audience-comment threshold. Remove the permanent Redis lock
                     # before reopening the DB state so they are processed once.
                     await self.redis.delete(
-                        f"atcivperson:channel-post:{self.account_id}:"
+                        f"aigopushtg:channel-post:{self.account_id}:"
                         f"{int(binding.channel_id)}:{int(previous_state.post_id)}"
                     )
                     previous_state.status = "queued"

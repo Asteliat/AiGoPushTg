@@ -36,7 +36,7 @@ def test_reconnect_at_uses_the_backoff() -> None:
 
 
 def test_session_lease_key_is_stable() -> None:
-    assert redis_keys.session_lease(7) == "atcivperson:telegram-session:7"
+    assert redis_keys.session_lease(7) == "aigopushtg:telegram-session:7"
 
 
 def test_memory_keys_differ_per_person() -> None:
@@ -47,13 +47,13 @@ def test_memory_keys_differ_per_person() -> None:
 
 
 def test_challenge_keys_are_scoped_per_account_and_chat() -> None:
-    assert redis_keys.challenge_seen(1, -100, 42) == "atcivperson:challenge:seen:1:-100:42"
-    assert redis_keys.challenge_cooldown(1, -100) == "atcivperson:challenge:cooldown:1:-100"
+    assert redis_keys.challenge_seen(1, -100, 42) == "aigopushtg:challenge:seen:1:-100:42"
+    assert redis_keys.challenge_cooldown(1, -100) == "aigopushtg:challenge:cooldown:1:-100"
     assert redis_keys.challenge_seen(1, -100, 42) != redis_keys.challenge_seen(2, -100, 42)
 
 
 def test_learning_buffer_key_uses_start_timestamp() -> None:
-    assert redis_keys.learning_buffer(5, 1700000000) == "atcivperson:learning:5:1700000000"
+    assert redis_keys.learning_buffer(5, 1700000000) == "aigopushtg:learning:5:1700000000"
 
 
 def test_cas_scripts_only_touch_matching_tokens() -> None:

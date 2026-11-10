@@ -290,7 +290,7 @@ async def logs_add_save(m: Message, state: FSMContext):
     try:
         kwargs = {"message_thread_id": thread_id} if thread_id is not None else {}
         await m.bot.send_message(
-            chat_id, "✅ Проверка связи: этот получатель добавлен для логов AtcivPerson.", **kwargs
+            chat_id, "✅ Проверка связи: этот получатель добавлен для логов AiGoPushTg.", **kwargs
         )
     except Exception as exc:
         target = f"{chat_id}:{thread_id}" if thread_id is not None else str(chat_id)

@@ -1,8 +1,17 @@
-# AtcivPerson
+# AiGoPushTg
 
-**AtcivPerson** — self-hosted система управления собственными Telegram-аккаунтами с централизованными настройками, AI-инструментами и автоматизацией взаимодействия с чатами и каналами.
+**AiGoPushTg** — self-hosted пульт для своих Telegram-аккаунтов: AI-ответы в чатах, автопрохождение проверок в группах, поиск и вступление в группы и каналы, мониторинг публикаций и комментарии — всё из одного Telegram-бота.
 
-Проект объединяет управляющего Telegram-бота, клиентские Telegram-сессии, AI-провайдеров и фоновые процессы в одном приложении. Система разворачивается на собственном сервере и хранит данные в PostgreSQL.
+Один сервис объединяет управляющего бота, клиентские сессии Telethon, AI-провайдеров и фоновые процессы. Разворачивается на своём сервере через Docker Compose, данные хранятся в PostgreSQL, состояние фоновых процессов — в Redis.
+
+## Обновление с AtcivPerson
+
+Проект переименован из AtcivPerson в AiGoPushTg. Для уже работающего развёртывания ничего переносить не нужно:
+
+- PostgreSQL-пользователь и база остались `atcivperson` — существующий volume продолжает работать;
+- имена Docker volumes завязаны на имя каталога проекта, поэтому либо обновляйтесь в прежнем каталоге (`git pull`), либо сохраните имя compose-проекта: `COMPOSE_PROJECT_NAME=atcivperson docker compose up -d --build`;
+- префиксы ключей Redis сменились на `aigopushtg:`; старые ключи истекают сами;
+- remote обновится редиректом GitHub, но лучше поправить адрес вручную: `git remote set-url origin https://github.com/Asteliat/AiGoPushTg.git`.
 
 ## Возможности
 
@@ -88,8 +97,8 @@
 1. Склонируйте репозиторий и перейдите в каталог проекта:
 
    ```bash
-   git clone https://github.com/Asteliat/AtcivPerson.git
-   cd AtcivPerson
+   git clone https://github.com/Asteliat/AiGoPushTg.git
+   cd AiGoPushTg
    ```
 
 2. Создайте файл окружения:
@@ -195,4 +204,4 @@ GitHub Actions выполняет эти проверки при push в `main` 
 
 ---
 
-AtcivPerson — самостоятельный проект для self-hosted управления Telegram-аккаунтами и AI-инструментами.
+AiGoPushTg — самостоятельный проект для self-hosted управления Telegram-аккаунтами и AI-инструментами.

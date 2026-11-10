@@ -153,7 +153,7 @@ async def test_missing_api_credentials_report_error_without_connecting(statuses)
 @pytest.mark.asyncio
 async def test_lease_owned_by_another_worker_skips_the_connection(statuses) -> None:
     redis = FakeRedis()
-    redis.values["atcivperson:telegram-session:7"] = "worker-b|token"
+    redis.values["aigopushtg:telegram-session:7"] = "worker-b|token"
     worker = make_worker(redis)
     client = FakeTelethonClient()
     connector, on_message, _, _ = make_connector(worker, client)
@@ -169,7 +169,7 @@ async def test_lease_owned_by_another_worker_skips_the_connection(statuses) -> N
 @pytest.mark.asyncio
 async def test_stale_self_owned_lease_is_recovered(statuses, logs, labels) -> None:
     redis = FakeRedis()
-    redis.values["atcivperson:telegram-session:7"] = "worker-a|stale"
+    redis.values["aigopushtg:telegram-session:7"] = "worker-a|stale"
     worker = make_worker(redis)
     client = FakeTelethonClient()
     connector, _, _, _ = make_connector(worker, client)
@@ -177,7 +177,7 @@ async def test_stale_self_owned_lease_is_recovered(statuses, logs, labels) -> No
     await connector.connect(make_account(7))
     try:
         assert worker.clients[7] is client
-        assert redis.values["atcivperson:telegram-session:7"].startswith("worker-a|")
+        assert redis.values["aigopushtg:telegram-session:7"].startswith("worker-a|")
     finally:
         await worker.cancel_background_tasks()
 
@@ -192,7 +192,7 @@ async def test_unauthorized_session_releases_the_lease(statuses) -> None:
     await connector.connect(make_account(7))
 
     assert statuses == [(7, "connecting"), (7, "unauthorized")]
-    assert "atcivperson:telegram-session:7" not in redis.values
+    assert "aigopushtg:telegram-session:7" not in redis.values
     assert client.disconnects == 1
     assert 7 not in worker.clients
     assert 7 in worker.reconnect_after
@@ -208,7 +208,7 @@ async def test_connect_error_sets_error_status_and_releases_the_lease(statuses) 
     await connector.connect(make_account(7))
 
     assert statuses == [(7, "connecting"), (7, "error")]
-    assert "atcivperson:telegram-session:7" not in redis.values
+    assert "aigopushtg:telegram-session:7" not in redis.values
     assert 7 in worker.reconnect_after
     assert 7 not in worker.clients
 
@@ -223,7 +223,7 @@ async def test_cancellation_during_connect_releases_the_lease(statuses) -> None:
     with pytest.raises(asyncio.CancelledError):
         await connector.connect(make_account(7))
 
-    assert "atcivperson:telegram-session:7" not in redis.values
+    assert "aigopushtg:telegram-session:7" not in redis.values
 
 
 @pytest.mark.asyncio
